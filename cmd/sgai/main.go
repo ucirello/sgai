@@ -205,6 +205,32 @@ func hasPendingMessagesForAnyModel(messages []state.Message, models []string, ag
 	return false
 }
 
+func messageRecipientsForAgent(workingDir, toAgent string, metadata GoalMetadata) []string {
+	if toAgent == "" || strings.Contains(toAgent, ":") {
+		return []string{toAgent}
+	}
+
+	models := getModelsForAgent(metadata.Models, toAgent)
+	if len(models) == 0 && workingDir != "" {
+		goalPath := filepath.Join(workingDir, "GOAL.md")
+		if content, errRead := os.ReadFile(goalPath); errRead == nil {
+			if parsedMetadata, errParse := parseYAMLFrontmatter(content); errParse == nil {
+				models = getModelsForAgent(parsedMetadata.Models, toAgent)
+			}
+		}
+	}
+
+	if len(models) <= 1 {
+		return []string{toAgent}
+	}
+
+	recipients := make([]string, 0, len(models))
+	for _, modelSpec := range models {
+		recipients = append(recipients, formatModelID(toAgent, modelSpec))
+	}
+	return recipients
+}
+
 func syncModelStatuses(modelStatuses map[string]string, models []string, agent string) map[string]string {
 	if modelStatuses == nil {
 		modelStatuses = make(map[string]string)
@@ -476,7 +502,7 @@ func buildAgentMessage(cfg multiModelConfig, wfState state.Workflow, metadata Go
 
 	pendingCount := 0
 	for _, m := range wfState.Messages {
-		if m.ToAgent == cfg.agent && !m.Read {
+		if !m.Read && messageMatchesRecipient(m, cfg.agent, wfState.CurrentModel) {
 			pendingCount++
 		}
 	}
@@ -492,7 +518,7 @@ func buildAgentMessage(cfg multiModelConfig, wfState state.Workflow, metadata Go
 	if cfg.agent != "coordinator" {
 		outboxPending := 0
 		for _, m := range wfState.Messages {
-			if m.FromAgent == cfg.agent && !m.Read {
+			if !m.Read && messageMatchesSender(m, cfg.agent, wfState.CurrentModel) {
 				outboxPending++
 			}
 		}
@@ -617,12 +643,33 @@ func handleCompleteStatus(ctx context.Context, cfg multiModelConfig, newState, w
 		return *blocked
 	}
 
+	if blocked := blockCompletionOnProjectCriticCouncil(cfg, newState, metadata); blocked != nil {
+		return *blocked
+	}
+
 	if blocked := blockCompletionOnRetrospective(cfg, newState, metadata); blocked != nil {
 		return *blocked
 	}
 
 	copyCompletionArtifactsToRetrospective(cfg)
 	return newState
+}
+
+func blockCompletionOnProjectCriticCouncil(cfg multiModelConfig, newState state.Workflow, metadata GoalMetadata) *state.Workflow {
+	if !retrospectiveEnabled(metadata) {
+		return nil
+	}
+	if _, exists := cfg.flowDag.Nodes["project-critic-council"]; !exists {
+		return nil
+	}
+	if newState.VisitCounts["project-critic-council"] > 0 {
+		return nil
+	}
+	fmt.Println("["+cfg.paddedsgai+"]", "blocking completion: project-critic-council has not returned a verdict yet")
+	newState.Status = state.StatusAgentDone
+	addProjectCriticCouncilRedirectMessages(&newState, cfg.dir, cfg.agent, metadata)
+	saveState(cfg.coord, newState)
+	return &newState
 }
 
 func blockCompletionOnRetrospective(cfg multiModelConfig, newState state.Workflow, metadata GoalMetadata) *state.Workflow {
@@ -642,7 +689,28 @@ func blockCompletionOnRetrospective(cfg multiModelConfig, newState state.Workflo
 	return &newState
 }
 
+func addProjectCriticCouncilRedirectMessages(s *state.Workflow, workingDir, fromAgent string, metadata GoalMetadata) {
+	if hasUnreadMessageForAgent(s.Messages, "project-critic-council") {
+		return
+	}
+	recipients := messageRecipientsForAgent(workingDir, "project-critic-council", metadata)
+	createdAt := time.Now().UTC().Format(time.RFC3339)
+	for _, recipient := range recipients {
+		s.Messages = append(s.Messages, state.Message{
+			ID:        nextMessageID(s.Messages),
+			FromAgent: fromAgent,
+			ToAgent:   recipient,
+			Body:      "All work is complete and verified. Please return your final completion verdict before retrospective begins.",
+			Read:      false,
+			CreatedAt: createdAt,
+		})
+	}
+}
+
 func addRetrospectiveRedirectMessage(s *state.Workflow, fromAgent string) {
+	if hasUnreadMessageForAgent(s.Messages, "retrospective") {
+		return
+	}
 	s.Messages = append(s.Messages, state.Message{
 		ID:        nextMessageID(s.Messages),
 		FromAgent: fromAgent,
@@ -651,6 +719,15 @@ func addRetrospectiveRedirectMessage(s *state.Workflow, fromAgent string) {
 		Read:      false,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+func hasUnreadMessageForAgent(messages []state.Message, toAgent string) bool {
+	for _, msg := range messages {
+		if !msg.Read && extractAgentFromModelID(msg.ToAgent) == toAgent {
+			return true
+		}
+	}
+	return false
 }
 
 func blockCompletionOnPendingTodos(cfg multiModelConfig, newState, wfState state.Workflow) *state.Workflow {
@@ -730,7 +807,7 @@ func handleWorkingLoop(cfg multiModelConfig, capturedSessionID *string, consecut
 
 func agentHasUnreadOutgoingMessages(s state.Workflow, agentName string) bool {
 	for _, msg := range s.Messages {
-		if msg.FromAgent == agentName && !msg.Read {
+		if !msg.Read && messageMatchesSender(msg, agentName, s.CurrentModel) {
 			return true
 		}
 	}
@@ -1099,11 +1176,6 @@ func isExecNotFound(err error) bool {
 }
 
 func initializeWorkspaceDir(dir string) error {
-	sgaiDir := filepath.Join(dir, ".sgai")
-	if _, err := os.Stat(sgaiDir); err == nil {
-		return nil
-	}
-
 	if err := unpackSkeleton(dir); err != nil {
 		return fmt.Errorf("failed to unpack skeleton: %w", err)
 	}
@@ -1388,11 +1460,11 @@ func (j *jsonPrettyWriter) processEvent(event streamEvent) {
 			}
 		}
 
-	case "step_start":
+	case "step_start", "step-start":
 		j.flushText()
 		j.stepCounter++
 
-	case "step_finish":
+	case "step_finish", "step-finish":
 		j.flushText()
 		j.recordStepCost(part, event.Timestamp)
 
@@ -1430,11 +1502,30 @@ func (j *jsonPrettyWriter) Flush() {
 	j.flushText()
 }
 
+func dollarBreakdownForStep(cost float64, tokens state.TokenUsage) state.DollarBreakdown {
+	breakdown := state.DollarBreakdown{Total: cost}
+	totalTokens := tokens.Input + tokens.Output + tokens.Reasoning + tokens.CacheRead + tokens.CacheWrite
+	if totalTokens == 0 || cost == 0 {
+		return breakdown
+	}
+
+	allocate := func(count int) float64 {
+		return cost * float64(count) / float64(totalTokens)
+	}
+
+	breakdown.Input = allocate(tokens.Input)
+	breakdown.Output = allocate(tokens.Output)
+	breakdown.Reasoning = allocate(tokens.Reasoning)
+	breakdown.CacheRead = allocate(tokens.CacheRead)
+	breakdown.CacheWrite = allocate(tokens.CacheWrite)
+	return breakdown
+}
+
 func (j *jsonPrettyWriter) recordStepCost(p part, timestamp int64) {
 	if j.coord == nil || j.currentAgent == "" {
 		return
 	}
-	if p.Cost == 0 && p.Tokens.Input == 0 && p.Tokens.Output == 0 {
+	if p.Cost == 0 && p.Tokens.Input == 0 && p.Tokens.Output == 0 && p.Tokens.Reasoning == 0 && p.Tokens.Cache.Read == 0 && p.Tokens.Cache.Write == 0 {
 		return
 	}
 
@@ -1442,6 +1533,13 @@ func (j *jsonPrettyWriter) recordStepCost(p part, timestamp int64) {
 		StepID: fmt.Sprintf("%s-step-%d", j.currentAgent, j.stepCounter),
 		Agent:  j.currentAgent,
 		Cost:   p.Cost,
+		Dollars: dollarBreakdownForStep(p.Cost, state.TokenUsage{
+			Input:      p.Tokens.Input,
+			Output:     p.Tokens.Output,
+			Reasoning:  p.Tokens.Reasoning,
+			CacheRead:  p.Tokens.Cache.Read,
+			CacheWrite: p.Tokens.Cache.Write,
+		}),
 		Tokens: state.TokenUsage{
 			Input:      p.Tokens.Input,
 			Output:     p.Tokens.Output,
@@ -1454,6 +1552,7 @@ func (j *jsonPrettyWriter) recordStepCost(p part, timestamp int64) {
 
 	if errUpdate := j.coord.UpdateState(func(wf *state.Workflow) {
 		wf.Cost.TotalCost += stepCost.Cost
+		wf.Cost.Dollars.Add(stepCost.Dollars)
 		wf.Cost.TotalTokens.Add(stepCost.Tokens)
 
 		agentIdx := slices.IndexFunc(wf.Cost.ByAgent, func(ac state.AgentCost) bool {
@@ -1461,13 +1560,15 @@ func (j *jsonPrettyWriter) recordStepCost(p part, timestamp int64) {
 		})
 		if agentIdx == -1 {
 			wf.Cost.ByAgent = append(wf.Cost.ByAgent, state.AgentCost{
-				Agent:  j.currentAgent,
-				Cost:   stepCost.Cost,
-				Tokens: stepCost.Tokens,
-				Steps:  []state.StepCost{stepCost},
+				Agent:   j.currentAgent,
+				Cost:    stepCost.Cost,
+				Dollars: stepCost.Dollars,
+				Tokens:  stepCost.Tokens,
+				Steps:   []state.StepCost{stepCost},
 			})
 		} else {
 			wf.Cost.ByAgent[agentIdx].Cost += stepCost.Cost
+			wf.Cost.ByAgent[agentIdx].Dollars.Add(stepCost.Dollars)
 			wf.Cost.ByAgent[agentIdx].Tokens.Add(stepCost.Tokens)
 			wf.Cost.ByAgent[agentIdx].Steps = append(wf.Cost.ByAgent[agentIdx].Steps, stepCost)
 		}
@@ -1722,6 +1823,14 @@ func copyFileAtomic(src, dst string) error {
 	return nil
 }
 
+func rejectSymlinkedWorkspacePath(workspacePath, dstPath string) error {
+	return rejectSymlinkedPath(workspacePath, dstPath, "workspace", "destination")
+}
+
+func rejectSymlinkedOverlaySourcePath(workspacePath, srcPath string) error {
+	return rejectSymlinkedPath(workspacePath, srcPath, "workspace", "overlay source")
+}
+
 func copyFinalStateToRetrospective(dir, retrospectiveDir string) error {
 	statePath := filepath.Join(dir, ".sgai", "state.json")
 	pmPath := filepath.Join(dir, ".sgai", "PROJECT_MANAGEMENT.md")
@@ -1777,7 +1886,7 @@ func applyLayerFolderOverlay(dir string) error {
 	for _, subfolder := range allowedSubfolders {
 		srcDir := filepath.Join(layerDir, subfolder)
 		dstDir := filepath.Join(dir, ".sgai", subfolder)
-		if err := copyLayerSubfolder(srcDir, dstDir, subfolder); err != nil {
+		if err := copyLayerSubfolder(dir, srcDir, dstDir, subfolder); err != nil {
 			return err
 		}
 	}
@@ -1785,7 +1894,10 @@ func applyLayerFolderOverlay(dir string) error {
 	return nil
 }
 
-func copyLayerSubfolder(srcDir, dstDir, subfolder string) error {
+func copyLayerSubfolder(workspaceDir, srcDir, dstDir, subfolder string) error {
+	if errRejectSource := rejectSymlinkedOverlaySourcePath(workspaceDir, srcDir); errRejectSource != nil {
+		return errRejectSource
+	}
 	if !isExistingDirectory(srcDir) {
 		return nil
 	}
@@ -1794,6 +1906,9 @@ func copyLayerSubfolder(srcDir, dstDir, subfolder string) error {
 		if err != nil {
 			return err
 		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("checking overlay source path: symlinked path is not allowed: %s", path)
+		}
 
 		relPath, err := filepath.Rel(srcDir, path)
 		if err != nil {
@@ -1801,14 +1916,23 @@ func copyLayerSubfolder(srcDir, dstDir, subfolder string) error {
 		}
 
 		if d.IsDir() {
-			return os.MkdirAll(filepath.Join(dstDir, relPath), 0755)
+			dstPath := filepath.Join(dstDir, relPath)
+			if err := rejectSymlinkedWorkspacePath(workspaceDir, dstPath); err != nil {
+				return err
+			}
+			return os.MkdirAll(dstPath, 0755)
 		}
 
 		if isProtectedFile(subfolder, relPath) {
 			return nil
 		}
 
-		return copyFileAtomic(path, filepath.Join(dstDir, relPath))
+		dstPath := filepath.Join(dstDir, relPath)
+		if err := rejectSymlinkedWorkspacePath(workspaceDir, dstPath); err != nil {
+			return err
+		}
+
+		return copyFileAtomic(path, dstPath)
 	})
 }
 

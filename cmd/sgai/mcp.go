@@ -223,6 +223,10 @@ type sendMessageArgs struct {
 	Body    string `json:"body" jsonschema:"The content of the message to send."`
 }
 
+type deleteUnreadMessagesArgs struct {
+	IDs []int `json:"ids" jsonschema:"Message IDs to delete. All IDs must exist and must refer to unread messages. Supports deleting one or more unread messages in a batch."`
+}
+
 type projectTodoWriteArgs struct {
 	Todos []state.TodoItem `json:"todos" jsonschema:"The updated todo list"`
 }
@@ -253,6 +257,7 @@ var (
 	schemaFindSkills       = mustSchema[findSkillsArgs]()
 	schemaFindSnippets     = mustSchema[findSnippetsArgs]()
 	schemaSendMessage      = mustSchema[sendMessageArgs]()
+	schemaDeleteUnreadMsgs = mustSchema[deleteUnreadMessagesArgs]()
 	schemaEmpty            = mustSchema[struct{}]()
 	schemaProjectTodoWrite = mustSchema[projectTodoWriteArgs]()
 	schemaAskUserQuestion  = mustSchema[askUserQuestionArgs]()
@@ -290,16 +295,22 @@ func startMCPHTTPServer(workingDir string, coord *state.Coordinator, dagAgents [
 func parseAgentIdentityHeader(r *http.Request) string {
 	identity := r.Header.Get("X-Sgai-Agent-Identity")
 	if identity == "" {
-		return "coordinator"
+		return ""
 	}
 	name, _, _ := strings.Cut(identity, "|")
 	if name == "" {
-		return "coordinator"
+		return ""
 	}
 	return name
 }
 
 func resolveCallerAgent(headerAgent string, coord *state.Coordinator) string {
+	if headerAgent == "" {
+		if currentAgent := coord.State().CurrentAgent; currentAgent != "" && currentAgent != "coordinator" {
+			return currentAgent
+		}
+		return ""
+	}
 	if headerAgent != "coordinator" {
 		return headerAgent
 	}
@@ -377,6 +388,12 @@ func registerCoordinatorTools(server *mcp.Server, mcpCtx *mcpContext, _ string) 
 	}, mcpCtx.peekMessageBusHandler)
 
 	mcp.AddTool(server, &mcp.Tool{
+		Name:        "delete_unread_messages",
+		Description: "Delete one or more unread messages from the message bus by ID. Coordinator-only tool. All provided IDs must refer to unread messages.",
+		InputSchema: schemaDeleteUnreadMsgs,
+	}, mcpCtx.deleteUnreadMessagesHandler)
+
+	mcp.AddTool(server, &mcp.Tool{
 		Name:        "project_todowrite",
 		Description: todoWriteDescription,
 		InputSchema: schemaProjectTodoWrite,
@@ -448,7 +465,7 @@ func (c *mcpContext) updateWorkflowStateHandler(_ context.Context, _ *mcp.CallTo
 }
 
 func (c *mcpContext) sendMessageHandler(_ context.Context, _ *mcp.CallToolRequest, args sendMessageArgs) (*mcp.CallToolResult, emptyResult, error) {
-	result, err := sendMessage(c.coord, c.dagAgents, c.agentName, args.ToAgent, args.Body)
+	result, err := sendMessage(c.workingDir, c.coord, c.dagAgents, c.agentName, args.ToAgent, args.Body)
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
@@ -479,6 +496,16 @@ func (c *mcpContext) checkOutboxHandler(_ context.Context, _ *mcp.CallToolReques
 
 func (c *mcpContext) peekMessageBusHandler(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, emptyResult, error) {
 	result, err := peekMessageBus(c.coord)
+	if err != nil {
+		return nil, emptyResult{}, err
+	}
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: result}},
+	}, emptyResult{}, nil
+}
+
+func (c *mcpContext) deleteUnreadMessagesHandler(_ context.Context, _ *mcp.CallToolRequest, args deleteUnreadMessagesArgs) (*mcp.CallToolResult, emptyResult, error) {
+	result, err := deleteUnreadMessages(c.coord, c.agentName, args.IDs)
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
@@ -1006,7 +1033,7 @@ func updateWorkflowState(coord *state.Coordinator, callerAgent string, args upda
 	return response, nil
 }
 
-func sendMessage(coord *state.Coordinator, dagAgents []string, callerAgent, toAgent, body string) (string, error) {
+func sendMessage(workingDir string, coord *state.Coordinator, dagAgents []string, callerAgent, toAgent, body string) (string, error) {
 	if coord == nil {
 		return "Error: Could not read state.json. Has the workflow been initialized?", nil
 	}
@@ -1020,6 +1047,7 @@ func sendMessage(coord *state.Coordinator, dagAgents []string, callerAgent, toAg
 		fromAgent string
 		result    string
 	)
+	recipients := messageRecipientsForAgent(workingDir, toAgent, GoalMetadata{})
 
 	errUpdate := coord.UpdateState(func(currentState *state.Workflow) {
 		if currentState.Messages == nil {
@@ -1031,18 +1059,24 @@ func sendMessage(coord *state.Coordinator, dagAgents []string, callerAgent, toAg
 			fromAgent = currentState.CurrentModel
 		}
 
-		message := state.Message{
-			ID:        nextMessageID(currentState.Messages),
-			FromAgent: fromAgent,
-			ToAgent:   toAgent,
-			Body:      body,
-			Read:      false,
-			CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		createdAt := time.Now().UTC().Format(time.RFC3339)
+		for _, recipient := range recipients {
+			message := state.Message{
+				ID:        nextMessageID(currentState.Messages),
+				FromAgent: fromAgent,
+				ToAgent:   recipient,
+				Body:      body,
+				Read:      false,
+				CreatedAt: createdAt,
+			}
+			currentState.Messages = append(currentState.Messages, message)
 		}
 
-		currentState.Messages = append(currentState.Messages, message)
-
-		result = fmt.Sprintf("Message sent successfully to %s.\nFrom: %s\nTo: %s\nBody: %s", toAgent, fromAgent, toAgent, body)
+		if len(recipients) == 1 {
+			result = fmt.Sprintf("Message sent successfully to %s.\nFrom: %s\nTo: %s\nBody: %s", recipients[0], fromAgent, recipients[0], body)
+		} else {
+			result = fmt.Sprintf("Sent %d messages successfully to %s.\nFrom: %s\nTo: %s\nBody: %s", len(recipients), toAgent, fromAgent, strings.Join(recipients, ", "), body)
+		}
 		if callerAgent != "coordinator" {
 			result += "\n\nIMPORTANT: To receive a response from the target agent, you MUST yield control by calling sgai_update_workflow_state({status: 'agent-done'}). The target agent cannot run until you yield."
 		}
@@ -1181,6 +1215,79 @@ func peekMessageBus(coord *state.Coordinator) (string, error) {
 	}
 
 	return strings.TrimSpace(result.String()), nil
+}
+
+func deleteUnreadMessages(coord *state.Coordinator, agentName string, ids []int) (string, error) {
+	if coord == nil {
+		return "Error: Could not read state.json. Has the workflow been initialized?", nil
+	}
+
+	if agentName != "coordinator" {
+		return "Error: delete_unread_messages is a coordinator-only tool", nil
+	}
+
+	normalizedIDs := normalizedMessageIDs(ids)
+	if len(normalizedIDs) == 0 {
+		return "Error: At least one message ID is required", nil
+	}
+
+	idSet := make(map[int]struct{}, len(normalizedIDs))
+	for _, id := range normalizedIDs {
+		idSet[id] = struct{}{}
+	}
+
+	var invalidIDs []int
+	errUpdate := coord.UpdateState(func(wf *state.Workflow) {
+		invalidIDs = invalidUnreadMessageIDs(wf.Messages, normalizedIDs)
+		if len(invalidIDs) > 0 {
+			return
+		}
+
+		wf.Messages = slices.DeleteFunc(wf.Messages, func(msg state.Message) bool {
+			_, ok := idSet[msg.ID]
+			return ok
+		})
+	})
+	if errUpdate != nil {
+		return "", fmt.Errorf("failed to save state: %w", errUpdate)
+	}
+	if len(invalidIDs) > 0 {
+		return fmt.Sprintf("Error: Message IDs %s must all be unread", joinMessageIDs(invalidIDs)), nil
+	}
+
+	return fmt.Sprintf("Deleted unread messages: %s", joinMessageIDs(normalizedIDs)), nil
+}
+
+func invalidUnreadMessageIDs(messages []state.Message, ids []int) []int {
+	unreadIDs := make(map[int]struct{}, len(messages))
+	for _, msg := range messages {
+		if !msg.Read {
+			unreadIDs[msg.ID] = struct{}{}
+		}
+	}
+
+	invalidIDs := make([]int, 0)
+	for _, id := range ids {
+		if _, ok := unreadIDs[id]; !ok {
+			invalidIDs = append(invalidIDs, id)
+		}
+	}
+
+	return invalidIDs
+}
+
+func normalizedMessageIDs(ids []int) []int {
+	normalizedIDs := slices.Clone(ids)
+	slices.Sort(normalizedIDs)
+	return slices.Compact(normalizedIDs)
+}
+
+func joinMessageIDs(ids []int) string {
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = fmt.Sprintf("%d", id)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func projectTodoWrite(coord *state.Coordinator, todos []state.TodoItem) (string, error) {

@@ -1,5 +1,16 @@
 import { test, expect } from "@playwright/test";
 
+import { GO_WORKFLOW_GOAL } from "./fixtures/goWorkflow";
+
+async function expectRenamedGoWorkflowVisible(page: Parameters<typeof test>[0]["page"]) {
+  const goalSummary = page.locator("summary", { hasText: "GOAL.md" });
+  await expect(goalSummary).toBeVisible();
+  await goalSummary.click();
+  await expect(page.getByText("go-reviewer", { exact: false })).toBeVisible();
+  await expect(page.getByText("go-developer", { exact: false })).toHaveCount(0);
+  await expect(page.getByText("go-reviewer", { exact: false })).toHaveCount(0);
+}
+
 test.describe("Goal Management Workflow", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
@@ -30,24 +41,7 @@ test.describe("Goal Management Workflow", () => {
         await editor.click();
 
         await page.keyboard.press("Control+a");
-        await page.keyboard.type(`---
-flow: |
-  "coordinator" -> "backend-go-developer"
-  "backend-go-developer" -> "go-readability-reviewer"
-models:
-  "coordinator": "opencode/glm-5"
-  "backend-go-developer": "opencode/glm-5"
-completionGateScript: make test
----
-
-# Test Goal
-
-## Task: Implement Feature X
-
-- [ ] Design the API
-- [ ] Write tests
-- [ ] Implement the feature
-`);
+        await page.keyboard.type(GO_WORKFLOW_GOAL);
       }
 
       await page.click('button:has-text("Save GOAL.md")');
@@ -65,6 +59,7 @@ completionGateScript: make test
         await startButton.click();
 
         await page.waitForSelector("text=running", { timeout: 10000 });
+        await expectRenamedGoWorkflowVisible(page);
       }
 
       await page.click('a[href$="/progress"]');

@@ -1,15 +1,17 @@
 ---
 name: retrospective
-description: Post-completion factory improvement analysis. Guides the retrospective agent through artifact discovery, pattern analysis, suggestion generation, and presenting proposed changes for approval. Use when the retrospective agent starts its post-completion phase.
+description: Post-completion factory improvement analysis. Guides the retrospective agent through artifact discovery, pattern analysis, suggestion generation, and presenting proposed changes for approval. Use when the retrospective agent starts its post-completion phase. Treat `sgai/` overlay changes and `AGENTS.md` changes as co-equal categories when evidence supports them, prefer `sgai/` for process and tooling fixes, and report separate Skills, Agent Prompts, Snippets, and `AGENTS.md` buckets including empty buckets.
 ---
 
 # Retrospective Analysis
 
 ## Overview
 
-This skill guides the retrospective agent through analyzing a completed session and producing actionable improvements to the factory. The goal is to make the factory better over time by examining what happened, identifying patterns, and proposing concrete changes to skills, agent prompts, and AGENTS.md.
+This skill guides the retrospective agent through analyzing a completed session and producing actionable improvements to the factory. The goal is to make the factory better over time by examining what happened, identifying patterns, and proposing concrete changes to skills, agent prompts, reusable code snippets, and AGENTS.md.
 
 **Core principle:** Evidence-based improvement. Every suggestion must be grounded in artifacts from the session, not speculation.
+
+**Reporting principle:** Skills, agent prompts in `sgai/`, reusable snippets in `sgai/snippets/`, and `AGENTS.md` are co-equal reporting buckets. Do not treat `AGENTS.md` as the default sink for every process issue. Prefer `sgai/` overlay changes for process and tooling fixes, reserve the `Snippets` bucket for reusable language-specific code patterns, and reserve `AGENTS.md` for repository-level standing instructions. Every retrospective report must name all four buckets and explicitly say when a bucket has no warranted changes.
 
 ## When to Use
 
@@ -25,10 +27,12 @@ There are TWO different `state.json` files in the system:
 1. **Session copy**: `.sgai/retrospectives/<session-id>/state.json` — A snapshot of the workflow state captured at session end. This file MAY NOT always exist (it depends on whether the session completed normally and the copy was made).
 2. **Main workflow state**: `.sgai/state.json` — The live workflow state file. This file is ALWAYS present after the factory starts.
 
-**Fallback logic (use this whenever a step says to "read state.json"):**
+**Source selection logic (use this whenever a step says to "read state.json"):**
 - First, try to read `.sgai/retrospectives/<session-id>/state.json` (the session copy)
 - If it does not exist or is unreadable, fall back to `.sgai/state.json` (always present)
-- Document which file you actually read in your analysis log
+- If the session copy exists but looks partial, stale, or contradictory, also read `.sgai/state.json` and compare them before drawing conclusions
+- Treat zero-message snapshots, implausibly low visit counts, or conflicts with `.sgai/PROJECT_MANAGEMENT.md` / session transcripts as stale-snapshot triggers
+- Document whether your final analysis used the session copy, the live fallback, or both because of a mismatch
 
 ## SGAI_NOTES.md: Early and Persistent Writing
 
@@ -84,12 +88,13 @@ Read artifacts in THIS ORDER (priority matters — richest signal sources first)
 
 - [ ] Read `.sgai/PROJECT_MANAGEMENT.md` frontmatter to find the retrospective session directory path (key: `Retrospective Session: .sgai/retrospectives/<session-id>`)
 - [ ] List all files in the session directory
-- [ ] **Read session `state.json` FIRST** — This is the single richest signal source. Use fallback logic: try `.sgai/retrospectives/<session-id>/state.json` first; if missing, fall back to `.sgai/state.json`. It contains:
+- [ ] **Read session `state.json` FIRST** — This is the single richest signal source. Use the source selection logic above: try `.sgai/retrospectives/<session-id>/state.json` first; if missing, fall back to `.sgai/state.json`; if the snapshot looks stale or contradictory, cross-check the live state too. It contains:
   - Visit counts per agent (how many times each agent ran)
   - Inter-agent message log (every message sent between agents)
   - Agent sequence (order of agent execution)
   - Progress notes from each agent
   - **If BOTH `.sgai/retrospectives/<session-id>/state.json` AND `.sgai/state.json` are missing or unreadable, STOP and report this in your analysis log — do NOT proceed to Step 2 without acknowledging this gap**
+- [ ] Compare the session copy against `.sgai/PROJECT_MANAGEMENT.md` and the session JSON timeline. If the snapshot reports materially less activity than the rest of the artifacts, read live `.sgai/state.json`, treat the session copy as stale, and log the mismatch explicitly.
 - [ ] **WRITE SGAI_NOTES.md NOW** — After reading state.json, write preliminary findings to `.sgai/SGAI_NOTES.md` with format:
   ```markdown
   ## Factory Health Notes (YYYY-MM-DD)
@@ -157,8 +162,8 @@ Read artifacts in THIS ORDER (priority matters — richest signal sources first)
 After reading all artifacts in Step 1, write a structured analysis summary to your progress notes using `sgai_update_workflow_state`. This summary MUST contain:
 
 1. **Files read count**: "Read X session JSONs out of Y total" (X must equal Y, or you must explain why not)
-2. **Visit count summary**: From session `state.json` (or `.sgai/state.json` fallback) — which agents ran, how many visits each
-3. **Message count summary**: From session `state.json` (or `.sgai/state.json` fallback) — total inter-agent messages, notable message patterns
+2. **Visit count summary**: From the effective state source used for analysis — session copy, live fallback, or both due to a mismatch — which agents ran and how many visits each
+3. **Message count summary**: From the same effective state source(s) — total inter-agent messages, notable message patterns, and whether any stale-snapshot mismatch was detected
 4. **Per-category observations** (at least 1 observation per category):
    - **Efficiency**: At least 1 observation about visit counts, handoff patterns, or iteration depth
    - **Quality**: At least 1 observation about reviewer feedback, test failures, or backtracks
@@ -175,8 +180,8 @@ After reading all artifacts in Step 1, write a structured analysis summary to yo
 **Example analysis log:**
 ```
 Analysis Summary:
-- Files: Read 15/15 session JSONs, session state.json (from .sgai/retrospectives/<session-id>/state.json), GOAL.md, PROJECT_MANAGEMENT.md, stdout.log, stderr.log
-- Visits: coordinator(8), backend-go-developer(3), go-readability-reviewer(2), react-developer(1), project-critic-council(1)
+- Files: Read 15/15 session JSONs, state.json from both `.sgai/retrospectives/<session-id>/state.json` and `.sgai/state.json` because the session copy looked stale, GOAL.md, PROJECT_MANAGEMENT.md, stdout.log, stderr.log
+- Visits: coordinator(8), go-developer(3), go-reviewer(2), react-developer(1), project-critic-council(1)
 - Messages: 19 inter-agent messages, 3 reviewer feedback rounds
 - Efficiency: Backend developer visited 3 times due to reviewer feedback — could skills reduce this?
 - Quality: Reviewer caught SQL formatting issues 3 times — suggests missing skill
@@ -204,7 +209,7 @@ Analyze the artifacts for these signal types:
 - [ ] **Iteration depth** — How many iterations did the workflow take? What drove the iteration count?
 
 #### Quality Signals
-- [ ] **Reviewer feedback** — What did reviewers (go-readability-reviewer, react-reviewer) find? Are there patterns in what they catch?
+- [ ] **Reviewer feedback** — What did reviewers (go-reviewer, react-reviewer) find? Are there patterns in what they catch?
 - [ ] **Test failures** — Were there build or test failures? What caused them?
 - [ ] **Backtracks** — Did any agent need to undo or redo work? Why?
 
@@ -258,11 +263,14 @@ Analyze AGENTS.md health across five dimensions:
 
 For each pattern identified in Step 2 and Step 2.5, produce a concrete suggestion. Each suggestion must have:
 
-1. **Category** — One of: `new-skill`, `modify-skill`, `new-agent-prompt`, `modify-agent-prompt`, `update-agents-md`, `create-agents-md`, `restructure-agents-md`
+1. **Category** — One of: `new-skill`, `modify-skill`, `new-agent-prompt`, `modify-agent-prompt`, `new-snippet`, `modify-snippet`, `update-agents-md`, `create-agents-md`, `restructure-agents-md`
 2. **Evidence** — The specific artifact and pattern that motivated it
 3. **Proposal** — What to create or change (be specific)
 4. **Rationale** — Why this improvement will help future sessions
 5. **Diff Preview** — For suggestions that modify existing files, include the unified diff showing what will change (read the file first, then compute the diff). For new files, show the proposed content.
+6. **Bucket** — Exactly one of: `Skills`, `Agent Prompts`, `Snippets`, or `AGENTS.md`. Use this to keep the final report explicitly separated by bucket.
+
+Before writing a proposal, decide whether the evidence points to a skill, an agent prompt in `sgai/`, a reusable snippet in `sgai/snippets/`, or `AGENTS.md`. Treat those targets as co-equal categories. If the issue is about factory process, tooling workflow, or agent behavior, prefer a `sgai/` skill or agent prompt change unless the evidence shows it truly belongs in repository-wide standing instructions. If the issue is a reusable language-specific code pattern that multiple future agents could start from, prefer the `Snippets` bucket.
 
 **After generating suggestions, UPDATE `.sgai/SGAI_NOTES.md`** with the suggestion list:
 ```markdown
@@ -279,6 +287,15 @@ Before presenting any suggestion, verify the target path:
   - `.sgai/skills/bar/SKILL.md` -> `sgai/skills/bar/SKILL.md`
 - The `.sgai/` directory is the runtime directory rebuilt from skeleton + overlay on every startup — changes there are lost immediately
 
+#### Snippet Bucket Rule
+
+Use the `Snippets` bucket only for reusable code artifacts that future agents should be able to discover through `sgai_find_snippets(language, query)`.
+
+- Store snippet proposals under `sgai/snippets/<language>/`
+- Use a stable, queryable filename stem because `sgai_find_snippets` does exact stem lookup first, then substring and description matching
+- Include frontmatter `description` so list and fuzzy search results are meaningful
+- Prefer snippets for reusable code patterns, helpers, or templates; do not use snippets for prose workflow rules better expressed as a skill or agent prompt
+
 #### Suggestion Categories
 
 **New Skills** (`sgai/skills/<name>/SKILL.md`)
@@ -294,12 +311,19 @@ Before presenting any suggestion, verify the target path:
 **New/Modified Agent Prompts** (`sgai/agent/<name>.md`)
 - An agent's behavior needs adjustment
 - An agent's permissions were too broad or too narrow
-- Example: "Add explicit instruction to backend-go-developer about running make lint before marking done"
+- Example: "Add explicit instruction to go-developer about running make lint before marking done"
+
+**New/Modified Snippets** (`sgai/snippets/<language>/<name>.<ext>`)
+- A session exposed a reusable code pattern that future agents should start from instead of rewriting
+- The asset is primarily code, not policy or workflow guidance
+- The snippet should be discoverable by language plus filename stem or description via `sgai_find_snippets`
+- Example: "Add a Go snippet for version-control diff retrieval with jj-first fallback because multiple agents had to recreate it"
 
 **Update AGENTS.md**
-- A style rule emerged from reviewer feedback
-- A business rule was discovered during brainstorming
-- A convention was established mid-session that should persist
+- A repository-level standing instruction emerged from reviewer feedback or human clarification
+- A business rule was discovered during brainstorming and should persist across the repository
+- A convention was established mid-session that belongs in repository-level standing guidance rather than a skill or agent prompt
+- Do NOT use this bucket for process or tooling fixes when a skill or agent prompt in `sgai/` is the better fit
 - Example: "Add rule: Go error variable names must use err prefix pattern (errClose, errRead)"
 
 **AGENTS.md-specific suggestion types (from Step 2.5):**
@@ -315,10 +339,13 @@ Before presenting any suggestion, verify the target path:
 ### Step 4: Prioritize and Group
 
 - [ ] Sort suggestions by impact (high/medium/low)
-- [ ] Group suggestions into exactly 3 category buckets:
+- [ ] Group suggestions into exactly 4 category buckets:
   - **Skills** — Categories `new-skill` and `modify-skill`
   - **Agent Prompts** — Categories `new-agent-prompt` and `modify-agent-prompt`
+  - **Snippets** — Categories `new-snippet` and `modify-snippet`
   - **AGENTS.md** — Categories `update-agents-md`, `create-agents-md`, and `restructure-agents-md`
+- [ ] Build a bucket summary that names all 4 buckets, even when one or more buckets have zero warranted changes
+- [ ] Explicitly mark empty buckets as `no warranted changes` instead of omitting them
 - [ ] Discard suggestions that are too vague or not actionable
 - [ ] Limit to the top 10 most impactful suggestions (quality over quantity)
 
@@ -343,7 +370,7 @@ Before presenting any suggestion, verify the target path:
 ```
 sgai_send_message({
   toAgent: "coordinator",
-  body: "RETRO_COMPLETE: No actionable improvements identified for this session. Analysis summary: Read X/Y session JSONs, session state.json (from [path used]) showed Z agent visits and W messages. Per-category findings: [brief summary of each category observation from Step 1.5]."
+  body: "RETRO_COMPLETE: No actionable improvements identified for this session. Bucket summary: Skills - no warranted changes; Agent Prompts - no warranted changes; Snippets - no warranted changes; AGENTS.md - no warranted changes. Analysis summary: Read X/Y session JSONs, session state.json (from [path used]) showed Z agent visits and W messages. Per-category findings: [brief summary of each category observation from Step 1.5]."
 })
 sgai_update_workflow_state({ status: "agent-done", task: "", addProgress: "No actionable suggestions found after thorough analysis. Sent RETRO_COMPLETE." })
 // STOP HERE. Make NO more tool calls. Your turn is OVER.
@@ -362,7 +389,7 @@ sgai_update_workflow_state({ status: "agent-done", task: "", addProgress: "No ac
 
 **MANDATORY:** You MUST send at least one `RETRO_QUESTION:` message to the coordinator during your run. This is NOT optional. If you found zero suggestions, follow the "No Suggestions Case" above instead.
 
-Present proposed changes to the human partner by sending `RETRO_QUESTION:` messages to the coordinator, grouped by category. For each non-empty category bucket (Skills, Agent Prompts, AGENTS.md), send ONE message containing ALL proposals in that category.
+Present proposed changes to the human partner by sending `RETRO_QUESTION:` messages to the coordinator, grouped by category. Before sending the first approval request, prepare a bucket summary that lists Skills, Agent Prompts, Snippets, and `AGENTS.md`, including any buckets with `no warranted changes`. For each non-empty category bucket (Skills, Agent Prompts, Snippets, `AGENTS.md`), send ONE message containing ALL proposals in that category, and include the full bucket summary in the message so empty buckets are still reported explicitly.
 
 #### Presentation Format
 
@@ -371,7 +398,7 @@ For each non-empty category, send a single `RETRO_QUESTION` with this structure:
 ```
 sgai_send_message({
   toAgent: "coordinator",
-  body: "RETRO_QUESTION [MULTI-SELECT]: **Skills Changes** (N proposals)\n\n### 1. [Title of first proposal]\nEvidence: [1-line evidence from session artifacts]\n```diff\n--- a/[file path]\n+++ b/[file path]\n@@ ... @@\n[unified diff content]\n```\nRationale: [why this helps future sessions]\n\n### 2. [Title of second proposal]\nEvidence: [1-line evidence]\n[full proposed file content for new files, or diff for modifications]\nRationale: [why this helps]\n\nSelect which to approve (multi-select):\n- 1. [Title of first proposal]\n- 2. [Title of second proposal]"
+  body: "RETRO_QUESTION [MULTI-SELECT]: **Skills Changes** (N proposals)\n\nBucket Summary:\n- Skills: N proposal(s)\n- Agent Prompts: [M proposal(s) OR no warranted changes]\n- Snippets: [P proposal(s) OR no warranted changes]\n- AGENTS.md: [K proposal(s) OR no warranted changes]\n\n### 1. [Title of first proposal]\nEvidence: [1-line evidence from session artifacts]\n```diff\n--- a/[file path]\n+++ b/[file path]\n@@ ... @@\n[unified diff content]\n```\nRationale: [why this helps future sessions]\n\n### 2. [Title of second proposal]\nEvidence: [1-line evidence]\n[full proposed file content for new files, or diff for modifications]\nRationale: [why this helps]\n\nSelect which to approve (multi-select):\n- 1. [Title of first proposal]\n- 2. [Title of second proposal]"
 })
 // Then yield immediately
 sgai_update_workflow_state({ status: "agent-done", task: "Waiting for human response via coordinator", addProgress: "Sent Skills category RETRO_QUESTION to coordinator" })
@@ -385,7 +412,7 @@ sgai_update_workflow_state({ status: "agent-done", task: "Waiting for human resp
 ```
 sgai_send_message({
   toAgent: "coordinator",
-  body: "RETRO_QUESTION [MULTI-SELECT]: **Skills Changes** (2 proposals)\n\n### 1. Add SQL formatting section to go-code-review\nEvidence: Reviewer flagged SQL formatting 3 times in session\n```diff\n--- a/sgai/skills/go-code-review/SKILL.md\n+++ b/sgai/skills/go-code-review/SKILL.md\n@@ -45,6 +45,12 @@\n+## SQL Formatting\n+- Align VALUES with INSERT columns\n+- Each column on its own line\n```\nRationale: Prevents repeated reviewer catches\n\n### 2. Create db-migration-testing skill\n[full proposed file content]\nRationale: Standardizes migration testing workflow\n\nSelect which to approve (multi-select):\n- 1. Add SQL formatting section to go-code-review\n- 2. Create db-migration-testing skill"
+  body: "RETRO_QUESTION [MULTI-SELECT]: **Skills Changes** (2 proposals)\n\nBucket Summary:\n- Skills: 2 proposal(s)\n- Agent Prompts: no warranted changes\n- Snippets: 1 proposal(s)\n- AGENTS.md: 1 proposal(s)\n\n### 1. Add SQL formatting section to go-code-review\nEvidence: Reviewer flagged SQL formatting 3 times in session\n```diff\n--- a/sgai/skills/go-code-review/SKILL.md\n+++ b/sgai/skills/go-code-review/SKILL.md\n@@ -45,6 +45,12 @@\n+## SQL Formatting\n+- Align VALUES with INSERT columns\n+- Each column on its own line\n```\nRationale: Prevents repeated reviewer catches\n\n### 2. Create db-migration-testing skill\n[full proposed file content]\nRationale: Standardizes migration testing workflow\n\nSelect which to approve (multi-select):\n- 1. Add SQL formatting section to go-code-review\n- 2. Create db-migration-testing skill"
 })
 sgai_update_workflow_state({ status: "agent-done", task: "Waiting for human response via coordinator", addProgress: "Sent Skills RETRO_QUESTION to coordinator" })
 // STOP HERE. Your turn is OVER.
@@ -404,10 +431,11 @@ When the coordinator relays the human's response (which numbered items were sele
 
 1. **One message per category** — Never send individual proposals one-at-a-time
 2. **Include `[MULTI-SELECT]` marker** — So the coordinator knows to use `multiSelect: true` when relaying
-3. **Show diffs for ALL file modifications** — When suggesting changes to existing files, you MUST read the file first and show the unified diff. For new files, show the full proposed content.
-4. **Respect rejections** — If user deselects a proposal, do NOT re-present it
-5. **Respect "skip all"** — If user selects nothing in a category, that entire category is skipped
-6. **Yield after every send** — The IRON LAW applies here without exception
+3. **Include the full bucket summary every time** — Every approval message must name Skills, Agent Prompts, Snippets, and `AGENTS.md`, explicitly marking any empty bucket as `no warranted changes`
+4. **Show diffs for ALL file modifications** — When suggesting changes to existing files, you MUST read the file first and show the unified diff. For new files, show the full proposed content.
+5. **Respect rejections** — If user deselects a proposal, do NOT re-present it
+6. **Respect "skip all"** — If user selects nothing in a category, that entire category is skipped
+7. **Yield after every send** — The IRON LAW applies here without exception
 
 ### Step 6: Apply Approved Changes
 
@@ -489,11 +517,35 @@ When adding to AGENTS.md:
 6. **Graceful exit** — If the user rejects everything during the approval process, mark done without making changes. That is a valid outcome. But you MUST have sent at least one `RETRO_QUESTION:` message to the coordinator before exiting (or a `RETRO_COMPLETE` in the no-suggestions case).
 7. **No source code** — You do not modify Go, TypeScript, test files, or any application code. Period.
 8. **No `.sgai/` suggestions** — Never suggest changes targeting `.sgai/` paths (except `.sgai/SGAI_NOTES.md`). Always translate to `sgai/` overlay equivalents. The `.sgai/` directory is rebuilt from skeleton + overlay on every startup — changes there are lost.
-9. **Mandatory analysis log** — You MUST complete Step 1.5 before proceeding to Step 2. Skipping the analysis log is a skill violation.
-10. **AGENTS.md analysis is mandatory** — Every retrospective MUST include Step 2.5 (AGENTS.md Health Analysis). Even if AGENTS.md looks fine, you must document that assessment. "AGENTS.md looks fine" is not acceptable without evidence of reading it.
-11. **SGAI_NOTES.md is incremental** — Write to `.sgai/SGAI_NOTES.md` early and often. Do NOT wait until the end. Preliminary findings must be written after Step 1a, updated after Step 1.5, updated after Step 3, and finalized after Step 6.
+9. **Do not default to AGENTS.md** — Treat Skills, Agent Prompts, Snippets, and `AGENTS.md` as co-equal categories. Prefer `sgai/` skill or agent-prompt changes for process and tooling fixes, prefer snippets for reusable language-specific code patterns, and use `AGENTS.md` only when the evidence clearly calls for a repository-level standing rule.
+10. **Report empty buckets explicitly** — Every retrospective report must name all 4 buckets and say `no warranted changes` for empty ones instead of omitting them.
+11. **Mandatory analysis log** — You MUST complete Step 1.5 before proceeding to Step 2. Skipping the analysis log is a skill violation.
+12. **AGENTS.md analysis is mandatory** — Every retrospective MUST include Step 2.5 (AGENTS.md Health Analysis). Even if AGENTS.md looks fine, you must document that assessment. "AGENTS.md looks fine" is not acceptable without evidence of reading it. AGENTS.md analysis does NOT imply AGENTS.md changes are warranted.
+13. **SGAI_NOTES.md is incremental** — Write to `.sgai/SGAI_NOTES.md` early and often. Do NOT wait until the end. Preliminary findings must be written after Step 1a, updated after Step 1.5, updated after Step 3, and finalized after Step 6.
+
+## Red Flags - STOP
+
+- "I'll just put this in AGENTS.md"
+- "I don't need to mention empty buckets because there are no proposals there"
+- "Skills and agent prompts are basically the same bucket"
+- "A reusable code example can just live inside a skill diff"
+- "Process guidance belongs in AGENTS.md by default"
+
+## Rationalization Table
+
+| Excuse | Reality |
+|--------|---------|
+| "I found one AGENTS.md idea, so that should be the main recommendation" | AGENTS.md is only one bucket. Skills and agent prompts are co-equal categories and may be the better fit for the evidence. |
+| "Process and tooling fixes are repo-wide, so they belong in AGENTS.md" | Default those fixes to `sgai/` skills or agent prompts. Use `AGENTS.md` only for repository-level standing instructions. |
+| "A reusable code pattern should just be described in prose" | Reusable code belongs in the `Snippets` bucket when future agents should discover it through `sgai_find_snippets(language, query)`. |
+| "No proposals in a bucket means I can skip mentioning it" | Empty buckets must still be reported as `no warranted changes`. |
+| "Mandatory AGENTS.md analysis means mandatory AGENTS.md edits" | Analysis is mandatory; edits are evidence-driven and may be zero. |
 
 ### Common Rationalizations to REJECT
+- "Step 2.5 is about AGENTS.md, so I should probably propose an AGENTS.md edit" — NO. AGENTS.md analysis is mandatory, but AGENTS.md changes still require evidence. Empty AGENTS.md bucket is a valid outcome.
+- "This process fix is global, so AGENTS.md is simpler" — NO. If it is a factory-process or tooling fix, prefer a skill or agent prompt in `sgai/` unless it is truly a repository-level standing instruction.
+- "This reusable code pattern can stay inside a skill example" — NO. If future agents should search for and reuse the code directly, propose a snippet in `sgai/snippets/<language>/`.
+- "Only Skills had proposals, so I can omit the other buckets" — NO. Every retrospective report must still name Agent Prompts and `AGENTS.md`, and explicitly mark empty buckets as `no warranted changes`.
 - "I'll suggest modifying `.sgai/agent/foo.md` directly" — NO. Always target `sgai/agent/foo.md` (overlay).
 - "I'll suggest changes to `.sgai/skills/bar/SKILL.md`" — NO. Target `sgai/skills/bar/SKILL.md` instead.
 - "The `.sgai/` path is where the file currently lives" — Irrelevant. You READ from `.sgai/`, but SUGGEST and WRITE to `sgai/`.
@@ -507,7 +559,7 @@ When adding to AGENTS.md:
 
 Before marking done, verify:
 
-- [ ] Read session `state.json` FIRST (tried `.sgai/retrospectives/<session-id>/state.json`, fell back to `.sgai/state.json` if needed) and recorded visit counts + message counts
+- [ ] Read session `state.json` FIRST (tried `.sgai/retrospectives/<session-id>/state.json`, fell back to `.sgai/state.json` if needed, and cross-checked live state when the snapshot looked stale) and recorded visit counts + message counts
 - [ ] Wrote preliminary findings to `.sgai/SGAI_NOTES.md` immediately after Step 1a
 - [ ] Read ALL session JSON files (count: X out of Y total)
 - [ ] Completed Step 1.5 Mandatory Analysis Log with observations in all 5 categories
@@ -519,7 +571,9 @@ Before marking done, verify:
 - [ ] Identified patterns from at least 2 signal categories (efficiency, quality, knowledge, process)
 - [ ] Produced concrete suggestions with evidence, diffs, and rationale
 - [ ] Updated `.sgai/SGAI_NOTES.md` after Step 3 with suggestion list
-- [ ] Grouped suggestions into category buckets (Skills, Agent Prompts, AGENTS.md)
+- [ ] Grouped suggestions into category buckets (Skills, Agent Prompts, Snippets, AGENTS.md)
+- [ ] Reported all 4 buckets explicitly, including any `no warranted changes` buckets
+- [ ] Preferred `sgai/` skill or agent-prompt suggestions for process/tooling fixes, and snippet suggestions for reusable code patterns, unless evidence required `AGENTS.md`
 - [ ] Sent at least one `RETRO_QUESTION [MULTI-SELECT]:` message per non-empty category to the coordinator (or `RETRO_COMPLETE` if zero suggestions)
 - [ ] Applied only individually-approved changes; skipped all rejected changes
 - [ ] Applied changes to correct locations (sgai/ overlay or AGENTS.md)

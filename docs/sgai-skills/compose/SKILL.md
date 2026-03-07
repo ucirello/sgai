@@ -21,10 +21,10 @@ Response:
 {
   "workspace": "my-project",
   "state": {
-    "flow": "\"coordinator\" -> \"backend-go-developer\" -> \"go-readability-reviewer\"",
+    "flow": "\"coordinator\" -> \"go-developer\" -> \"go-reviewer\"",
     "models": {
       "coordinator": "anthropic/claude-opus-4-6",
-      "backend-go-developer": "anthropic/claude-sonnet-4-6"
+      "go-developer": "anthropic/claude-sonnet-4-6"
     },
     "goals": "- [ ] Build a REST API for user management\n- [ ] Write tests with 80%+ coverage",
     "completionGateScript": "make test"
@@ -81,9 +81,9 @@ Response:
       "icon": "🔧",
       "agents": [
         {"name": "coordinator", "model": "anthropic/claude-opus-4-6"},
-        {"name": "backend-go-developer", "model": "anthropic/claude-sonnet-4-6"}
+        {"name": "go-developer", "model": "anthropic/claude-sonnet-4-6"}
       ],
-      "flow": "\"backend-go-developer\" -> \"go-readability-reviewer\""
+      "flow": "\"go-developer\" -> \"go-reviewer\""
     }
   ]
 }
@@ -102,7 +102,7 @@ curl -s "$BASE_URL/api/v1/compose/preview?workspace=my-project"
 Response:
 ```json
 {
-  "content": "---\nflow: |\n  \"backend-go-developer\" -> \"go-readability-reviewer\"\nmodels:\n  coordinator: anthropic/claude-opus-4-6\n  backend-go-developer: anthropic/claude-sonnet-4-6\ncompletionGateScript: make test\n---\n\n- [ ] Build a REST API\n",
+  "content": "---\nflow: |\n  \"go-developer\" -> \"go-reviewer\"\nmodels:\n  coordinator: anthropic/claude-opus-4-6\n  go-developer: anthropic/claude-sonnet-4-6\ncompletionGateScript: make test\n---\n\n- [ ] Build a REST API\n",
   "flowError": "",
   "etag": "\"abc123def456\""
 }
@@ -123,7 +123,7 @@ curl -X POST "$BASE_URL/api/v1/compose/draft?workspace=my-project" \
   -H "Content-Type: application/json" \
   -d '{
     "state": {
-      "flow": "\"coordinator\" -> \"backend-go-developer\"",
+      "flow": "\"coordinator\" -> \"go-developer\"",
       "models": {"coordinator": "anthropic/claude-opus-4-6"},
       "goals": "- [ ] Build authentication\n",
       "completionGateScript": ""
@@ -181,11 +181,11 @@ curl -X POST "$BASE_URL/api/v1/compose/draft?workspace=my-project" \
   -H "Content-Type: application/json" \
   -d '{
     "state": {
-      "flow": "\"backend-go-developer\" -> \"go-readability-reviewer\"",
+      "flow": "\"go-developer\" -> \"go-reviewer\"",
       "models": {
         "coordinator": "anthropic/claude-opus-4-6",
-        "backend-go-developer": "anthropic/claude-sonnet-4-6",
-        "go-readability-reviewer": "anthropic/claude-opus-4-6"
+        "go-developer": "anthropic/claude-sonnet-4-6",
+        "go-reviewer": "anthropic/claude-opus-4-6"
       },
       "goals": "- [ ] Build REST API\n- [ ] Add authentication\n- [ ] Write tests\n",
       "completionGateScript": "make test"

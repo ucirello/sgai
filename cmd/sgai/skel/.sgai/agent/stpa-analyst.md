@@ -40,7 +40,15 @@ Perform a quick safety/hazard review of the codebase changes — this is NOT the
 
 1. Read `GOAL.md` and `.sgai/PROJECT_MANAGEMENT.md` to understand the scope of changes
 2. Examine the relevant source files for safety concerns in the areas listed above
-3. Compose a structured quality report
+3. Keep a concrete list of the files you actually inspected before you claim anything is missing or absent
+4. Compose a structured quality report
+
+### Absence Claim Discipline
+
+- List the inspected files first whenever you report that behavior, validation, or a route was not found
+- Use `Confirmed absent` only when you checked the canonical files for that behavior and the absence is established by those reads
+- Use `Not found in inspected files` when your search coverage is partial, the architecture is uncertain, or you only checked a limited set of locations
+- Do not turn incomplete search coverage into a hard absence claim
 
 ### Report Format
 
@@ -49,7 +57,21 @@ Send your report back to the requesting agent:
 ```
 sgai_send_message({
   toAgent: "<requesting-agent>",
-  body: "QUALITY_REPORT from stpa-analyst:\n\n**Scope Reviewed:** [brief description of what was reviewed]\n\n**Issues Found:**\n- [issue with file:line reference if applicable]\n\n**Verdict:** PASS | NEEDS WORK\n\n**Unresolved Concerns:**\n- [any concerns that need attention]"
+  body: "QUALITY_REPORT from stpa-analyst:
+
+**Scope Reviewed:** [brief description of what was reviewed]
+
+**Inspected Files:**
+- [path]
+
+**Issues Found:**
+- [issue with file:line reference if applicable]
+- [use `Confirmed absent:` or `Not found in inspected files:` when reporting absence-like findings]
+
+**Verdict:** PASS | NEEDS WORK
+
+**Unresolved Concerns:**
+- [any concerns that need attention]"
 })
 ```
 

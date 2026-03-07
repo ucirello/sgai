@@ -350,7 +350,7 @@ func TestSyncWizardState(t *testing.T) {
 			},
 			state: composerState{
 				Agents: []composerAgentConf{
-					{Name: "backend-go-developer", Selected: true, Model: "model1"},
+					{Name: "go-developer", Selected: true, Model: "model1"},
 					{Name: "stpa-analyst", Selected: true, Model: "model2"},
 				},
 			},
@@ -367,7 +367,7 @@ func TestSyncWizardState(t *testing.T) {
 			},
 			state: composerState{
 				Agents: []composerAgentConf{
-					{Name: "backend-go-developer", Selected: true, Model: "model1"},
+					{Name: "go-developer", Selected: true, Model: "model1"},
 				},
 			},
 			validate: func(t *testing.T, wizard wizardState) {
@@ -382,7 +382,7 @@ func TestSyncWizardState(t *testing.T) {
 			},
 			state: composerState{
 				Agents: []composerAgentConf{
-					{Name: "backend-go-developer", Selected: true, Model: "model1"},
+					{Name: "go-developer", Selected: true, Model: "model1"},
 				},
 			},
 			validate: func(t *testing.T, wizard wizardState) {
@@ -396,7 +396,7 @@ func TestSyncWizardState(t *testing.T) {
 			},
 			state: composerState{
 				Agents: []composerAgentConf{
-					{Name: "backend-go-developer", Selected: true, Model: "model1"},
+					{Name: "go-developer", Selected: true, Model: "model1"},
 				},
 			},
 			validate: func(t *testing.T, wizard wizardState) {
@@ -424,7 +424,7 @@ func TestTechStackFromAgents(t *testing.T) {
 		{
 			name: "extractGoStack",
 			agents: []composerAgentConf{
-				{Name: "backend-go-developer", Selected: true, Model: "model1"},
+				{Name: "go-developer", Selected: true, Model: "model1"},
 			},
 			expected: []string{"go"},
 		},
@@ -473,7 +473,7 @@ func TestTechStackFromAgents(t *testing.T) {
 		{
 			name: "extractMultipleStacks",
 			agents: []composerAgentConf{
-				{Name: "backend-go-developer", Selected: true, Model: "model1"},
+				{Name: "go-developer", Selected: true, Model: "model1"},
 				{Name: "react-developer", Selected: true, Model: "model2"},
 			},
 			expected: []string{"go", "react"},
@@ -481,7 +481,7 @@ func TestTechStackFromAgents(t *testing.T) {
 		{
 			name: "extractWithUnselectedAgents",
 			agents: []composerAgentConf{
-				{Name: "backend-go-developer", Selected: true, Model: "model1"},
+				{Name: "go-developer", Selected: true, Model: "model1"},
 				{Name: "react-developer", Selected: false, Model: "model2"},
 			},
 			expected: []string{"go"},

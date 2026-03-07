@@ -44,9 +44,9 @@ DOT-format DAG defining which agents run and their dependencies.
 **Example:**
 ```yaml
 flow: |
-  "backend-go-developer" -> "go-readability-reviewer"
-  "backend-go-developer" -> "stpa-analyst"
-  "go-readability-reviewer" -> "stpa-analyst"
+  "go-developer" -> "go-reviewer"
+  "go-developer" -> "stpa-analyst"
+  "go-reviewer" -> "stpa-analyst"
   "general-purpose" -> "stpa-analyst"
   "htmx-picocss-frontend-developer" -> "htmx-picocss-frontend-reviewer"
   "htmx-picocss-frontend-reviewer" -> "stpa-analyst"
@@ -74,8 +74,8 @@ Per-agent model assignments. Supports variant syntax in parentheses.
 ```yaml
 models:
   "coordinator": "anthropic/claude-opus-4-6 (max)"
-  "backend-go-developer": "anthropic/claude-opus-4-6"
-  "go-readability-reviewer": "anthropic/claude-opus-4-6"
+  "go-developer": "anthropic/claude-opus-4-6"
+  "go-reviewer": "anthropic/claude-opus-4-6"
   "general-purpose": "anthropic/claude-opus-4-6"
   "htmx-picocss-frontend-developer": "anthropic/claude-sonnet-4-5"
 ```
@@ -162,7 +162,7 @@ not implementation. Focus on outcomes.
 
 | Agent | Description | Paired Reviewer |
 |-------|-------------|-----------------|
-| `backend-go-developer` | Expert Go backend developer for APIs, CLI tools, and services with idiomatic Go patterns. Works with go-readability-reviewer for code quality. | `go-readability-reviewer` |
+| `go-developer` | Expert Go backend developer for APIs, CLI tools, and services with idiomatic Go patterns. Works with go-reviewer for code quality. | `go-reviewer` |
 | `htmx-picocss-frontend-developer` | Frontend developer using HTMX and PicoCSS for lightweight web interfaces. No custom JavaScript. | `htmx-picocss-frontend-reviewer` |
 | `shell-script-coder` | Production-quality POSIX/bash shell scripts with proper error handling. | `shell-script-reviewer` |
 | `react-developer` | Frontend developer specializing in React for building modern, component-based web applications. TypeScript, hooks, modern patterns. | `react-reviewer` |
@@ -173,7 +173,7 @@ not implementation. Focus on outcomes.
 
 | Agent | Description |
 |-------|-------------|
-| `go-readability-reviewer` | Reviews Go code for readability, idioms, and best practices. Read-only - sends fixes via messaging. |
+| `go-reviewer` | Reviews Go code for readability, idioms, and best practices. Read-only - sends fixes via messaging. |
 | `htmx-picocss-frontend-reviewer` | UI polish, accessibility, visual consistency for HTMX/PicoCSS interfaces. Read-only. |
 | `react-reviewer` | React code review for best practices, performance, accessibility, hooks usage, and anti-patterns. Read-only. |
 | `shell-script-reviewer` | Shell script correctness, portability, security review. Read-only. |
@@ -218,7 +218,7 @@ not implementation. Focus on outcomes.
 
 | Development Agent | Required Reviewer |
 |-------------------|-------------------|
-| `backend-go-developer` | `go-readability-reviewer` |
+| `go-developer` | `go-reviewer` |
 | `htmx-picocss-frontend-developer` | `htmx-picocss-frontend-reviewer` |
 | `react-developer` | `react-reviewer` |
 | `shell-script-coder` | `shell-script-reviewer` |
@@ -235,7 +235,7 @@ When selecting a development agent:
 
 ```yaml
 flow: |
-  "backend-go-developer" -> "go-readability-reviewer"
+  "go-developer" -> "go-reviewer"
 ```
 
 ### Exception: `general-purpose`
@@ -292,11 +292,11 @@ The `general-purpose` agent does not have a dedicated reviewer since it handles 
 ```markdown
 ---
 flow: |
-  "backend-go-developer" -> "go-readability-reviewer"
+  "go-developer" -> "go-reviewer"
 models:
   "coordinator": "anthropic/claude-opus-4-6 (max)"
-  "backend-go-developer": "anthropic/claude-opus-4-6"
-  "go-readability-reviewer": "anthropic/claude-opus-4-6"
+  "go-developer": "anthropic/claude-opus-4-6"
+  "go-reviewer": "anthropic/claude-opus-4-6"
 interactive: yes
 completionGateScript: go test ./...
 ---
@@ -328,15 +328,15 @@ Create a command-line tool that validates JSON files against a schema.
 ---
 completionGateScript: make test
 flow: |
-  "backend-go-developer" -> "go-readability-reviewer"
-  "go-readability-reviewer" -> "stpa-analyst"
+  "go-developer" -> "go-reviewer"
+  "go-reviewer" -> "stpa-analyst"
   "htmx-picocss-frontend-developer" -> "htmx-picocss-frontend-reviewer"
   "htmx-picocss-frontend-reviewer" -> "stpa-analyst"
   "general-purpose" -> "stpa-analyst"
 models:
   "coordinator": "anthropic/claude-opus-4-6 (max)"
-  "backend-go-developer": "anthropic/claude-opus-4-6"
-  "go-readability-reviewer": "anthropic/claude-opus-4-6"
+  "go-developer": "anthropic/claude-opus-4-6"
+  "go-reviewer": "anthropic/claude-opus-4-6"
   "htmx-picocss-frontend-developer": "anthropic/claude-sonnet-4-5"
   "htmx-picocss-frontend-reviewer": "anthropic/claude-opus-4-6"
   "general-purpose": "anthropic/claude-opus-4-6"
@@ -450,7 +450,7 @@ Before finalizing a GOAL.md, verify:
 - [ ] **Flow DAG is valid** - No cycles, all edges point forward
 - [ ] **Coordinator not in flow** - It's always present automatically
 - [ ] **Reviewer pairing enforced** - Every developer agent has its reviewer
-- [ ] **Reviewer edges exist** - Developer flows into reviewer (e.g., `"backend-go-developer" -> "go-readability-reviewer"`)
+- [ ] **Reviewer edges exist** - Developer flows into reviewer (e.g., `"go-developer" -> "go-reviewer"`)
 - [ ] **Models assigned correctly** - All agents in flow have model assignments (or use defaults)
 - [ ] **Interactive mode set** - Explicitly set to `yes`, `no`, or `auto`
 - [ ] **Specification complete** - Has Goal description, Requirements, and Tasks
@@ -465,14 +465,14 @@ Before finalizing a GOAL.md, verify:
 ### Go Backend Only
 ```yaml
 flow: |
-  "backend-go-developer" -> "go-readability-reviewer"
+  "go-developer" -> "go-reviewer"
 ```
 
 ### Go Backend with Safety Analysis
 ```yaml
 flow: |
-  "backend-go-developer" -> "go-readability-reviewer"
-  "go-readability-reviewer" -> "stpa-analyst"
+  "go-developer" -> "go-reviewer"
+  "go-reviewer" -> "stpa-analyst"
 ```
 
 ### HTMX Frontend Only
@@ -484,8 +484,8 @@ flow: |
 ### Full-Stack Go + HTMX
 ```yaml
 flow: |
-  "backend-go-developer" -> "go-readability-reviewer"
-  "go-readability-reviewer" -> "stpa-analyst"
+  "go-developer" -> "go-reviewer"
+  "go-reviewer" -> "stpa-analyst"
   "htmx-picocss-frontend-developer" -> "htmx-picocss-frontend-reviewer"
   "htmx-picocss-frontend-reviewer" -> "stpa-analyst"
 ```
@@ -499,8 +499,8 @@ flow: |
 ### Full-Stack Go + React
 ```yaml
 flow: |
-  "backend-go-developer" -> "go-readability-reviewer"
-  "go-readability-reviewer" -> "stpa-analyst"
+  "go-developer" -> "go-reviewer"
+  "go-reviewer" -> "stpa-analyst"
   "react-developer" -> "react-reviewer"
   "react-reviewer" -> "stpa-analyst"
 ```

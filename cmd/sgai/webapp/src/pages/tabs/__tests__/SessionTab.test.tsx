@@ -13,6 +13,16 @@ const mockSteer = mock(() => Promise.resolve({ success: true, message: "ok" }));
 const mockOpenEditorPM = mock(() => Promise.resolve({ opened: true }));
 const mockTriggerFactoryRefresh = mock(() => {});
 
+const createDollarBreakdown = (overrides = {}) => ({
+  input: 0,
+  output: 0,
+  reasoning: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  total: 0,
+  ...overrides,
+});
+
 const createMockWorkspace = (overrides = {}) => ({
   name: "test-workspace",
   dir: "/path/to/test-workspace",
@@ -42,7 +52,12 @@ const createMockWorkspace = (overrides = {}) => ({
   latestProgress: "",
   humanMessage: "",
   agentSequence: [],
-  cost: { totalCost: 0, totalTokens: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 }, byAgent: [] },
+  cost: {
+    totalCost: 0,
+    dollars: createDollarBreakdown(),
+    totalTokens: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+    byAgent: [],
+  },
   modelStatuses: [],
   agentModels: [],
   events: [],
@@ -261,11 +276,19 @@ describe("SessionTab", () => {
   });
 
   describe("cost section", () => {
-    it("displays cost tracking when cost data is present", async () => {
+    it("displays a full session token and dollar breakdown", async () => {
       mockWorkspaces = [createMockWorkspace({
         cost: {
-          totalCost: 1.2345,
-          totalTokens: { input: 1000, output: 500, reasoning: 0, cacheRead: 200, cacheWrite: 0 },
+          totalCost: 2,
+          dollars: createDollarBreakdown({
+            input: 1,
+            output: 0.5,
+            reasoning: 0.1,
+            cacheRead: 0.2,
+            cacheWrite: 0.2,
+            total: 2,
+          }),
+          totalTokens: { input: 1000, output: 500, reasoning: 100, cacheRead: 200, cacheWrite: 200 },
           byAgent: [],
         },
       })];
@@ -274,18 +297,83 @@ describe("SessionTab", () => {
 
       await waitFor(() => {
         expect(screen.getByText("Cost Tracking")).toBeTruthy();
-        expect(screen.getByText("$1.2345")).toBeTruthy();
+        expect(screen.getByText("Session Breakdown")).toBeTruthy();
       });
+
+      expect(screen.getByText("Input")).toBeTruthy();
+      expect(screen.getByText("Output")).toBeTruthy();
+      expect(screen.getByText("Reasoning")).toBeTruthy();
+      expect(screen.getByText("Cache Read")).toBeTruthy();
+      expect(screen.getByText("Cache Write")).toBeTruthy();
+      expect(screen.getByText("Total")).toBeTruthy();
+      expect(screen.getByText("1,000 tok")).toBeTruthy();
+      expect(screen.getByText("500 tok")).toBeTruthy();
+      expect(screen.getByText("100 tok")).toBeTruthy();
+      expect(screen.getAllByText("200 tok").length).toBeGreaterThanOrEqual(2);
+      expect(screen.getByText("2,000 tok")).toBeTruthy();
+      expect(screen.getByText("$1.0000")).toBeTruthy();
+      expect(screen.getByText("$0.5000")).toBeTruthy();
+      expect(screen.getByText("$0.1000")).toBeTruthy();
+      expect(screen.getAllByText("$0.2000").length).toBeGreaterThanOrEqual(2);
+      expect(screen.getByText("$2.0000")).toBeTruthy();
     });
 
-    it("shows per-agent costs when available", async () => {
+    it("shows per-agent token and dollar breakdowns when available", async () => {
+      const user = userEvent.setup();
       mockWorkspaces = [createMockWorkspace({
         cost: {
           totalCost: 1.5,
-          totalTokens: { input: 1000, output: 500 },
+          dollars: createDollarBreakdown({
+            input: 0.9,
+            output: 0.45,
+            reasoning: 0.09,
+            cacheRead: 0.045,
+            cacheWrite: 0.015,
+            total: 1.5,
+          }),
+          totalTokens: { input: 1000, output: 500, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
           byAgent: [
-            { agent: "coordinator", cost: 0.75, steps: [] },
-            { agent: "developer", cost: 0.75, steps: [] },
+            {
+              agent: "coordinator",
+              cost: 0.75,
+              dollars: createDollarBreakdown({
+                input: 0.3,
+                output: 0.15,
+                reasoning: 0.03,
+                cacheRead: 0.015,
+                cacheWrite: 0.005,
+                total: 0.75,
+              }),
+              tokens: { input: 300, output: 150, reasoning: 30, cacheRead: 15, cacheWrite: 5 },
+              steps: [
+                {
+                  stepId: "step-1",
+                  agent: "coordinator",
+                  cost: 0.125,
+                  dollars: createDollarBreakdown({
+                    input: 0.05,
+                    output: 0.025,
+                    reasoning: 0.01,
+                    cacheRead: 0.005,
+                    cacheWrite: 0.005,
+                    total: 0.125,
+                  }),
+                  tokens: { input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 5 },
+                  timestamp: "2026-03-07T00:00:00Z",
+                },
+              ],
+            },
+            {
+              agent: "developer",
+              cost: 0.75,
+              dollars: createDollarBreakdown({
+                input: 0.6,
+                output: 0.3,
+                total: 0.75,
+              }),
+              tokens: { input: 700, output: 350, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+              steps: [],
+            },
           ],
         },
       })];
@@ -295,6 +383,43 @@ describe("SessionTab", () => {
       await waitFor(() => {
         expect(screen.getByText("By Agent (2 agents)")).toBeTruthy();
       });
+
+      await user.click(screen.getByText("By Agent (2 agents)"));
+      await user.click(screen.getByText("coordinator"));
+
+      expect(screen.getByText("500 tok | 1 steps")).toBeTruthy();
+      expect(screen.getByText("step-1")).toBeTruthy();
+      expect(screen.getByText("100 in | 50 out | 10 reason | 5 cache-read | 5 cache-write | 170 total")).toBeTruthy();
+      expect(screen.getAllByText("$0.3000").length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText("$0.1500").length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText("$0.0300").length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText("$0.0150").length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText("$0.0050").length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText("$0.7500").length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByText("$0.050000")).toBeTruthy();
+      expect(screen.getByText("$0.025000")).toBeTruthy();
+      expect(screen.getByText("$0.010000")).toBeTruthy();
+      expect(screen.getAllByText("$0.005000").length).toBeGreaterThanOrEqual(2);
+      expect(screen.getAllByText("$0.125000").length).toBeGreaterThanOrEqual(2);
+    });
+
+    it("tolerates missing per-agent arrays from persisted state", async () => {
+      mockWorkspaces = [createMockWorkspace({
+        cost: {
+          totalCost: 1.5,
+          dollars: createDollarBreakdown({ total: 1.5 }),
+          totalTokens: { input: 1000, output: 500, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+          byAgent: null,
+        } as unknown,
+      })];
+
+      renderSessionTab();
+
+      await waitFor(() => {
+        expect(screen.getByText("Cost Tracking")).toBeTruthy();
+      });
+
+      expect(screen.queryByText(/By Agent/)).toBeNull();
     });
   });
 

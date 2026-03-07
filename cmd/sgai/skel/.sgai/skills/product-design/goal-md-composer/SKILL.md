@@ -51,7 +51,7 @@ When selecting a development agent, you MUST automatically include its paired re
 
 | Development Agent | Required Reviewer |
 |-------------------|-------------------|
-| `backend-go-developer` | `go-readability-reviewer` |
+| `go-developer` | `go-reviewer` |
 | `htmx-picocss-frontend-developer` | `htmx-picocss-frontend-reviewer` |
 | `react-developer` | `react-reviewer` |
 | `shell-script-coder` | `shell-script-reviewer` |
@@ -66,8 +66,8 @@ When selecting a development agent, you MUST automatically include its paired re
 **Example recommendation for Go Backend API:**
 ```
 Recommended agents for your Go Backend API:
-- backend-go-developer (Go development)
-- go-readability-reviewer (automatically paired)
+- go-developer (Go development)
+- go-reviewer (automatically paired)
 - general-purpose (cross-domain tasks)
 - stpa-analyst (safety analysis)
 
@@ -86,12 +86,12 @@ Generate the DOT syntax DAG defining agent execution order and dependencies.
 
 1. Development agents always flow into their paired reviewers:
    ```
-   "backend-go-developer" -> "go-readability-reviewer"
+   "go-developer" -> "go-reviewer"
    ```
 
 2. Reviewers typically flow into terminal analysis agents:
    ```
-   "go-readability-reviewer" -> "stpa-analyst"
+   "go-reviewer" -> "stpa-analyst"
    ```
 
 3. Standalone agents (no dependencies) are listed without arrows:
@@ -102,8 +102,8 @@ Generate the DOT syntax DAG defining agent execution order and dependencies.
 **Present the generated flow:**
 ```yaml
 flow: |
-  "backend-go-developer" -> "go-readability-reviewer"
-  "go-readability-reviewer" -> "stpa-analyst"
+  "go-developer" -> "go-reviewer"
+  "go-reviewer" -> "stpa-analyst"
   "general-purpose" -> "stpa-analyst"
 ```
 
@@ -136,8 +136,8 @@ Configure per-agent model assignments.
 ```yaml
 models:
   "coordinator": "anthropic/claude-opus-4-6 (max)"
-  "backend-go-developer": "anthropic/claude-opus-4-6"
-  "go-readability-reviewer": "anthropic/claude-opus-4-6"
+  "go-developer": "anthropic/claude-opus-4-6"
+  "go-reviewer": "anthropic/claude-opus-4-6"
   "general-purpose": "anthropic/claude-opus-4-6"
 ```
 
@@ -281,13 +281,13 @@ interactive: yes
 ---
 completionGateScript: make test
 flow: |
-  "backend-go-developer" -> "go-readability-reviewer"
-  "go-readability-reviewer" -> "stpa-analyst"
+  "go-developer" -> "go-reviewer"
+  "go-reviewer" -> "stpa-analyst"
   "general-purpose" -> "stpa-analyst"
 models:
   "coordinator": "anthropic/claude-opus-4-6 (max)"
-  "backend-go-developer": "anthropic/claude-opus-4-6"
-  "go-readability-reviewer": "anthropic/claude-opus-4-6"
+  "go-developer": "anthropic/claude-opus-4-6"
+  "go-reviewer": "anthropic/claude-opus-4-6"
   "general-purpose": "anthropic/claude-opus-4-6"
   "stpa-analyst": "anthropic/claude-opus-4-6"
 interactive: yes

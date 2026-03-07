@@ -16,11 +16,10 @@ import (
 )
 
 var (
-	errForkOfFork           = errors.New("forks cannot create new forks")
-	errGoalContentEmpty     = errors.New("GOAL.md must have content describing the goal")
-	errDirectoryExists      = errors.New("a directory with this name already exists")
-	errWorkspaceNameInvalid = errors.New("workspace name is invalid")
-	errMessageNotFound      = errors.New("message not found")
+	errForkOfFork       = errors.New("forks cannot create new forks")
+	errGoalContentEmpty = errors.New("GOAL.md must have content describing the goal")
+	errDirectoryExists  = errors.New("a directory with this name already exists")
+	errMessageNotFound  = errors.New("message not found")
 )
 
 func generateRandomForkName() string {
@@ -44,43 +43,6 @@ func generateRandomForkName() string {
 		suffix[i] = suffixChars[rand.IntN(len(suffixChars))]
 	}
 	return adjective + "-" + color + "-" + string(suffix)
-}
-
-type createWorkspaceResult struct {
-	Name string
-	Dir  string
-}
-
-func (s *Server) createWorkspaceService(name string) (createWorkspaceResult, error) {
-	if errMsg := validateWorkspaceName(name); errMsg != "" {
-		return createWorkspaceResult{}, fmt.Errorf("%w: %s", errWorkspaceNameInvalid, errMsg)
-	}
-
-	workspacePath := filepath.Join(s.rootDir, name)
-	if _, errStat := os.Stat(workspacePath); errStat == nil {
-		return createWorkspaceResult{}, errDirectoryExists
-	} else if !os.IsNotExist(errStat) {
-		return createWorkspaceResult{}, fmt.Errorf("failed to check workspace path: %w", errStat)
-	}
-
-	if errMkdir := os.MkdirAll(workspacePath, 0755); errMkdir != nil {
-		return createWorkspaceResult{}, fmt.Errorf("failed to create workspace directory: %w", errMkdir)
-	}
-
-	if errInit := initializeWorkspace(workspacePath); errInit != nil {
-		return createWorkspaceResult{}, fmt.Errorf("failed to initialize workspace: %w", errInit)
-	}
-
-	s.invalidateWorkspaceScanCache()
-
-	s.mu.Lock()
-	s.pinnedDirs[resolveSymlinks(workspacePath)] = true
-	s.mu.Unlock()
-	if errSave := s.savePinnedProjects(); errSave != nil {
-		log.Println("failed to persist pins:", errSave)
-	}
-
-	return createWorkspaceResult{Name: name, Dir: workspacePath}, nil
 }
 
 type forkWorkspaceResult struct {
@@ -129,21 +91,28 @@ func (s *Server) forkWorkspaceService(workspacePath, goalContent string) (forkWo
 	s.invalidateWorkspaceScanCache()
 	s.classifyCache.delete(workspacePath)
 
-	s.mu.Lock()
-	s.pinnedDirs[resolveSymlinks(forkPath)] = true
-	s.mu.Unlock()
-	if errSave := s.savePinnedProjects(); errSave != nil {
-		log.Println("failed to persist pins:", errSave)
+	forkCanonical := resolveSymlinks(forkPath)
+	if s.isExternalWorkspace(workspacePath) {
+		if errSave := s.saveExternalDirs(); errSave != nil {
+			return forkWorkspaceResult{}, failForkWorkspaceSetup(workspacePath, forkPath, "failed to save external dirs", errSave)
+		}
+		s.mu.Lock()
+		s.externalDirs[forkCanonical] = true
+		s.mu.Unlock()
 	}
 
-	if s.isExternalWorkspace(workspacePath) {
-		s.mu.Lock()
-		s.externalDirs[resolveSymlinks(forkPath)] = true
-		s.mu.Unlock()
-		if errSave := s.saveExternalDirs(); errSave != nil {
-			log.Println("failed to save external dirs:", errSave)
+	if errSave := s.savePinnedProjects(); errSave != nil {
+		if s.isExternalWorkspace(workspacePath) {
+			s.mu.Lock()
+			delete(s.externalDirs, forkCanonical)
+			s.mu.Unlock()
 		}
+		return forkWorkspaceResult{}, failForkWorkspaceSetup(workspacePath, forkPath, "failed to persist pins", errSave)
 	}
+
+	s.mu.Lock()
+	s.pinnedDirs[forkCanonical] = true
+	s.mu.Unlock()
 
 	s.notifyStateChange()
 

@@ -23,27 +23,43 @@ export function AttachExternal() {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [activeIndex, setActiveIndex] = useState<number>(-1);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestSuggestionsRequestRef = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const suggestionsRef = useRef<HTMLDivElement>(null);
 
   const fetchSuggestions = useCallback(async (currentPath: string) => {
-    if (!currentPath.trim()) {
+    const trimmedPath = currentPath.trim();
+    latestSuggestionsRequestRef.current += 1;
+    const requestId = latestSuggestionsRequestRef.current;
+
+    if (!trimmedPath) {
       setSuggestions([]);
       setShowSuggestions(false);
+      setActiveIndex(-1);
+      setIsFetchingSuggestions(false);
       return;
     }
+
     setIsFetchingSuggestions(true);
     try {
-      const result = await api.browse.directories(currentPath);
+      const result = await api.browse.directories(trimmedPath);
+      if (requestId !== latestSuggestionsRequestRef.current) {
+        return;
+      }
       setSuggestions(result.entries ?? []);
       setShowSuggestions((result.entries ?? []).length > 0);
       setActiveIndex(-1);
     } catch {
+      if (requestId !== latestSuggestionsRequestRef.current) {
+        return;
+      }
       setSuggestions([]);
       setShowSuggestions(false);
       setActiveIndex(-1);
     } finally {
-      setIsFetchingSuggestions(false);
+      if (requestId === latestSuggestionsRequestRef.current) {
+        setIsFetchingSuggestions(false);
+      }
     }
   }, []);
 
@@ -146,10 +162,16 @@ export function AttachExternal() {
         Back to Dashboard
       </Link>
 
-      <h1 className="text-2xl font-semibold mb-2">Attach External Workspace</h1>
-      <p className="text-sm text-muted-foreground mb-6">
-        Enter the absolute path to an existing directory to attach it as a workspace.
+      <h1 className="text-2xl font-semibold mb-2">Attach External Repository</h1>
+      <p className="text-sm text-muted-foreground mb-4">
+        SGAI now accepts repositories only through this external attachment flow.
       </p>
+
+      <Alert className="mb-6">
+        <AlertDescription>
+          Paste an absolute path to an existing checkout on disk. Local repository discovery and in-app workspace creation are no longer part of this flow.
+        </AlertDescription>
+      </Alert>
 
       {error ? (
         <Alert className="mb-4 border-destructive/50 text-destructive">
@@ -159,7 +181,7 @@ export function AttachExternal() {
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="space-y-2">
-          <Label htmlFor="workspace-path">Directory Path</Label>
+          <Label htmlFor="workspace-path">Repository Path</Label>
           <div className="relative">
             <Input
               id="workspace-path"
@@ -169,7 +191,7 @@ export function AttachExternal() {
               onFocus={handleFocus}
               onBlur={handleBlur}
               onKeyDown={handleKeyDown}
-              placeholder="/home/user/my-project"
+               placeholder="/Users/you/src/my-repository"
               autoFocus
               disabled={isSubmitting}
               autoComplete="off"
@@ -216,7 +238,7 @@ export function AttachExternal() {
             )}
           </div>
           <p className="text-xs text-muted-foreground">
-            Enter an absolute path or start typing to see suggestions.
+            Enter an absolute path or start typing to browse external repositories already on disk.
           </p>
         </div>
 
@@ -233,9 +255,9 @@ export function AttachExternal() {
           ) : (
             <>
               <FolderInput className="mr-2 h-4 w-4" />
-              Attach Workspace
-            </>
-          )}
+               Attach External Repository
+             </>
+           )}
         </Button>
       </form>
     </div>

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -135,12 +136,12 @@ func TestPrepareAgent(t *testing.T) {
 		},
 	}
 
-	r.prepareAgent("coordinator")
+	require.NoError(t, r.prepareAgent("coordinator"))
 	assert.Equal(t, "coordinator", r.previousAgent)
 	assert.Equal(t, "coordinator", r.wfState.CurrentAgent)
 	assert.Equal(t, 1, r.wfState.VisitCounts["coordinator"])
 
-	r.prepareAgent("builder")
+	require.NoError(t, r.prepareAgent("builder"))
 	assert.Equal(t, "builder", r.previousAgent)
 	assert.Equal(t, "builder", r.wfState.CurrentAgent)
 	assert.Equal(t, 1, r.wfState.VisitCounts["builder"])
@@ -206,6 +207,64 @@ func TestHandleTrigger(t *testing.T) {
 		require.NoError(t, errRead)
 		assert.Contains(t, string(goalContent), "Add logging")
 	})
+}
+
+func TestPrepareAgentReappliesOverlayWithoutSkeletonUnpack(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, ".sgai", "state.json")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai", "agent"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sgai", "skills", "handoff-overlay"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".sgai", "agent", "coordinator.md"), []byte("runtime coordinator"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sgai", "skills", "handoff-overlay", "SKILL.md"), []byte("handoff overlay"), 0o644))
+
+	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{VisitCounts: map[string]int{}})
+	require.NoError(t, errCoord)
+
+	r := &workflowRunner{
+		dir:           dir,
+		coord:         coord,
+		paddedsgai:    "test",
+		previousAgent: "coordinator",
+		wfState: state.Workflow{
+			VisitCounts: map[string]int{},
+		},
+	}
+
+	err := r.prepareAgent("builder")
+	require.NoError(t, err)
+
+	coordinatorContent, errRead := os.ReadFile(filepath.Join(dir, ".sgai", "agent", "coordinator.md"))
+	require.NoError(t, errRead)
+	assert.Equal(t, "runtime coordinator", string(coordinatorContent))
+
+	overlayContent, errRead := os.ReadFile(filepath.Join(dir, ".sgai", "skills", "handoff-overlay", "SKILL.md"))
+	require.NoError(t, errRead)
+	assert.Equal(t, "handoff overlay", string(overlayContent))
+}
+
+func TestRunAgentInterruptsWhenOverlayRefreshFails(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, ".sgai", "state.json")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".sgai", "skills"), []byte("not a directory"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sgai", "skills", "broken-overlay"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sgai", "skills", "broken-overlay", "SKILL.md"), []byte("overlay"), 0o644))
+
+	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{VisitCounts: map[string]int{}})
+	require.NoError(t, errCoord)
+
+	r := &workflowRunner{
+		dir:           dir,
+		coord:         coord,
+		paddedsgai:    "test",
+		previousAgent: "coordinator",
+		wfState: state.Workflow{
+			VisitCounts: map[string]int{},
+		},
+	}
+
+	result := r.runAgent(context.Background(), "builder")
+	assert.Equal(t, resultInterrupt, result)
 }
 
 func TestResolveRetrospectiveDirResuming(t *testing.T) {

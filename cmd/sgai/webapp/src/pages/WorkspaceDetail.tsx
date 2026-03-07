@@ -18,6 +18,7 @@ import {
 import { NotYetAvailable } from "@/components/NotYetAvailable";
 import { InlineForkEditor } from "@/pages/InlineForkEditor";
 import { api } from "@/lib/api";
+import { canCreateForkFromWorkspace } from "@/lib/workspace-forks";
 import { useFactoryState, triggerFactoryRefresh } from "@/lib/factory-state";
 import { useAdhocRun } from "@/hooks/useAdhocRun";
 import { ChevronRight, Square } from "lucide-react";
@@ -75,6 +76,7 @@ function WorkspaceDetailSkeleton() {
 
 const TABS = [
   { key: "progress", label: "Progress" },
+  { key: "fork", label: "Fork" },
   { key: "log", label: "Log" },
   { key: "changes", label: "Diffs" },
   { key: "commits", label: "Commits" },
@@ -92,10 +94,13 @@ interface TabNavProps {
   activeTab: string;
   isRoot: boolean;
   hasForks: boolean;
+  showForkTab: boolean;
 }
 
-function TabNav({ workspaceName, activeTab, isRoot, hasForks }: TabNavProps) {
-  const tabs = isRoot && hasForks ? ROOT_TABS : TABS;
+function TabNav({ workspaceName, activeTab, isRoot, hasForks, showForkTab }: TabNavProps) {
+  const tabs = isRoot && hasForks
+    ? ROOT_TABS
+    : TABS.filter((tab) => showForkTab || tab.key !== "fork");
   const encodedName = encodeURIComponent(workspaceName);
 
   return (
@@ -255,6 +260,7 @@ export function WorkspaceDetail(): JSX.Element | null {
   const showEditGoalAction = detail.hasSgai || Boolean(detail.goalContent?.trim());
   const showOpenEditorAction = true;
   const isActionDisabled = effectiveRunning || isStartStopPending || isSelfDrivePending;
+  const showStandaloneForkTab = canCreateForkFromWorkspace(detail) && !detail.isRoot;
 
   const handleStart = () => {
     if (!workspaceName) return;
@@ -617,16 +623,12 @@ export function WorkspaceDetail(): JSX.Element | null {
             activeTab={activeTab}
             isRoot={detail.isRoot}
             hasForks={hasForks}
+            showForkTab={showStandaloneForkTab}
           />
 
         </div>
 
         <div className="pt-4">
-          {detail.isRoot && !detail.isFork && (
-            <div className="mb-6">
-              <InlineForkEditor workspaceName={detail.name} />
-            </div>
-          )}
           {isForkedRoot && (actionRunError || isActionRunning || actionOutput) ? (
             <div className="space-y-3 mb-4">
               {actionRunError ? (
@@ -673,6 +675,7 @@ export function WorkspaceDetail(): JSX.Element | null {
               hasProjectMgmt={detail.hasProjectMgmt}
               actions={detail.actions}
               onActionClick={isForkedRoot ? handleActionClick : undefined}
+              showForkTab={showStandaloneForkTab}
             />
           </Suspense>
         </div>
@@ -698,6 +701,7 @@ function TabContent({
   hasProjectMgmt,
   actions,
   onActionClick,
+  showForkTab,
 }: {
   activeTab: string;
   workspaceName: string;
@@ -707,10 +711,13 @@ function TabContent({
   hasProjectMgmt?: boolean;
   actions?: ApiActionEntry[];
   onActionClick?: (action: ApiActionEntry, forkName: string) => void;
+  showForkTab: boolean;
 }) {
   switch (activeTab) {
     case "progress":
       return <EventsTab workspaceName={workspaceName} goalContent={goalContent} actions={actions} />;
+    case "fork":
+      return showForkTab ? <InlineForkEditor key={workspaceName} workspaceName={workspaceName} /> : <NotYetAvailable pageName="Fork Tab" />;
     case "log":
       return <LogTab workspaceName={workspaceName} />;
     case "changes":

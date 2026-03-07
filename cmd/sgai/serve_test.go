@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -1236,6 +1237,165 @@ func TestAddGitExcludeAlreadyPresent(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func seedGitCommonDir(t *testing.T, gitCommonDir string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Join(gitCommonDir, "objects"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(gitCommonDir, "refs"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(gitCommonDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644))
+}
+
+func seedGitWorktreeMetadata(t *testing.T, workspaceDir, gitDir, commonDir string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(workspaceDir, 0o755))
+	require.NoError(t, os.MkdirAll(gitDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, ".git"), []byte("gitdir: "+gitDir+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(gitDir, "gitdir"), []byte(filepath.Join(workspaceDir, ".git")+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(gitDir, "commondir"), []byte(commonDir+"\n"), 0o644))
+}
+
+func seedWorkspaceInitializationState(t *testing.T, workspaceDir string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceDir, ".jj"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, ".jj", "repo"), []byte("/tmp/root/.jj/repo"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceDir, ".sgai"), 0o755))
+}
+
+func TestAddGitExcludeWithGitFile(t *testing.T) {
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, "git-layout", "actual")
+	require.NoError(t, os.MkdirAll(gitDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: git-layout/actual\n"), 0o644))
+
+	err := addGitExclude(dir)
+	require.NoError(t, err)
+
+	content, errRead := os.ReadFile(filepath.Join(gitDir, "info", "exclude"))
+	require.NoError(t, errRead)
+	assert.Contains(t, string(content), "/.sgai")
+}
+
+func TestAddGitExcludeWithGitWorktreeFile(t *testing.T) {
+	base := t.TempDir()
+	workspaceDir := filepath.Join(base, "feature")
+	gitCommonDir := filepath.Join(base, "main", ".git")
+	gitDir := filepath.Join(base, "main", ".git", "worktrees", "feature")
+	seedGitCommonDir(t, gitCommonDir)
+	seedGitWorktreeMetadata(t, workspaceDir, gitDir, "../..")
+
+	err := addGitExclude(workspaceDir)
+	require.NoError(t, err)
+
+	content, errRead := os.ReadFile(filepath.Join(gitDir, "info", "exclude"))
+	require.NoError(t, errRead)
+	assert.Contains(t, string(content), "/.sgai")
+}
+
+func TestAddGitExcludeRejectsGitFileOutsideBoundary(t *testing.T) {
+	base := t.TempDir()
+	workspaceDir := filepath.Join(base, "workspace")
+	hostileGitDir := filepath.Join(base, "elsewhere", "git-meta")
+	require.NoError(t, os.MkdirAll(workspaceDir, 0o755))
+	require.NoError(t, os.MkdirAll(hostileGitDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, ".git"), []byte("gitdir: "+hostileGitDir+"\n"), 0o644))
+
+	err := addGitExclude(workspaceDir)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "escapes repository metadata boundary")
+	_, errStat := os.Stat(filepath.Join(hostileGitDir, "info", "exclude"))
+	assert.True(t, os.IsNotExist(errStat))
+}
+
+func TestAddGitExcludeRejectsForgedGitWorktreeMetadata(t *testing.T) {
+	base := t.TempDir()
+	workspaceDir := filepath.Join(base, "feature")
+	gitDir := filepath.Join(base, "hostile", ".git", "worktrees", "feature")
+	seedGitWorktreeMetadata(t, workspaceDir, gitDir, "../../elsewhere")
+
+	err := addGitExclude(workspaceDir)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "repository metadata boundary")
+	_, errStat := os.Stat(filepath.Join(gitDir, "info", "exclude"))
+	assert.True(t, os.IsNotExist(errStat))
+}
+
+func TestAddGitExcludeRejectsSelfConsistentForgedGitWorktreeMetadata(t *testing.T) {
+	base := t.TempDir()
+	workspaceDir := filepath.Join(base, "feature")
+	gitDir := filepath.Join(base, "hostile", ".git", "worktrees", "feature")
+	seedGitWorktreeMetadata(t, workspaceDir, gitDir, "../..")
+
+	err := addGitExclude(workspaceDir)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "repository metadata boundary")
+	_, errStat := os.Stat(filepath.Join(gitDir, "info", "exclude"))
+	assert.True(t, os.IsNotExist(errStat))
+}
+
+func TestAddGitExcludeRejectsGitFileSymlinkEscape(t *testing.T) {
+	base := t.TempDir()
+	workspaceDir := filepath.Join(base, "workspace")
+	hostileGitDir := filepath.Join(base, "elsewhere", "git-meta")
+	symlinkPath := filepath.Join(workspaceDir, "meta-link")
+	require.NoError(t, os.MkdirAll(workspaceDir, 0o755))
+	require.NoError(t, os.MkdirAll(hostileGitDir, 0o755))
+	require.NoError(t, os.Symlink(hostileGitDir, symlinkPath))
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, ".git"), []byte("gitdir: meta-link\n"), 0o644))
+
+	err := addGitExclude(workspaceDir)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "escapes repository metadata boundary")
+	_, errStat := os.Stat(filepath.Join(hostileGitDir, "info", "exclude"))
+	assert.True(t, os.IsNotExist(errStat))
+}
+
+func TestAddGitExcludeRejectsSymlinkedGitEntry(t *testing.T) {
+	base := t.TempDir()
+	workspaceDir := filepath.Join(base, "workspace")
+	hostileGitDir := filepath.Join(base, "elsewhere", ".git")
+	require.NoError(t, os.MkdirAll(workspaceDir, 0o755))
+	require.NoError(t, os.MkdirAll(hostileGitDir, 0o755))
+	require.NoError(t, os.Symlink(hostileGitDir, filepath.Join(workspaceDir, ".git")))
+
+	err := addGitExclude(workspaceDir)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "symlinked .git entry")
+	_, errStat := os.Stat(filepath.Join(hostileGitDir, "info", "exclude"))
+	assert.True(t, os.IsNotExist(errStat))
+}
+
+func TestAddGitExcludeRejectsSymlinkedGitInfoDir(t *testing.T) {
+	base := t.TempDir()
+	workspaceDir := filepath.Join(base, "workspace")
+	hostileInfoDir := filepath.Join(base, "elsewhere", "info")
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceDir, ".git"), 0o755))
+	require.NoError(t, os.MkdirAll(hostileInfoDir, 0o755))
+	require.NoError(t, os.Symlink(hostileInfoDir, filepath.Join(workspaceDir, ".git", "info")))
+
+	err := addGitExclude(workspaceDir)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "symlinked path is not allowed")
+	_, errStat := os.Stat(filepath.Join(hostileInfoDir, "exclude"))
+	assert.True(t, os.IsNotExist(errStat))
+}
+
+func TestAddGitExcludeRejectsSymlinkedGitExcludeFile(t *testing.T) {
+	base := t.TempDir()
+	workspaceDir := filepath.Join(base, "workspace")
+	hostileExcludePath := filepath.Join(base, "elsewhere", "exclude")
+	gitInfoDir := filepath.Join(workspaceDir, ".git", "info")
+	require.NoError(t, os.MkdirAll(gitInfoDir, 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Dir(hostileExcludePath), 0o755))
+	require.NoError(t, os.WriteFile(hostileExcludePath, []byte("node_modules\n"), 0o644))
+	require.NoError(t, os.Symlink(hostileExcludePath, filepath.Join(gitInfoDir, "exclude")))
+
+	err := addGitExclude(workspaceDir)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "symlinked path is not allowed")
+	content, errRead := os.ReadFile(hostileExcludePath)
+	require.NoError(t, errRead)
+	assert.Equal(t, "node_modules\n", string(content))
+}
+
 func TestWriteGoalExampleCreatesFile(t *testing.T) {
 	dir := t.TempDir()
 	err := writeGoalExample(dir)
@@ -1534,13 +1694,97 @@ func TestOrderedModelStatusesEmpty(t *testing.T) {
 	assert.Empty(t, result)
 }
 
-func TestDoScanWorkspaceGroupsWithStandalone(t *testing.T) {
+func TestDoScanWorkspaceGroupsWithAttachedExternal(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := filepath.Join(rootDir, "standalone-ws")
-	require.NoError(t, os.MkdirAll(filepath.Join(wsDir, ".sgai"), 0755))
+	externalDir := filepath.Join(t.TempDir(), "external-ws")
+	require.NoError(t, os.MkdirAll(externalDir, 0o755))
+	require.NoError(t, initializeWorkspace(externalDir))
+	server.externalDirs[resolveSymlinks(externalDir)] = true
+
 	groups, errScan := server.doScanWorkspaceGroups()
 	require.NoError(t, errScan)
-	assert.GreaterOrEqual(t, len(groups), 1)
+	require.Len(t, groups, 1)
+	assert.Equal(t, filepath.Base(externalDir), groups[0].Root.DirName)
+	assert.Equal(t, resolveSymlinks(externalDir), groups[0].Root.Directory)
+	assert.True(t, groups[0].Root.External)
+	assert.NotEqual(t, rootDir, groups[0].Root.Directory)
+}
+
+func attachWorkspaceFixture(t *testing.T, server *Server, dir string, kind workspaceKind) {
+	t.Helper()
+	canonical := resolveSymlinks(dir)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0o755))
+	server.mu.Lock()
+	server.externalDirs[canonical] = true
+	server.mu.Unlock()
+	server.classifyCache.set(dir, kind)
+	server.classifyCache.set(canonical, kind)
+}
+
+func createForkFixture(t *testing.T, rootDir, forkDir string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Join(rootDir, ".jj", "repo"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(forkDir, ".jj"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(forkDir, ".jj", "repo"), []byte(filepath.Join(rootDir, ".jj", "repo")), 0o644))
+}
+
+func TestDoScanWorkspaceGroupsAttachedForkRules(t *testing.T) {
+	t.Run("unattachedForkLeavesRootStandalone", func(t *testing.T) {
+		server, _ := setupTestServer(t)
+		rootDir := t.TempDir()
+		forkDir := t.TempDir()
+		createForkFixture(t, rootDir, forkDir)
+		attachWorkspaceFixture(t, server, rootDir, workspaceRoot)
+
+		groups, errScan := server.doScanWorkspaceGroups()
+		require.NoError(t, errScan)
+		require.Len(t, groups, 1)
+		assert.False(t, groups[0].Root.IsRoot)
+		assert.Equal(t, resolveSymlinks(rootDir), groups[0].Root.Directory)
+		assert.Empty(t, groups[0].Forks)
+	})
+
+	t.Run("attachedForkPromotesRootGroup", func(t *testing.T) {
+		server, _ := setupTestServer(t)
+		rootDir := t.TempDir()
+		forkDir := t.TempDir()
+		createForkFixture(t, rootDir, forkDir)
+		attachWorkspaceFixture(t, server, rootDir, workspaceRoot)
+		attachWorkspaceFixture(t, server, forkDir, workspaceFork)
+
+		groups, errScan := server.doScanWorkspaceGroups()
+		require.NoError(t, errScan)
+		require.Len(t, groups, 1)
+		assert.True(t, groups[0].Root.IsRoot)
+		require.Len(t, groups[0].Forks, 1)
+		assert.Equal(t, resolveSymlinks(forkDir), groups[0].Forks[0].Directory)
+	})
+
+	t.Run("detachingLastForkDemotesRoot", func(t *testing.T) {
+		server, _ := setupTestServer(t)
+		rootDir := t.TempDir()
+		forkDir := t.TempDir()
+		createForkFixture(t, rootDir, forkDir)
+		attachWorkspaceFixture(t, server, rootDir, workspaceRoot)
+		attachWorkspaceFixture(t, server, forkDir, workspaceFork)
+
+		groups, errScan := server.scanWorkspaceGroups()
+		require.NoError(t, errScan)
+		require.Len(t, groups, 1)
+		assert.True(t, groups[0].Root.IsRoot)
+
+		server.mu.Lock()
+		delete(server.externalDirs, resolveSymlinks(forkDir))
+		server.mu.Unlock()
+		server.invalidateWorkspaceScanCache()
+
+		groups, errScan = server.scanWorkspaceGroups()
+		require.NoError(t, errScan)
+		require.Len(t, groups, 1)
+		assert.False(t, groups[0].Root.IsRoot)
+		assert.Equal(t, resolveSymlinks(rootDir), groups[0].Root.Directory)
+		assert.Empty(t, groups[0].Forks)
+	})
 }
 
 func TestScanWorkspaceGroupsEmpty(t *testing.T) {
@@ -1550,14 +1794,14 @@ func TestScanWorkspaceGroupsEmpty(t *testing.T) {
 	assert.Empty(t, groups)
 }
 
-func TestScanWorkspaceGroupsWithWorkspaces(t *testing.T) {
+func TestScanWorkspaceGroupsIgnoresLocalWorkspaces(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "scan-ws1")
-	_ = setupTestWorkspace(t, rootDir, "scan-ws2")
+	localDir := filepath.Join(rootDir, "scan-ws1")
+	require.NoError(t, os.MkdirAll(filepath.Join(localDir, ".sgai"), 0o755))
 
 	groups, err := srv.scanWorkspaceGroups()
 	assert.NoError(t, err)
-	assert.NotEmpty(t, groups)
+	assert.Empty(t, groups)
 }
 
 func TestScanWorkspaceGroupsCachingBehavior(t *testing.T) {
@@ -3300,9 +3544,9 @@ func TestResolveWorkspaceNameToPathEmpty(t *testing.T) {
 
 func TestResolveWorkspaceNameToPathFound(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "my-workspace")
+	wsDir := setupTestWorkspace(t, rootDir, "my-workspace")
 	result := srv.resolveWorkspaceNameToPath("my-workspace")
-	assert.Equal(t, filepath.Join(rootDir, "my-workspace"), result)
+	assert.Equal(t, wsDir, result)
 }
 
 func TestGatherSnippetsByLanguageMultiple(t *testing.T) {
@@ -3359,6 +3603,21 @@ func TestAddGitExcludeWithExistingExclude(t *testing.T) {
 	require.NoError(t, errRead)
 	assert.Contains(t, string(content), "# existing")
 	assert.Contains(t, string(content), "/.sgai")
+}
+
+func TestAddGitExcludeWithExistingExcludeWithoutTrailingNewline(t *testing.T) {
+	dir := t.TempDir()
+	gitInfoDir := filepath.Join(dir, ".git", "info")
+	excludePath := filepath.Join(gitInfoDir, "exclude")
+	require.NoError(t, os.MkdirAll(gitInfoDir, 0755))
+	require.NoError(t, os.WriteFile(excludePath, []byte("node_modules"), 0644))
+
+	err := addGitExclude(dir)
+	assert.NoError(t, err)
+
+	content, errRead := os.ReadFile(excludePath)
+	require.NoError(t, errRead)
+	assert.Equal(t, "node_modules\n/.sgai\n", string(content))
 }
 
 func TestWriteGoalExample(t *testing.T) {
@@ -3456,6 +3715,42 @@ func TestUnpackSkeletonCreatesDirectory(t *testing.T) {
 	err := unpackSkeleton(dir)
 	assert.NoError(t, err)
 	assert.True(t, isExistingDirectory(filepath.Join(dir, ".sgai")))
+}
+
+func TestUnpackSkeletonRejectsSymlinkedDotSGAIDestination(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior differs on windows")
+	}
+
+	workspaceDir := t.TempDir()
+	externalDir := t.TempDir()
+	require.NoError(t, os.Symlink(externalDir, filepath.Join(workspaceDir, ".sgai")))
+
+	err := unpackSkeleton(workspaceDir)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "symlinked path is not allowed")
+	assert.NoFileExists(t, filepath.Join(externalDir, "state.json"))
+}
+
+func TestUnpackSkeletonRejectsSymlinkedDotSGAIFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior differs on windows")
+	}
+
+	workspaceDir := t.TempDir()
+	externalDir := t.TempDir()
+	externalFile := filepath.Join(externalDir, "coordinator.md")
+	require.NoError(t, os.WriteFile(externalFile, []byte("external"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceDir, ".sgai", "agent"), 0o755))
+	require.NoError(t, os.Symlink(externalFile, filepath.Join(workspaceDir, ".sgai", "agent", "coordinator.md")))
+
+	err := unpackSkeleton(workspaceDir)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "symlinked path is not allowed")
+
+	content, errRead := os.ReadFile(externalFile)
+	require.NoError(t, errRead)
+	assert.Equal(t, "external", string(content))
 }
 
 func TestResolveBaseBookmarkCached(t *testing.T) {

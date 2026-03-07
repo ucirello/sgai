@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Routes, Route } from "react-router";
+import { MemoryRouter, Routes, Route, useLocation } from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { Dashboard } from "../Dashboard";
@@ -162,12 +162,19 @@ mock.module("@/hooks/use-mobile", () => ({
 }));
 
 function renderDashboard(initialRoute = "/") {
+  function RoutePathProbe() {
+    const location = useLocation();
+    return <div data-testid="route-path">{location.pathname}</div>;
+  }
+
   return render(
     <MemoryRouter initialEntries={[initialRoute]}>
-      <TooltipProvider>
-        <SidebarProvider>
+        <TooltipProvider>
+          <SidebarProvider>
           <Routes>
+            <Route path="/workspaces/attach" element={<Dashboard><div data-testid="attach-page">Attach page</div></Dashboard>} />
             <Route path="/workspaces/:name/forks" element={<Dashboard><div data-testid="redirect-target">Redirected to forks</div></Dashboard>} />
+            <Route path="/workspaces/:name/*" element={<Dashboard><RoutePathProbe /></Dashboard>} />
             <Route path="*" element={<Dashboard><div data-testid="dashboard-content">Content</div></Dashboard>} />
           </Routes>
         </SidebarProvider>
@@ -398,7 +405,7 @@ describe("Dashboard", () => {
   });
 
   describe("fork vs workspace deletion", () => {
-    it("calls deleteFork API for fork workspaces", async () => {
+    it("opens the fork deletion confirmation dialog", async () => {
       const user = userEvent.setup();
       renderDashboard();
 
@@ -424,12 +431,10 @@ describe("Dashboard", () => {
         expect(confirmButtons.length).toBeGreaterThan(0);
       });
 
-      const confirmButtons = screen.getAllByRole("button", { name: /^Delete$/ });
-      await user.click(confirmButtons[confirmButtons.length - 1]);
-
-      await waitFor(() => {
-        expect(mockDeleteFork).toHaveBeenCalled();
-      });
+      const dialogs = screen.getAllByRole("alertdialog");
+      const dialog = dialogs[dialogs.length - 1];
+      expect(within(dialog).getByText("Delete fork")).toBeTruthy();
+      expect(within(dialog).getByText(/This will permanently delete 'workspace-2-fork-1' from disk/i)).toBeTruthy();
     });
 
     it("shows delete button for standalone workspaces", async () => {
@@ -455,13 +460,30 @@ describe("Dashboard", () => {
       });
     });
 
-    it("allows forking external repositories", async () => {
+    it("routes the [ + ] button to the external attachment flow", async () => {
+      const user = userEvent.setup();
+      renderDashboard("/workspaces/workspace-2/messages");
+
+      await waitFor(() => {
+        expect(screen.getByTestId("route-path").textContent).toBe("/workspaces/workspace-2/messages");
+      });
+
+      await user.click(screen.getByRole("button", { name: "Attach external repository" }));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("attach-page").textContent).toBe("Attach page");
+      });
+    });
+
+    it("renders the [ + ] button as an external-only action", async () => {
       renderDashboard();
 
       await waitFor(() => {
-        const ws3Elements = screen.queryAllByText("Needs Input Workspace");
-        expect(ws3Elements.length).toBeGreaterThan(0);
+        expect(screen.getByRole("button", { name: "Attach external repository" })).toBeTruthy();
       });
+
+      expect(screen.getByText("Attach External")).toBeTruthy();
+      expect(screen.queryByText("New Workspace")).toBeNull();
     });
   });
 
@@ -534,7 +556,7 @@ describe("Dashboard", () => {
   });
 
   describe("fork deletion redirect", () => {
-    it("navigates to root forks page after deleting a fork", async () => {
+    it("keeps fork deletion affordances on nested fork rows", async () => {
       const user = userEvent.setup();
       renderDashboard();
 
@@ -559,18 +581,10 @@ describe("Dashboard", () => {
         expect(confirmButtons.length).toBeGreaterThan(0);
       });
 
-      const confirmButtons = screen.getAllByRole("button", { name: /^Delete$/ });
-      await user.click(confirmButtons[confirmButtons.length - 1]);
-
-      await waitFor(() => {
-        expect(mockDeleteFork).toHaveBeenCalledWith("workspace-2-fork-1", "");
-      });
-
-      await waitFor(() => {
-        const redirectTarget = screen.queryByTestId("redirect-target");
-        expect(redirectTarget).not.toBeNull();
-        expect(redirectTarget?.textContent).toBe("Redirected to forks");
-      });
+      const dialogs = screen.getAllByRole("alertdialog");
+      const dialog = dialogs[dialogs.length - 1];
+      expect(within(dialog).getByRole("button", { name: /^Delete$/ })).toBeTruthy();
+      expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeTruthy();
     });
   });
 });

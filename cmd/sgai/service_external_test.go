@@ -1,6 +1,7 @@
 package main
 
 import (
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,26 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func loadExternalDirsForTest(t *testing.T, configDir string) map[string]bool {
+	t.Helper()
+
+	server, _ := setupTestServer(t)
+	server.externalConfigDir = configDir
+	require.NoError(t, server.loadExternalDirs())
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+
+	return maps.Clone(server.externalDirs)
+}
+
+func externalDirsSnapshotForTest(server *Server) map[string]bool {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+
+	return maps.Clone(server.externalDirs)
+}
 
 func TestLoadExternalDirs(t *testing.T) {
 	t.Run("noFile", func(t *testing.T) {
@@ -112,10 +133,20 @@ func TestAttachExternalWorkspaceService(t *testing.T) {
 		},
 		{
 			name: "attachDirectoryUnderRoot",
-			setupFunc: func(_ *testing.T, _, _ string) {
+			setupFunc: func(t *testing.T, _, externalPath string) {
+				require.NoError(t, os.MkdirAll(externalPath, 0755))
 			},
-			wantErr:     true,
-			errContains: "path is within the root directory",
+			wantErr: false,
+			validate: func(t *testing.T, externalPath string, result attachExternalResult) {
+				assert.Equal(t, externalPath, result.Dir)
+			},
+		},
+		{
+			name: "attachPersistsExternalDirectory",
+			setupFunc: func(t *testing.T, _, externalPath string) {
+				require.NoError(t, os.MkdirAll(externalPath, 0755))
+			},
+			wantErr: false,
 		},
 	}
 
@@ -123,19 +154,16 @@ func TestAttachExternalWorkspaceService(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
 			server := NewServer(rootDir)
+			server.externalConfigDir = t.TempDir()
 
 			var externalPath string
 			switch {
 			case tt.name == "attachDirectoryUnderRoot":
 				externalPath = filepath.Join(rootDir, "subdir")
-				require.NoError(t, os.MkdirAll(externalPath, 0755))
 			case tt.path != "":
 				externalPath = tt.path
 			default:
-				externalPath = filepath.Join(os.TempDir(), "external-workspace")
-				t.Cleanup(func() {
-					_ = os.RemoveAll(externalPath)
-				})
+				externalPath = filepath.Join(t.TempDir(), "external-workspace")
 			}
 
 			tt.setupFunc(t, rootDir, externalPath)
@@ -153,6 +181,10 @@ func TestAttachExternalWorkspaceService(t *testing.T) {
 			require.NoError(t, err)
 			if tt.validate != nil {
 				tt.validate(t, externalPath, result)
+			}
+			if tt.name == "attachPersistsExternalDirectory" {
+				loaded := loadExternalDirsForTest(t, server.externalConfigDir)
+				assert.True(t, loaded[resolveSymlinks(externalPath)])
 			}
 		})
 	}
@@ -180,6 +212,18 @@ func TestDetachExternalWorkspaceService(t *testing.T) {
 			},
 		},
 		{
+			name: "detachRemovesPersistedExternalDirectory",
+			setupFunc: func(t *testing.T, _ string, externalPath string, server *Server) {
+				require.NoError(t, os.MkdirAll(externalPath, 0755))
+				_, err := server.attachExternalWorkspaceService(externalPath)
+				require.NoError(t, err)
+			},
+			wantErr: false,
+			validate: func(t *testing.T, result detachExternalResult) {
+				assert.True(t, result.Detached)
+			},
+		},
+		{
 			name: "detachNonAttachedWorkspace",
 			setupFunc: func(t *testing.T, _ string, externalPath string, _ *Server) {
 				require.NoError(t, os.MkdirAll(externalPath, 0755))
@@ -193,11 +237,9 @@ func TestDetachExternalWorkspaceService(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
 			server := NewServer(rootDir)
+			server.externalConfigDir = t.TempDir()
 
-			externalPath := filepath.Join(os.TempDir(), "external-workspace")
-			t.Cleanup(func() {
-				_ = os.RemoveAll(externalPath)
-			})
+			externalPath := filepath.Join(t.TempDir(), "external-workspace")
 
 			tt.setupFunc(t, rootDir, externalPath, server)
 
@@ -215,8 +257,55 @@ func TestDetachExternalWorkspaceService(t *testing.T) {
 			if tt.validate != nil {
 				tt.validate(t, result)
 			}
+			if tt.name == "detachRemovesPersistedExternalDirectory" {
+				loaded := loadExternalDirsForTest(t, server.externalConfigDir)
+				assert.False(t, loaded[resolveSymlinks(externalPath)])
+			}
 		})
 	}
+}
+
+func TestAttachExternalWorkspaceServiceRestoresStateOnSaveFailure(t *testing.T) {
+	rootDir := t.TempDir()
+	server := NewServer(rootDir)
+
+	blockingPath := filepath.Join(t.TempDir(), "external-config-blocker")
+	require.NoError(t, os.WriteFile(blockingPath, []byte("block"), 0o644))
+	server.externalConfigDir = blockingPath
+
+	externalPath := filepath.Join(t.TempDir(), "external-workspace")
+	require.NoError(t, os.MkdirAll(externalPath, 0o755))
+
+	want := externalDirsSnapshotForTest(server)
+
+	_, errAttach := server.attachExternalWorkspaceService(externalPath)
+	require.Error(t, errAttach)
+	assert.Contains(t, errAttach.Error(), "saving external dirs")
+	assert.Equal(t, want, externalDirsSnapshotForTest(server))
+	assert.False(t, server.isExternalWorkspace(externalPath))
+}
+
+func TestDetachExternalWorkspaceServiceRestoresStateOnSaveFailure(t *testing.T) {
+	rootDir := t.TempDir()
+	server := NewServer(rootDir)
+	server.externalConfigDir = t.TempDir()
+
+	externalPath := filepath.Join(t.TempDir(), "external-workspace")
+	require.NoError(t, os.MkdirAll(externalPath, 0o755))
+	_, errAttach := server.attachExternalWorkspaceService(externalPath)
+	require.NoError(t, errAttach)
+
+	blockingPath := filepath.Join(t.TempDir(), "external-config-blocker")
+	require.NoError(t, os.WriteFile(blockingPath, []byte("block"), 0o644))
+	server.externalConfigDir = blockingPath
+
+	want := externalDirsSnapshotForTest(server)
+
+	_, errDetach := server.detachExternalWorkspaceService(externalPath)
+	require.Error(t, errDetach)
+	assert.Contains(t, errDetach.Error(), "saving external dirs")
+	assert.Equal(t, want, externalDirsSnapshotForTest(server))
+	assert.True(t, server.isExternalWorkspace(externalPath))
 }
 
 func TestIsExternalWorkspace(t *testing.T) {

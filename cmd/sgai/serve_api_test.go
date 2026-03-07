@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -18,6 +19,11 @@ import (
 	"github.com/sandgardenhq/sgai/pkg/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+)
+
+var (
+	testServersByRootDirMu sync.Mutex
+	testServersByRootDir   = map[string]*Server{}
 )
 
 func TestIsAPIRoute(t *testing.T) {
@@ -1513,13 +1519,36 @@ func TestLoadWorkspaceState(t *testing.T) {
 func setupTestServer(t *testing.T) (*Server, string) {
 	rootDir := t.TempDir()
 	server := NewServer(rootDir)
+	testServersByRootDirMu.Lock()
+	testServersByRootDir[rootDir] = server
+	testServersByRootDir[resolveSymlinks(rootDir)] = server
+	testServersByRootDirMu.Unlock()
+	t.Cleanup(func() {
+		testServersByRootDirMu.Lock()
+		delete(testServersByRootDir, rootDir)
+		delete(testServersByRootDir, resolveSymlinks(rootDir))
+		testServersByRootDirMu.Unlock()
+	})
 	return server, rootDir
 }
 
 func setupTestWorkspace(t *testing.T, rootDir, name string) string {
 	wsDir := filepath.Join(rootDir, name)
 	require.NoError(t, os.MkdirAll(filepath.Join(wsDir, ".sgai"), 0755))
-	return wsDir
+	canonicalDir := resolveSymlinks(wsDir)
+	testServersByRootDirMu.Lock()
+	server := testServersByRootDir[rootDir]
+	if server == nil {
+		server = testServersByRootDir[resolveSymlinks(rootDir)]
+	}
+	testServersByRootDirMu.Unlock()
+	if server != nil {
+		server.mu.Lock()
+		server.externalDirs[canonicalDir] = true
+		server.mu.Unlock()
+		server.invalidateWorkspaceScanCache()
+	}
+	return canonicalDir
 }
 
 func serveHTTP(server *Server, method, path string, body string) *httptest.ResponseRecorder {
@@ -1586,27 +1615,6 @@ func TestHandleAPISnippets(t *testing.T) {
 
 	w := serveHTTP(server, "GET", "/api/v1/snippets?workspace=test-ws", "")
 	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestHandleAPICreateWorkspace(t *testing.T) {
-	t.Run("successfulCreate", func(t *testing.T) {
-		server, _ := setupTestServer(t)
-		w := serveHTTP(server, "POST", "/api/v1/workspaces", `{"name":"new-workspace"}`)
-		assert.Equal(t, http.StatusCreated, w.Code)
-	})
-
-	t.Run("invalidBody", func(t *testing.T) {
-		server, _ := setupTestServer(t)
-		w := serveHTTP(server, "POST", "/api/v1/workspaces", `{invalid json}`)
-		assert.Equal(t, http.StatusBadRequest, w.Code)
-	})
-
-	t.Run("duplicateWorkspace", func(t *testing.T) {
-		server, rootDir := setupTestServer(t)
-		setupTestWorkspace(t, rootDir, "existing-ws")
-		w := serveHTTP(server, "POST", "/api/v1/workspaces", `{"name":"existing-ws"}`)
-		assert.Equal(t, http.StatusConflict, w.Code)
-	})
 }
 
 func TestHandleAPIGetGoal(t *testing.T) {
@@ -1806,7 +1814,10 @@ func TestHandleAPIForkTemplate(t *testing.T) {
 		server, rootDir := setupTestServer(t)
 		setupTestWorkspace(t, rootDir, "test-ws")
 		w := serveHTTP(server, "GET", "/api/v1/workspaces/test-ws/fork-template", "")
-		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Equal(t, http.StatusOK, w.Code)
+		var resp apiForkTemplateResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.Equal(t, goalExampleContent, resp.Content)
 	})
 }
 
@@ -2089,12 +2100,6 @@ func TestHandleAPIRespondInvalidBody(t *testing.T) {
 	setupTestWorkspace(t, rootDir, "test-ws")
 
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/respond", `{invalid}`)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
-
-func TestHandleAPICreateWorkspaceInvalidBody(t *testing.T) {
-	server, _ := setupTestServer(t)
-	w := serveHTTP(server, "POST", "/api/v1/workspaces", `{invalid}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
@@ -2399,13 +2404,6 @@ func TestHandleAPIComposePreviewViaHTTP(t *testing.T) {
 
 	w := serveHTTP(srv, "GET", "/api/v1/compose/preview?workspace=preview-ws", "")
 	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestHandleAPICreateWorkspaceViaHTTP(t *testing.T) {
-	srv, _ := setupTestServer(t)
-
-	w := serveHTTP(srv, "POST", "/api/v1/workspaces", `{"name":"test-new-ws","goalContent":"# Test"}`)
-	assert.NotEqual(t, http.StatusNotFound, w.Code)
 }
 
 func TestHandleAPIBrowseDirectoriesViaHTTP(t *testing.T) {
@@ -2719,18 +2717,6 @@ func TestRespondNoSessionViaHTTP(t *testing.T) {
 	assert.NotEqual(t, http.StatusNotFound, w.Code)
 }
 
-func TestCreateWorkspaceInvalidJSONViaHTTP(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	w := serveHTTP(srv, "POST", "/api/v1/workspaces", `not json`)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
-
-func TestCreateWorkspaceEmptyNameViaHTTP(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	w := serveHTTP(srv, "POST", "/api/v1/workspaces", `{"name":"","goalContent":"# Goal"}`)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
-
 func TestAttachWorkspaceInvalidJSONViaHTTP(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/attach", `not json`)
@@ -2862,7 +2848,10 @@ func TestHandleAPIForkTemplateStandaloneViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	_ = setupTestWorkspace(t, rootDir, "tmpl-standalone")
 	w := serveHTTP(srv, "GET", "/api/v1/workspaces/tmpl-standalone/fork-template", "")
-	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp apiForkTemplateResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, goalExampleContent, resp.Content)
 }
 
 func TestBuildWorkspaceFullStateWithMessages(t *testing.T) {
@@ -3628,13 +3617,6 @@ func TestHandleAPIComposeStateFullContent(t *testing.T) {
 	var resp apiComposeStateResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "Test project", resp.State.Description)
-}
-
-func TestHandleAPICreateWorkspaceValid(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	body := `{"name":"new-workspace-test","goalContent":"---\n---\n# New Workspace\n\nBuild something great."}`
-	w := serveHTTP(srv, "POST", "/api/v1/workspaces", body)
-	assert.Contains(t, []int{http.StatusCreated, http.StatusOK, http.StatusConflict}, w.Code)
 }
 
 func TestHandleAPIDeleteForkConfirmedNoFork(t *testing.T) {
@@ -4704,7 +4686,10 @@ func TestHandleAPIForkTemplateNotRoot(t *testing.T) {
 	_ = setupTestWorkspace(t, rootDir, "standalone-ws")
 
 	w := serveHTTP(srv, "GET", "/api/v1/workspaces/standalone-ws/fork-template", "")
-	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp apiForkTemplateResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, goalExampleContent, resp.Content)
 }
 
 func TestHandleAPIDeleteWorkspaceNoConfirm(t *testing.T) {
@@ -5167,7 +5152,11 @@ func TestHandleAPIAdhocEmptyModel(t *testing.T) {
 func TestHandleAPIStartSessionRootWorkspace(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
-	server.classifyCache.set(wsDir, workspaceRoot)
+	canonicalDir := resolveSymlinks(wsDir)
+	server.mu.Lock()
+	server.externalDirs[canonicalDir] = true
+	server.mu.Unlock()
+	server.classifyCache.set(canonicalDir, workspaceRoot)
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/start", `{}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "root workspace cannot start")
@@ -5178,12 +5167,6 @@ func TestHandleAPIForkWorkspaceStandalone(t *testing.T) {
 	setupTestWorkspace(t, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/fork", `{"goalContent":"# Test"}`)
 	assert.Contains(t, []int{http.StatusBadRequest, http.StatusInternalServerError, http.StatusCreated}, w.Code)
-}
-
-func TestHandleAPICreateWorkspaceInvalidName(t *testing.T) {
-	server, _ := setupTestServer(t)
-	w := serveHTTP(server, "POST", "/api/v1/workspaces", `{"name":"../bad","goalContent":"test"}`)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIAttachWorkspaceInvalidBody(t *testing.T) {
@@ -5263,10 +5246,13 @@ func TestHandleAPIComposePreviewNoWorkspace(t *testing.T) {
 func TestHandleAPIDeleteWorkspaceRootBlocked(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
-	server.classifyCache.set(wsDir, workspaceRoot)
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/delete", `{"confirm":true}`)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "root workspace")
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "external workspace detached")
+	server.mu.Lock()
+	_, stillAttached := server.externalDirs[wsDir]
+	server.mu.Unlock()
+	assert.False(t, stillAttached)
 }
 
 func TestHandleAPIDeleteWorkspaceConfirmed(t *testing.T) {
@@ -5360,13 +5346,6 @@ func TestHandleAPIRespondNoPendingQuestion(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "no pending question")
 }
 
-func TestHandleAPICreateWorkspaceSuccess(t *testing.T) {
-	server, _ := setupTestServer(t)
-	w := serveHTTP(server, "POST", "/api/v1/workspaces", `{"name":"test-new-ws"}`)
-	assert.Equal(t, http.StatusCreated, w.Code)
-	assert.Contains(t, w.Body.String(), "test-new-ws")
-}
-
 func TestHandleAPIAttachWorkspaceNotAbsolute(t *testing.T) {
 	server, _ := setupTestServer(t)
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/attach", `{"path":"relative/path"}`)
@@ -5434,7 +5413,7 @@ func TestParseAgentIdentityHeaderNewBatch(t *testing.T) {
 	t.Run("emptyHeader", func(t *testing.T) {
 		r := httptest.NewRequest("GET", "/", nil)
 		result := parseAgentIdentityHeader(r)
-		assert.Equal(t, "coordinator", result)
+		assert.Empty(t, result)
 	})
 	t.Run("agentWithPipe", func(t *testing.T) {
 		r := httptest.NewRequest("GET", "/", nil)
@@ -5446,7 +5425,7 @@ func TestParseAgentIdentityHeaderNewBatch(t *testing.T) {
 		r := httptest.NewRequest("GET", "/", nil)
 		r.Header.Set("X-Sgai-Agent-Identity", "|extra")
 		result := parseAgentIdentityHeader(r)
-		assert.Equal(t, "coordinator", result)
+		assert.Empty(t, result)
 	})
 }
 
@@ -5852,8 +5831,9 @@ func TestAttachExternalWorkspaceUnderRoot(t *testing.T) {
 	srv.externalConfigDir = t.TempDir()
 	subDir := filepath.Join(rootDir, "subworkspace")
 	require.NoError(t, os.MkdirAll(subDir, 0755))
-	_, err := srv.attachExternalWorkspaceService(subDir)
-	assert.ErrorIs(t, err, errUnderRootDir)
+	result, err := srv.attachExternalWorkspaceService(subDir)
+	assert.NoError(t, err)
+	assert.Equal(t, subDir, result.Dir)
 }
 
 func TestValidateProjectConfigInvalidModel(t *testing.T) {
@@ -6318,7 +6298,8 @@ func TestHandleAPIDeleteWorkspaceStandaloneConfirmed(t *testing.T) {
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/delete-standalone-ws/delete", `{"confirm": true}`)
 	assert.Equal(t, http.StatusOK, w.Code)
 	_, errStat := os.Stat(wsDir)
-	assert.True(t, os.IsNotExist(errStat))
+	assert.NoError(t, errStat)
+	assert.Contains(t, w.Body.String(), "external workspace detached")
 }
 
 func TestHandleAPIWorkflowSVGForWorkspaceWithFlow(t *testing.T) {
@@ -6397,10 +6378,12 @@ func TestHandleAPIAttachWorkspaceAlreadyAttached(t *testing.T) {
 func TestHandleAPIAttachWorkspaceUnderRootDir(t *testing.T) {
 	rootDir := t.TempDir()
 	server := NewServer(rootDir)
+	server.externalConfigDir = t.TempDir()
 	subDir := filepath.Join(rootDir, "subproject")
 	require.NoError(t, os.MkdirAll(subDir, 0755))
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/attach", `{"path": "`+subDir+`"}`)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, http.StatusCreated, w.Code)
+	assert.Contains(t, w.Body.String(), `"dir":"`+subDir+`"`)
 }
 
 func TestHandleAPIAttachWorkspaceWithGoal(t *testing.T) {

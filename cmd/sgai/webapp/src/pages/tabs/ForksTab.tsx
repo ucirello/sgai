@@ -471,7 +471,11 @@ function InlineRunBox({ workspaceName }: { workspaceName: string }) {
 }
 
 export function ForksTab({ workspaceName, actions, onActionClick }: ForksTabProps) {
+  const navigate = useNavigate();
   const { workspaces: allWorkspaces, fetchStatus } = useFactoryState();
+  const handleCreateFork = useCallback(() => {
+    navigate(`/workspaces/${encodeURIComponent(workspaceName)}/progress`);
+  }, [navigate, workspaceName]);
 
   const workspace = allWorkspaces.find((ws) => ws.name === workspaceName);
 
@@ -509,8 +513,13 @@ export function ForksTab({ workspaceName, actions, onActionClick }: ForksTabProp
         />
       )}
       {forks.length === 0 ? (
-        <div className="text-center py-8 text-muted-foreground italic">
+        <div className="py-8 text-center">
           <p>No forks yet. Create a fork to start work.</p>
+          <div className="mt-4 flex justify-center">
+            <Button type="button" onClick={handleCreateFork}>
+              Create Fork
+            </Button>
+          </div>
         </div>
       ) : (
         <div className="space-y-1.5">

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/sandgardenhq/sgai/pkg/state"
 )
+
+var errRootWorkspaceCannotStart = errors.New("root workspace cannot start agentic work")
 
 type startSessionResult2 struct {
 	Name           string
@@ -21,7 +24,7 @@ type startSessionResult2 struct {
 
 func (s *Server) startSessionService(workspacePath string, auto bool) (startSessionResult2, error) {
 	if s.classifyWorkspaceCached(workspacePath) == workspaceRoot {
-		return startSessionResult2{}, fmt.Errorf("root workspace cannot start agentic work")
+		return startSessionResult2{}, errRootWorkspaceCannotStart
 	}
 
 	coord := s.workspaceCoordinator(workspacePath)

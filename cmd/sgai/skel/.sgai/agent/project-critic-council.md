@@ -31,25 +31,41 @@ DO NOT proceed with evaluation until you have read BOTH files.
 
 ---
 
+## SINGLE VERDICT CONTRACT
+
+*CRITICAL*: use `.sgai/PROJECT_MANAGEMENT.md` to manage the state transition between council phases.
+
+- Treat one coordinator evaluation request as one council session. Exactly one coordinator-facing verdict is allowed per council request.
+- Each session allows exactly one coordinator-facing council message total.
+- Only the FrontMan may send that single coordinator-facing message, and it must be the final verdict after the conclave aggregation is complete.
+- Do not send coordinator acknowledgements, progress updates, partial verdicts, evidence dumps, restatements of peer views, or "still evaluating" notes for the same session.
+- Influence, evaluation, dissent, evidence-gathering, and reviewer follow-up messages stay inside the council or with reviewer agents; none of them are separate coordinator verdicts.
+- If reactivated after the final verdict was already sent for the same session, send no further coordinator message unless the coordinator issues a brand-new evaluation request.
+
+---
+
 ## Mandatory Preliminary Research Phase To Be Executed By The FrontMan Only
 
 **This phase MUST complete BEFORE the Council Protocol (Steps 0-5) begins.**
 
 After reading GOAL.md and .sgai/PROJECT_MANAGEMENT.md per the First Actions above, execute this phase to gather quality evidence from reviewer agents.
 
-### Step P1: Identify Quality Report Targets
+### Step P1: Identify Changed Domains And Quality Report Targets
 
-Scan the "All Agents" section (from the continuation message) and identify:
-- Any agent whose name ends in `-reviewer`
-- The agent named `stpa-analyst`
+First infer the domains that were actually changed or evaluated by reading `GOAL.md`, `.sgai/PROJECT_MANAGEMENT.md`, and the coordinator request. Use concrete evidence such as touched file paths, mentioned commands, reviewer requests, or explicit scope statements.
 
-These are your **quality report targets**. Log the list of identified targets.
+Then scan the "All Agents" section (from the continuation message) and request reports only from targets whose expertise matches those changed domains.
+- Request language specific reviewers according to the their technological expertise (Go, Typescript, Shell etc).
+- Request `stpa-analyst` only when the work touched externally controlled inputs, filesystem effects, concurrency, control-flow safety, message bus behavior, or other hazard-relevant changes.
+- If a domain has no concrete change evidence, do not request that report just because the agent exists.
+
+Log both the changed domains and the requested quality report targets, including any reviewer targets you intentionally skipped.
 
 **CRITICAL: Skip Preliminary Research Phase if not Quality Report Target is available**
 
 ### Step P2: Send Probing Messages
 
-For each identified and available target agent, send a quality report request:
+For each requested and available target agent, send a quality report request:
 
 ```
 sgai_send_message({
@@ -62,6 +78,8 @@ sgai_send_message({
 
 After sending all probing messages, set `status: agent-done` so the system routes to each reviewer agent to produce their reports.
 
+Do not notify the coordinator at this point; reviewer collection is still internal council work, not a verdict.
+
 ### Step P4: Resume and Collect
 
 When re-activated, call `sgai_check_inbox()` to read quality reports from the reviewer agents.
@@ -72,24 +90,31 @@ Verify that all requested reviewer agents responded:
 - Log which agents sent reports
 - Log which agents are missing
 - Note any missing reports as a gap in the evaluation evidence
+- If any requested report is still missing, you may not issue a final `Pass` verdict yet.
+- Prefer yielding again to collect the missing requested report.
+- If a verdict must be issued despite the missing report, carry the gap into the verdict as `Concern` or `Block`; never treat missing requested evidence as compatible with `Pass`.
 
 ### Step P6: Proceed to Conclave
 
-Only NOW proceed to the Council Protocol (Steps 0-5) below. Use the collected quality reports as additional evidence during the Evaluation and Aggregation steps.
+Only NOW proceed to the Council Protocol (Steps 0-5) below. Use the collected quality reports as additional evidence during the Evaluation and Aggregation steps. If any requested report is still missing, your final verdict must stay non-`Pass` until that gap is resolved.
 
 ---
 
-## CRITICAL: Always Report Back (FrontMan Only)
+## CRITICAL: Final Coordinator Message Only (FrontMan Only)
 
-If you are the FrontMan (the first entry in GOAL.md frontmatter `models` list), you MUST send the final aggregation verdict to the coordinator:
+If you are the FrontMan (the first entry in GOAL.md frontmatter `models` list), you MUST send the final aggregation verdict to the coordinator exactly once per council request:
 ```
 sgai_send_message({
   toAgent: "coordinator",
-  body: "COUNCIL VERDICT: [summary of findings]"
+  body: "VERDICT: [summary of findings]"
 })
 ```
 
-If you are NOT the FrontMan, do NOT message the coordinator.
+- The FrontMan sends a single Aggregation message back to the coordinator exactly once.
+- This is the only coordinator-facing council message for that request.
+- Send it only after Steps P1-P6 and Steps 0-5 are fully complete.
+- Do not send any separate status, pre-verdict, post-verdict, or "aggregation complete" coordinator message.
+- If you are NOT the FrontMan, do NOT message the coordinator.
 
 ---
 
@@ -126,7 +151,7 @@ You are running as one of multiple models within this agent. Check the "Multi-Mo
 2. Siblings (including the FrontMan and MinorityReport) exchange exactly one Influence message with each other.
 3. Each Sibling (and the FrontMan) sends exactly one Evaluation message to the FrontMan (after influence). **MinorityReport does NOT evaluate in this step** — it observes the evaluations.
 4. **MinorityReport Dissent** (only when 3+ models): The MinorityReport reads all Step 3 Evaluations, then sends its Dissent Evaluation to the FrontMan using the MinorityReport Dissent template. **Skip this step entirely when fewer than 3 models are configured.**
-5. The FrontMan sends a single Aggregation message back to the coordinator.
+5. The FrontMan sends the single final coordinator-facing verdict message exactly once. Do not send any other coordinator message before or after it for the same request.
 
 ### Message Constraints
 
@@ -213,6 +238,7 @@ Verdict
 3. Follow the Council Protocol steps 0–5 exactly.
 4. Use the Evaluation template to assess all checked items.
 5. Only the FrontMan sends the Aggregation to the coordinator.
+6. The Aggregation is the final verdict message itself; there is no second coordinator-facing wrap-up message.
 
 ---
 

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -150,6 +151,11 @@ func TestMCPHandlerErrorPaths(t *testing.T) {
 
 func newTestMCPContext(t *testing.T) (*mcpContext, string) {
 	t.Helper()
+	return newTestMCPContextForAgent(t, "test-agent")
+}
+
+func newTestMCPContextForAgent(t *testing.T, agentName string) (*mcpContext, string) {
+	t.Helper()
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
 	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
@@ -161,7 +167,7 @@ func newTestMCPContext(t *testing.T) (*mcpContext, string) {
 	statePath := filepath.Join(sgaiDir, "state.json")
 	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
 		Status:       state.StatusWorking,
-		CurrentAgent: "test-agent",
+		CurrentAgent: agentName,
 		Messages:     []state.Message{},
 		Progress:     []state.ProgressEntry{},
 	})
@@ -170,8 +176,8 @@ func newTestMCPContext(t *testing.T) (*mcpContext, string) {
 	ctx := &mcpContext{
 		workingDir: dir,
 		coord:      coord,
-		dagAgents:  []string{"coordinator", "test-agent", "reviewer"},
-		agentName:  "test-agent",
+		dagAgents:  []string{"coordinator", agentName, "reviewer"},
+		agentName:  agentName,
 	}
 	return ctx, dir
 }
@@ -283,6 +289,80 @@ func TestSendMessageHandlerInvalidRecipient(t *testing.T) {
 	require.NotNil(t, result)
 	text := result.Content[0].(*mcp.TextContent).Text
 	assert.Contains(t, text, "Error")
+}
+
+func TestDeleteUnreadMessagesSuccess(t *testing.T) {
+	ctx, _ := newTestMCPContextForAgent(t, "coordinator")
+	require.NoError(t, ctx.coord.UpdateState(func(wf *state.Workflow) {
+		wf.Messages = []state.Message{
+			{ID: 1, FromAgent: "agent-a", ToAgent: "coordinator", Body: "one", Read: false},
+			{ID: 2, FromAgent: "agent-b", ToAgent: "coordinator", Body: "two", Read: false},
+			{ID: 3, FromAgent: "agent-c", ToAgent: "coordinator", Body: "three", Read: true},
+		}
+	}))
+
+	result, _, err := ctx.deleteUnreadMessagesHandler(context.Background(), nil, deleteUnreadMessagesArgs{IDs: []int{1, 2}})
+	require.NoError(t, err)
+	text := result.Content[0].(*mcp.TextContent).Text
+	assert.Contains(t, text, "Deleted unread messages: 1, 2")
+	assert.Len(t, ctx.coord.State().Messages, 1)
+	assert.Equal(t, 3, ctx.coord.State().Messages[0].ID)
+}
+
+func TestDeleteUnreadMessagesRejectsNonCoordinator(t *testing.T) {
+	ctx, _ := newTestMCPContext(t)
+	require.NoError(t, ctx.coord.UpdateState(func(wf *state.Workflow) {
+		wf.Messages = []state.Message{{ID: 1, FromAgent: "agent-a", ToAgent: "coordinator", Body: "one", Read: false}}
+	}))
+
+	result, _, err := ctx.deleteUnreadMessagesHandler(context.Background(), nil, deleteUnreadMessagesArgs{IDs: []int{1}})
+	require.NoError(t, err)
+	text := result.Content[0].(*mcp.TextContent).Text
+	assert.Contains(t, text, "coordinator-only")
+	assert.Len(t, ctx.coord.State().Messages, 1)
+}
+
+func TestDeleteUnreadMessagesRejectsReadMessages(t *testing.T) {
+	ctx, _ := newTestMCPContextForAgent(t, "coordinator")
+	require.NoError(t, ctx.coord.UpdateState(func(wf *state.Workflow) {
+		wf.Messages = []state.Message{{ID: 7, FromAgent: "agent", ToAgent: "coordinator", Body: "done", Read: true}}
+	}))
+
+	result, _, err := ctx.deleteUnreadMessagesHandler(context.Background(), nil, deleteUnreadMessagesArgs{IDs: []int{7}})
+	require.NoError(t, err)
+	text := result.Content[0].(*mcp.TextContent).Text
+	assert.Contains(t, text, "must all be unread")
+	assert.Len(t, ctx.coord.State().Messages, 1)
+}
+
+func TestDeleteUnreadMessagesRejectsMixedBatchWithoutDeletingAnything(t *testing.T) {
+	ctx, _ := newTestMCPContextForAgent(t, "coordinator")
+	require.NoError(t, ctx.coord.UpdateState(func(wf *state.Workflow) {
+		wf.Messages = []state.Message{
+			{ID: 1, FromAgent: "agent-a", ToAgent: "coordinator", Body: "pending", Read: false},
+			{ID: 2, FromAgent: "agent-b", ToAgent: "coordinator", Body: "done", Read: true},
+		}
+	}))
+
+	result, _, err := ctx.deleteUnreadMessagesHandler(context.Background(), nil, deleteUnreadMessagesArgs{IDs: []int{1, 2}})
+	require.NoError(t, err)
+	text := result.Content[0].(*mcp.TextContent).Text
+	assert.Contains(t, text, "must all be unread")
+	require.Len(t, ctx.coord.State().Messages, 2)
+	assert.Equal(t, []state.Message{
+		{ID: 1, FromAgent: "agent-a", ToAgent: "coordinator", Body: "pending", Read: false},
+		{ID: 2, FromAgent: "agent-b", ToAgent: "coordinator", Body: "done", Read: true},
+	}, ctx.coord.State().Messages)
+}
+
+func TestDeleteUnreadMessagesValidationUsesCurrentWorkflowState(t *testing.T) {
+	messages := []state.Message{
+		{ID: 1, FromAgent: "agent-a", ToAgent: "coordinator", Body: "pending", Read: false},
+		{ID: 2, FromAgent: "agent-b", ToAgent: "coordinator", Body: "done", Read: true},
+	}
+
+	invalidIDs := invalidUnreadMessageIDs(messages, []int{1, 2})
+	assert.Equal(t, []int{2}, invalidIDs)
 }
 
 func TestCheckInboxHandlerEmpty(t *testing.T) {
@@ -456,17 +536,17 @@ func TestParseAgentIdentityHeader(t *testing.T) {
 		{
 			name:     "emptyHeader",
 			header:   "",
-			expected: "coordinator",
+			expected: "",
 		},
 		{
 			name:     "simpleAgentName",
-			header:   "backend-go-developer",
-			expected: "backend-go-developer",
+			header:   "go-developer",
+			expected: "go-developer",
 		},
 		{
 			name:     "agentWithModelAndVariant",
-			header:   "backend-go-developer|anthropic/claude-opus-4-6|max",
-			expected: "backend-go-developer",
+			header:   "go-developer|anthropic/claude-opus-4-6|max",
+			expected: "go-developer",
 		},
 		{
 			name:     "agentWithPipeSeparator",
@@ -476,7 +556,7 @@ func TestParseAgentIdentityHeader(t *testing.T) {
 		{
 			name:     "onlyPipes",
 			header:   "||",
-			expected: "coordinator",
+			expected: "",
 		},
 	}
 
@@ -500,16 +580,28 @@ func TestResolveCallerAgent(t *testing.T) {
 		expected     string
 	}{
 		{
+			name:         "missingHeaderWithCurrentAgent",
+			headerAgent:  "",
+			currentAgent: "go-developer",
+			expected:     "go-developer",
+		},
+		{
+			name:         "missingHeaderWithEmptyCurrent",
+			headerAgent:  "",
+			currentAgent: "",
+			expected:     "",
+		},
+		{
 			name:         "nonCoordinatorHeader",
-			headerAgent:  "backend-go-developer",
+			headerAgent:  "go-developer",
 			currentAgent: "react-developer",
-			expected:     "backend-go-developer",
+			expected:     "go-developer",
 		},
 		{
 			name:         "coordinatorHeaderWithCurrentAgent",
 			headerAgent:  "coordinator",
-			currentAgent: "backend-go-developer",
-			expected:     "backend-go-developer",
+			currentAgent: "go-developer",
+			expected:     "go-developer",
 		},
 		{
 			name:         "coordinatorHeaderWithCoordinatorCurrent",
@@ -551,35 +643,35 @@ func messageMatchCases() []messageMatchTest {
 	return []messageMatchTest{
 		{
 			name:         "matchesAgent",
-			agentField:   "backend-go-developer",
-			currentAgent: "backend-go-developer",
+			agentField:   "go-developer",
+			currentAgent: "go-developer",
 			currentModel: "",
 			expected:     true,
 		},
 		{
 			name:         "matchesModel",
 			agentField:   "opencode/glm-5",
-			currentAgent: "backend-go-developer",
+			currentAgent: "go-developer",
 			currentModel: "opencode/glm-5",
 			expected:     true,
 		},
 		{
 			name:         "noMatch",
 			agentField:   "react-developer",
-			currentAgent: "backend-go-developer",
+			currentAgent: "go-developer",
 			currentModel: "",
 			expected:     false,
 		},
 		{
 			name:         "emptyAgentField",
 			agentField:   "",
-			currentAgent: "backend-go-developer",
+			currentAgent: "go-developer",
 			currentModel: "",
 			expected:     false,
 		},
 		{
 			name:         "emptyCurrentAgent",
-			agentField:   "backend-go-developer",
+			agentField:   "go-developer",
 			currentAgent: "",
 			currentModel: "",
 			expected:     false,
@@ -587,7 +679,7 @@ func messageMatchCases() []messageMatchTest {
 		{
 			name:         "modelMatchWithEmptyModel",
 			agentField:   "opencode/glm-5",
-			currentAgent: "backend-go-developer",
+			currentAgent: "go-developer",
 			currentModel: "",
 			expected:     false,
 		},
@@ -862,14 +954,16 @@ func TestUpdateWorkflowState(t *testing.T) {
 }
 
 func TestSendMessage(t *testing.T) {
-	dagAgents := []string{"coordinator", "backend-go-developer", "react-developer"}
+	dagAgents := []string{"coordinator", "go-developer", "react-developer", "project-critic-council"}
 
 	tests := []struct {
 		name         string
 		callerAgent  string
 		toAgent      string
 		body         string
+		goalContent  string
 		wantContains string
+		wantTargets  []string
 	}{
 		{
 			name:         "nilCoordinator",
@@ -888,23 +982,35 @@ func TestSendMessage(t *testing.T) {
 		{
 			name:         "sendFromCoordinator",
 			callerAgent:  "coordinator",
-			toAgent:      "backend-go-developer",
+			toAgent:      "go-developer",
 			body:         "please review this",
 			wantContains: "Message sent successfully",
 		},
 		{
 			name:         "sendFromNonCoordinator",
-			callerAgent:  "backend-go-developer",
+			callerAgent:  "go-developer",
 			toAgent:      "coordinator",
 			body:         "done with review",
 			wantContains: "IMPORTANT: To receive a response",
+		},
+		{
+			name:         "fansOutToMultiModelAgent",
+			callerAgent:  "coordinator",
+			toAgent:      "project-critic-council",
+			body:         "please review this session",
+			goalContent:  "---\nmodels:\n  \"project-critic-council\": [\"model-a\", \"model-b\"]\n---\n# Goal\n",
+			wantContains: "Sent 2 messages successfully",
+			wantTargets: []string{
+				"project-critic-council:model-a",
+				"project-critic-council:model-b",
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.name == "nilCoordinator" {
-				result, err := sendMessage(nil, dagAgents, tt.callerAgent, tt.toAgent, tt.body)
+				result, err := sendMessage("", nil, dagAgents, tt.callerAgent, tt.toAgent, tt.body)
 				require.NoError(t, err)
 				assert.Contains(t, result, tt.wantContains)
 				return
@@ -917,10 +1023,20 @@ func TestSendMessage(t *testing.T) {
 				Messages: []state.Message{},
 			})
 			require.NoError(t, err)
+			if tt.goalContent != "" {
+				require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "GOAL.md"), []byte(tt.goalContent), 0o644))
+			}
 
-			result, err := sendMessage(coord, dagAgents, tt.callerAgent, tt.toAgent, tt.body)
+			result, err := sendMessage(tmpDir, coord, dagAgents, tt.callerAgent, tt.toAgent, tt.body)
 			require.NoError(t, err)
 			assert.Contains(t, result, tt.wantContains)
+			if len(tt.wantTargets) > 0 {
+				messages := coord.State().Messages
+				require.Len(t, messages, len(tt.wantTargets))
+				for i, wantTarget := range tt.wantTargets {
+					assert.Equal(t, wantTarget, messages[i].ToAgent)
+				}
+			}
 		})
 	}
 }
@@ -1412,23 +1528,48 @@ func TestBuildMCPHTTPHandler(t *testing.T) {
 	assert.NotNil(t, handler)
 }
 
-func TestBuildMCPServerInternal(t *testing.T) {
-	stateFile := filepath.Join(t.TempDir(), "state.json")
-	coord, errCoord := state.NewCoordinatorWith(stateFile, state.Workflow{})
-	require.NoError(t, errCoord)
-	r, _ := http.NewRequest("GET", "/", nil)
-	server := buildMCPServer(t.TempDir(), r, coord, []string{"builder"})
-	assert.NotNil(t, server)
+func connectInternalMCPClient(t *testing.T, r *http.Request, coord *state.Coordinator, dagAgents []string) *mcp.ClientSession {
+	t.Helper()
+	mcpServer := buildMCPServer(t.TempDir(), r, coord, dagAgents)
+	ct, st := mcp.NewInMemoryTransports()
+	_, errConnect := mcpServer.Connect(context.Background(), st, nil)
+	require.NoError(t, errConnect)
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client"}, nil)
+	cs, errClient := client.Connect(context.Background(), ct, nil)
+	require.NoError(t, errClient)
+	t.Cleanup(func() { _ = cs.Close() })
+	return cs
 }
 
-func TestBuildMCPServerWithAgentHeader(t *testing.T) {
+func mcpToolNames(tools []*mcp.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Name)
+	}
+	return names
+}
+
+func TestBuildMCPServerOmitsCoordinatorOnlyToolsWithoutAgentHeader(t *testing.T) {
 	stateFile := filepath.Join(t.TempDir(), "state.json")
 	coord, errCoord := state.NewCoordinatorWith(stateFile, state.Workflow{})
 	require.NoError(t, errCoord)
 	r, _ := http.NewRequest("GET", "/", nil)
-	r.Header.Set("X-Sgai-Agent-Identity", "builder|")
-	server := buildMCPServer(t.TempDir(), r, coord, []string{"builder"})
-	assert.NotNil(t, server)
+	cs := connectInternalMCPClient(t, r, coord, []string{"builder"})
+	result, errList := cs.ListTools(context.Background(), &mcp.ListToolsParams{})
+	require.NoError(t, errList)
+	assert.False(t, slices.Contains(mcpToolNames(result.Tools), "delete_unread_messages"))
+}
+
+func TestBuildMCPServerExposesCoordinatorOnlyToolsForCoordinator(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+	coord, errCoord := state.NewCoordinatorWith(stateFile, state.Workflow{})
+	require.NoError(t, errCoord)
+	r, _ := http.NewRequest("GET", "/", nil)
+	r.Header.Set("X-Sgai-Agent-Identity", "coordinator|")
+	cs := connectInternalMCPClient(t, r, coord, []string{"builder", "coordinator"})
+	result, errList := cs.ListTools(context.Background(), &mcp.ListToolsParams{})
+	require.NoError(t, errList)
+	assert.True(t, slices.Contains(mcpToolNames(result.Tools), "delete_unread_messages"))
 }
 
 func TestRegisterCommonToolsInternal(t *testing.T) {
@@ -1821,7 +1962,7 @@ func TestSendMessageInvalidAgent(t *testing.T) {
 	stateFile := filepath.Join(t.TempDir(), "state.json")
 	coord, err := state.NewCoordinatorWith(stateFile, state.Workflow{})
 	require.NoError(t, err)
-	result, err := sendMessage(coord, []string{"coordinator", "builder"}, "builder", "nonexistent-agent", "hello")
+	result, err := sendMessage("", coord, []string{"coordinator", "builder"}, "builder", "nonexistent-agent", "hello")
 	require.NoError(t, err)
 	assert.Contains(t, result, "not in the workflow")
 }
@@ -1830,7 +1971,7 @@ func TestSendMessageValidAgent(t *testing.T) {
 	stateFile := filepath.Join(t.TempDir(), "state.json")
 	coord, err := state.NewCoordinatorWith(stateFile, state.Workflow{})
 	require.NoError(t, err)
-	result, err := sendMessage(coord, []string{"coordinator", "builder"}, "builder", "coordinator", "hello from builder")
+	result, err := sendMessage("", coord, []string{"coordinator", "builder"}, "builder", "coordinator", "hello from builder")
 	require.NoError(t, err)
 	assert.Contains(t, result, "sent")
 }

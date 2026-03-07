@@ -19,13 +19,13 @@ var workflowTemplates = []workflowTemplate{
 		Icon:        "⚙️",
 		Agents: []composerAgentConf{
 			{Name: "coordinator", Selected: true, Model: defaultAgentModel},
-			{Name: "backend-go-developer", Selected: true, Model: defaultAgentModel},
-			{Name: "go-readability-reviewer", Selected: true, Model: defaultAgentModel},
+			{Name: "go-developer", Selected: true, Model: defaultAgentModel},
+			{Name: "go-reviewer", Selected: true, Model: defaultAgentModel},
 			{Name: "stpa-analyst", Selected: true, Model: defaultAgentModel},
 		},
-		Flow: `"backend-go-developer" -> "go-readability-reviewer"
-"backend-go-developer" -> "stpa-analyst"
-"go-readability-reviewer" -> "stpa-analyst"`,
+		Flow: `"go-developer" -> "go-reviewer"
+"go-developer" -> "stpa-analyst"
+"go-reviewer" -> "stpa-analyst"`,
 	},
 	{
 		ID:          "frontend",
@@ -46,15 +46,15 @@ var workflowTemplates = []workflowTemplate{
 		Icon:        "🚀",
 		Agents: []composerAgentConf{
 			{Name: "coordinator", Selected: true, Model: defaultAgentModel},
-			{Name: "backend-go-developer", Selected: true, Model: defaultAgentModel},
-			{Name: "go-readability-reviewer", Selected: true, Model: defaultAgentModel},
+			{Name: "go-developer", Selected: true, Model: defaultAgentModel},
+			{Name: "go-reviewer", Selected: true, Model: defaultAgentModel},
 			{Name: "htmx-picocss-frontend-developer", Selected: true, Model: defaultAgentModel},
 			{Name: "htmx-picocss-frontend-reviewer", Selected: true, Model: defaultAgentModel},
 			{Name: "stpa-analyst", Selected: true, Model: defaultAgentModel},
 		},
-		Flow: `"backend-go-developer" -> "go-readability-reviewer"
-"backend-go-developer" -> "stpa-analyst"
-"go-readability-reviewer" -> "stpa-analyst"
+		Flow: `"go-developer" -> "go-reviewer"
+"go-developer" -> "stpa-analyst"
+"go-reviewer" -> "stpa-analyst"
 "htmx-picocss-frontend-developer" -> "htmx-picocss-frontend-reviewer"
 "htmx-picocss-frontend-reviewer" -> "stpa-analyst"`,
 	},
@@ -218,7 +218,7 @@ func techStackFromAgents(agents []composerAgentConf) []string {
 	if selected["general-purpose"] {
 		stack = append(stack, "general-purpose")
 	}
-	if selected["backend-go-developer"] {
+	if selected["go-developer"] {
 		stack = append(stack, "go")
 	}
 	if selected["htmx-picocss-frontend-developer"] {

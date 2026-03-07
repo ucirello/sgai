@@ -49,6 +49,10 @@ func TestGetWorkspaceStateService(t *testing.T) {
 			server := NewServer(rootDir)
 
 			tt.setupFunc(t, rootDir)
+			workspacePath := filepath.Join(rootDir, "test-workspace")
+			if _, errStat := os.Stat(workspacePath); errStat == nil {
+				server.externalDirs[resolveSymlinks(workspacePath)] = true
+			}
 
 			result, err := server.getWorkspaceStateService(tt.workspaceName)
 
@@ -220,17 +224,20 @@ func TestGetWorkspaceStateServiceWithMultipleWorkspaces(t *testing.T) {
 	require.NoError(t, os.MkdirAll(rootPath, 0755))
 	require.NoError(t, os.MkdirAll(filepath.Join(rootPath, ".sgai"), 0755))
 	require.NoError(t, os.MkdirAll(filepath.Join(rootPath, ".jj", "repo"), 0755))
+	server.externalDirs[resolveSymlinks(rootPath)] = true
 
 	forkPath := filepath.Join(rootDir, "fork-workspace")
 	require.NoError(t, os.MkdirAll(forkPath, 0755))
 	require.NoError(t, os.MkdirAll(filepath.Join(forkPath, ".sgai"), 0755))
 	require.NoError(t, os.MkdirAll(filepath.Join(forkPath, ".jj"), 0755))
 	repoFile := filepath.Join(forkPath, ".jj", "repo")
-	require.NoError(t, os.WriteFile(repoFile, []byte(rootPath), 0644))
+	require.NoError(t, os.WriteFile(repoFile, []byte(filepath.Join(rootPath, ".jj", "repo")), 0644))
+	server.externalDirs[resolveSymlinks(forkPath)] = true
 
 	standalonePath := filepath.Join(rootDir, "standalone-workspace")
 	require.NoError(t, os.MkdirAll(standalonePath, 0755))
 	require.NoError(t, os.MkdirAll(filepath.Join(standalonePath, ".sgai"), 0755))
+	server.externalDirs[resolveSymlinks(standalonePath)] = true
 
 	result, err := server.getWorkspaceStateService("root-workspace")
 	require.NoError(t, err)
@@ -250,6 +257,44 @@ func TestGetWorkspaceStateServiceWithMultipleWorkspaces(t *testing.T) {
 	result, err = server.getWorkspaceStateService("non-existent-workspace")
 	require.NoError(t, err)
 	assert.False(t, result.Found)
+}
+
+func TestGetWorkspaceStateServiceUsesGroupedRootMode(t *testing.T) {
+	rootDir := t.TempDir()
+	server := NewServer(rootDir)
+
+	attachedRootDir := filepath.Join(rootDir, "attached-root")
+	attachedForkDir := filepath.Join(rootDir, "attached-fork")
+	createForkFixture(t, attachedRootDir, attachedForkDir)
+	attachWorkspaceFixture(t, server, attachedRootDir, workspaceRoot)
+
+	result, errState := server.getWorkspaceStateService(filepath.Base(attachedRootDir))
+	require.NoError(t, errState)
+	assert.True(t, result.Found)
+	assert.False(t, result.Workspace.IsRoot)
+	assert.Empty(t, result.Workspace.Forks)
+
+	attachWorkspaceFixture(t, server, attachedForkDir, workspaceFork)
+	server.invalidateWorkspaceScanCache()
+
+	result, errState = server.getWorkspaceStateService(filepath.Base(attachedRootDir))
+	require.NoError(t, errState)
+	assert.True(t, result.Found)
+	assert.True(t, result.Workspace.IsRoot)
+	require.Len(t, result.Workspace.Forks, 1)
+	assert.Equal(t, filepath.Base(attachedForkDir), result.Workspace.Forks[0].Name)
+	assert.Equal(t, resolveSymlinks(attachedForkDir), result.Workspace.Forks[0].Dir)
+
+	server.mu.Lock()
+	delete(server.externalDirs, resolveSymlinks(attachedForkDir))
+	server.mu.Unlock()
+	server.invalidateWorkspaceScanCache()
+
+	result, errState = server.getWorkspaceStateService(filepath.Base(attachedRootDir))
+	require.NoError(t, errState)
+	assert.True(t, result.Found)
+	assert.False(t, result.Workspace.IsRoot)
+	assert.Empty(t, result.Workspace.Forks)
 }
 
 func TestGetWorkflowSVGServiceWithDifferentGoals(t *testing.T) {

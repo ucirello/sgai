@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -106,6 +108,44 @@ func TestAddRetrospectiveRedirectMessage(t *testing.T) {
 	assert.Equal(t, "retrospective", msg.ToAgent)
 	assert.Contains(t, msg.Body, "retrospective analysis")
 	assert.False(t, msg.Read)
+}
+
+func TestAddProjectCriticCouncilRedirectMessage(t *testing.T) {
+	wfState := &state.Workflow{
+		Messages: []state.Message{
+			{ID: 1, FromAgent: "dev", ToAgent: "coordinator", Body: "done", Read: true},
+		},
+	}
+
+	addProjectCriticCouncilRedirectMessages(wfState, "", "coordinator", GoalMetadata{})
+
+	require.Len(t, wfState.Messages, 2)
+	msg := wfState.Messages[1]
+	assert.Equal(t, 2, msg.ID)
+	assert.Equal(t, "coordinator", msg.FromAgent)
+	assert.Equal(t, "project-critic-council", msg.ToAgent)
+	assert.Contains(t, msg.Body, "final completion verdict")
+	assert.False(t, msg.Read)
+}
+
+func TestAddProjectCriticCouncilRedirectMessageFansOutToCouncilModels(t *testing.T) {
+	wfState := &state.Workflow{}
+
+	addProjectCriticCouncilRedirectMessages(wfState, t.TempDir(), "coordinator", GoalMetadata{
+		Models: map[string]any{
+			"project-critic-council": []any{"model-a", "model-b"},
+		},
+	})
+
+	require.Len(t, wfState.Messages, 2)
+	assert.Equal(t, "project-critic-council:model-a", wfState.Messages[0].ToAgent)
+	assert.Equal(t, "project-critic-council:model-b", wfState.Messages[1].ToAgent)
+}
+
+func TestHasUnreadMessageForAgent(t *testing.T) {
+	assert.False(t, hasUnreadMessageForAgent(nil, "retrospective"))
+	assert.False(t, hasUnreadMessageForAgent([]state.Message{{ToAgent: "retrospective", Read: true}}, "retrospective"))
+	assert.True(t, hasUnreadMessageForAgent([]state.Message{{ToAgent: "project-critic-council:model1", Read: false}}, "project-critic-council"))
 }
 
 func TestBlockCompletionOnPendingTodos(t *testing.T) {
@@ -310,6 +350,116 @@ func TestBlockCompletionOnRetrospective(t *testing.T) {
 	})
 }
 
+func TestBlockCompletionOnProjectCriticCouncil(t *testing.T) {
+	t.Run("retrospectiveDisabled", func(t *testing.T) {
+		cfg := multiModelConfig{flowDag: &dag{Nodes: map[string]*dagNode{"project-critic-council": {}}}}
+		metadata := GoalMetadata{Retrospective: "false"}
+		result := blockCompletionOnProjectCriticCouncil(cfg, state.Workflow{}, metadata)
+		assert.Nil(t, result)
+	})
+
+	t.Run("noCouncilInDag", func(t *testing.T) {
+		cfg := multiModelConfig{flowDag: &dag{Nodes: map[string]*dagNode{}}}
+		metadata := GoalMetadata{Retrospective: "true"}
+		result := blockCompletionOnProjectCriticCouncil(cfg, state.Workflow{}, metadata)
+		assert.Nil(t, result)
+	})
+
+	t.Run("councilAlreadyRan", func(t *testing.T) {
+		cfg := multiModelConfig{flowDag: &dag{Nodes: map[string]*dagNode{"project-critic-council": {}}}}
+		metadata := GoalMetadata{Retrospective: "true"}
+		newState := state.Workflow{VisitCounts: map[string]int{"project-critic-council": 1}}
+		result := blockCompletionOnProjectCriticCouncil(cfg, newState, metadata)
+		assert.Nil(t, result)
+	})
+
+	t.Run("blocksCompletion", func(t *testing.T) {
+		dir := t.TempDir()
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+		require.NoError(t, err)
+
+		cfg := multiModelConfig{
+			coord:      coord,
+			agent:      "coordinator",
+			paddedsgai: "sgai",
+			flowDag: &dag{Nodes: map[string]*dagNode{
+				"project-critic-council": {},
+			}},
+		}
+		metadata := GoalMetadata{Retrospective: "true"}
+		newState := state.Workflow{
+			Status:      state.StatusComplete,
+			VisitCounts: map[string]int{},
+		}
+		result := blockCompletionOnProjectCriticCouncil(cfg, newState, metadata)
+		require.NotNil(t, result)
+		assert.Equal(t, state.StatusAgentDone, result.Status)
+		require.Len(t, result.Messages, 1)
+		assert.Equal(t, "project-critic-council", result.Messages[0].ToAgent)
+	})
+
+	t.Run("fansOutToCouncilModels", func(t *testing.T) {
+		dir := t.TempDir()
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+		require.NoError(t, err)
+
+		cfg := multiModelConfig{
+			coord:      coord,
+			dir:        dir,
+			agent:      "coordinator",
+			paddedsgai: "sgai",
+			flowDag: &dag{Nodes: map[string]*dagNode{
+				"project-critic-council": {},
+			}},
+		}
+		metadata := GoalMetadata{
+			Retrospective: "true",
+			Models: map[string]any{
+				"project-critic-council": []any{"model-a", "model-b"},
+			},
+		}
+		newState := state.Workflow{
+			Status:      state.StatusComplete,
+			VisitCounts: map[string]int{},
+		}
+
+		result := blockCompletionOnProjectCriticCouncil(cfg, newState, metadata)
+		require.NotNil(t, result)
+		assert.Equal(t, state.StatusAgentDone, result.Status)
+		require.Len(t, result.Messages, 2)
+		assert.Equal(t, "project-critic-council:model-a", result.Messages[0].ToAgent)
+		assert.Equal(t, "project-critic-council:model-b", result.Messages[1].ToAgent)
+	})
+
+	t.Run("doesNotDuplicateUnreadCouncilMessage", func(t *testing.T) {
+		dir := t.TempDir()
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+		require.NoError(t, err)
+
+		cfg := multiModelConfig{
+			coord:      coord,
+			agent:      "coordinator",
+			paddedsgai: "sgai",
+			flowDag: &dag{Nodes: map[string]*dagNode{
+				"project-critic-council": {},
+			}},
+		}
+		newState := state.Workflow{
+			Status:      state.StatusComplete,
+			VisitCounts: map[string]int{},
+			Messages: []state.Message{{
+				ID:      1,
+				ToAgent: "project-critic-council",
+				Read:    false,
+			}},
+		}
+
+		result := blockCompletionOnProjectCriticCouncil(cfg, newState, GoalMetadata{Retrospective: "true"})
+		require.NotNil(t, result)
+		assert.Len(t, result.Messages, 1)
+	})
+}
+
 func TestBlockCompletionOnGateScript(t *testing.T) {
 	t.Run("noGateScript", func(t *testing.T) {
 		cfg := multiModelConfig{}
@@ -421,6 +571,28 @@ func TestHandleCompleteStatus(t *testing.T) {
 
 		result := handleCompleteStatus(t.Context(), cfg, newState, wfState, GoalMetadata{})
 		assert.Equal(t, state.StatusAgentDone, result.Status)
+	})
+
+	t.Run("blockedByProjectCriticCouncilBeforeRetrospective", func(t *testing.T) {
+		dir := t.TempDir()
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+		require.NoError(t, err)
+
+		cfg := multiModelConfig{
+			coord:      coord,
+			agent:      "coordinator",
+			paddedsgai: "sgai",
+			flowDag: &dag{Nodes: map[string]*dagNode{
+				"project-critic-council": {},
+				"retrospective":          {},
+			}},
+		}
+
+		newState := state.Workflow{Status: state.StatusComplete, VisitCounts: map[string]int{}}
+		result := handleCompleteStatus(t.Context(), cfg, newState, state.Workflow{}, GoalMetadata{})
+		assert.Equal(t, state.StatusAgentDone, result.Status)
+		require.Len(t, result.Messages, 1)
+		assert.Equal(t, "project-critic-council", result.Messages[0].ToAgent)
 	})
 }
 
@@ -563,6 +735,31 @@ func TestBuildAgentMessageWithMultiModel(t *testing.T) {
 	assert.NotEmpty(t, msg)
 }
 
+func TestBuildAgentMessageWithModelSpecificPendingMessages(t *testing.T) {
+	dag := buildTestDag(map[string][]string{"coordinator": {"project-critic-council"}}, []string{"coordinator"})
+	cfg := multiModelConfig{
+		dir:     "/tmp/test",
+		agent:   "project-critic-council",
+		flowDag: dag,
+	}
+	wfState := state.Workflow{
+		Messages: []state.Message{
+			{ID: 1, FromAgent: "coordinator", ToAgent: "project-critic-council:model-2", Body: "Please review", Read: false},
+		},
+		VisitCounts:  map[string]int{"project-critic-council": 1},
+		CurrentAgent: "project-critic-council",
+		CurrentModel: "project-critic-council:model-2",
+	}
+	metadata := GoalMetadata{
+		Models: map[string]any{
+			"project-critic-council": []any{"model-1", "model-2"},
+		},
+	}
+
+	msg := buildAgentMessage(cfg, wfState, metadata)
+	assert.Contains(t, msg, "PENDING MESSAGE")
+}
+
 func TestInitializeWorkspaceDirAlreadyExists(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0o755))
@@ -575,6 +772,240 @@ func TestInitializeWorkspaceDirFreshSetup(t *testing.T) {
 	err := initializeWorkspaceDir(dir)
 	assert.NoError(t, err)
 	assert.DirExists(t, filepath.Join(dir, ".sgai"))
+}
+
+func TestInitializeWorkspaceDirRefreshesExistingDotSGAI(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai", "agent"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sgai", "skills", "startup-overlay"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".sgai", "agent", "coordinator.md"), []byte("stale coordinator"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sgai", "skills", "startup-overlay", "SKILL.md"), []byte("overlay refresh"), 0o644))
+
+	err := initializeWorkspaceDir(dir)
+	require.NoError(t, err)
+
+	wantCoordinator := readSkeletonFileForTest(t, ".sgai/agent/coordinator.md")
+	gotCoordinator, errRead := os.ReadFile(filepath.Join(dir, ".sgai", "agent", "coordinator.md"))
+	require.NoError(t, errRead)
+	assert.Equal(t, wantCoordinator, string(gotCoordinator))
+
+	gotOverlay, errRead := os.ReadFile(filepath.Join(dir, ".sgai", "skills", "startup-overlay", "SKILL.md"))
+	require.NoError(t, errRead)
+	assert.Equal(t, "overlay refresh", string(gotOverlay))
+}
+
+func assertInitializeWorkspaceDirRefreshesGitExclude(t *testing.T, initialExclude string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	excludePath := filepath.Join(dir, ".git", "info", "exclude")
+	require.NoError(t, initializeJJ(dir))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Dir(excludePath), 0o755))
+	require.NoError(t, os.WriteFile(excludePath, []byte(initialExclude), 0o644))
+
+	err := initializeWorkspaceDir(dir)
+	require.NoError(t, err)
+
+	content, errRead := os.ReadFile(excludePath)
+	require.NoError(t, errRead)
+	assert.Equal(t, "node_modules\n/.sgai\n", string(content))
+
+	err = initializeWorkspaceDir(dir)
+	require.NoError(t, err)
+
+	content, errRead = os.ReadFile(excludePath)
+	require.NoError(t, errRead)
+	assert.Equal(t, "node_modules\n/.sgai\n", string(content))
+}
+
+func TestInitializeWorkspaceDirRefreshesGitExcludeForExistingWorkspace(t *testing.T) {
+	assertInitializeWorkspaceDirRefreshesGitExclude(t, "node_modules\n")
+}
+
+func TestInitializeWorkspaceDirRefreshesGitExcludeWithoutTrailingNewlineForExistingWorkspace(t *testing.T) {
+	assertInitializeWorkspaceDirRefreshesGitExclude(t, "node_modules")
+}
+
+func TestInitializeWorkspaceDirRefreshesGitExcludeForGitFileWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, "repo-meta", "git")
+	excludePath := filepath.Join(gitDir, "info", "exclude")
+	require.NoError(t, os.MkdirAll(filepath.Dir(excludePath), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: repo-meta/git\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".jj"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".jj", "repo"), []byte("/tmp/root/.jj/repo"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0o755))
+	require.NoError(t, os.WriteFile(excludePath, []byte("node_modules\n"), 0o644))
+
+	err := initializeWorkspaceDir(dir)
+	require.NoError(t, err)
+
+	content, errRead := os.ReadFile(excludePath)
+	require.NoError(t, errRead)
+	assert.Equal(t, "node_modules\n/.sgai\n", string(content))
+
+	err = initializeWorkspaceDir(dir)
+	require.NoError(t, err)
+
+	content, errRead = os.ReadFile(excludePath)
+	require.NoError(t, errRead)
+	assert.Equal(t, "node_modules\n/.sgai\n", string(content))
+}
+
+func TestInitializeWorkspaceDirRefreshesGitExcludeForGitWorktreeWorkspace(t *testing.T) {
+	base := t.TempDir()
+	workspaceDir := filepath.Join(base, "feature")
+	gitCommonDir := filepath.Join(base, "main", ".git")
+	gitDir := filepath.Join(gitCommonDir, "worktrees", "feature")
+	excludePath := filepath.Join(gitDir, "info", "exclude")
+	require.NoError(t, os.MkdirAll(filepath.Dir(excludePath), 0o755))
+	seedGitCommonDir(t, gitCommonDir)
+	seedGitWorktreeMetadata(t, workspaceDir, gitDir, "../..")
+	seedWorkspaceInitializationState(t, workspaceDir)
+	require.NoError(t, os.WriteFile(excludePath, []byte("node_modules\n"), 0o644))
+
+	err := initializeWorkspaceDir(workspaceDir)
+	require.NoError(t, err)
+
+	content, errRead := os.ReadFile(excludePath)
+	require.NoError(t, errRead)
+	assert.Equal(t, "node_modules\n/.sgai\n", string(content))
+}
+
+func TestInitializeWorkspaceDirRejectsGitFileOutsideBoundary(t *testing.T) {
+	dir := t.TempDir()
+	hostileGitDir := filepath.Join(t.TempDir(), "git-meta")
+	require.NoError(t, os.MkdirAll(hostileGitDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: "+hostileGitDir+"\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".jj"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".jj", "repo"), []byte("/tmp/root/.jj/repo"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0o755))
+
+	err := initializeWorkspaceDir(dir)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "escapes repository metadata boundary")
+	_, errStat := os.Stat(filepath.Join(hostileGitDir, "info", "exclude"))
+	assert.True(t, os.IsNotExist(errStat))
+}
+
+func TestInitializeWorkspaceDirRejectsForgedGitWorktreeMetadata(t *testing.T) {
+	base := t.TempDir()
+	workspaceDir := filepath.Join(base, "feature")
+	gitDir := filepath.Join(base, "hostile", ".git", "worktrees", "feature")
+	seedGitWorktreeMetadata(t, workspaceDir, gitDir, "../../elsewhere")
+	seedWorkspaceInitializationState(t, workspaceDir)
+
+	err := initializeWorkspaceDir(workspaceDir)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "repository metadata boundary")
+	_, errStat := os.Stat(filepath.Join(gitDir, "info", "exclude"))
+	assert.True(t, os.IsNotExist(errStat))
+}
+
+func TestInitializeWorkspaceDirRejectsSelfConsistentForgedGitWorktreeMetadata(t *testing.T) {
+	base := t.TempDir()
+	workspaceDir := filepath.Join(base, "feature")
+	gitDir := filepath.Join(base, "hostile", ".git", "worktrees", "feature")
+	seedGitWorktreeMetadata(t, workspaceDir, gitDir, "../..")
+	seedWorkspaceInitializationState(t, workspaceDir)
+
+	err := initializeWorkspaceDir(workspaceDir)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "repository metadata boundary")
+	_, errStat := os.Stat(filepath.Join(gitDir, "info", "exclude"))
+	assert.True(t, os.IsNotExist(errStat))
+}
+
+func TestInitializeWorkspaceDirRejectsGitFileSymlinkEscape(t *testing.T) {
+	base := t.TempDir()
+	workspaceDir := filepath.Join(base, "workspace")
+	hostileGitDir := filepath.Join(base, "elsewhere", "git-meta")
+	symlinkPath := filepath.Join(workspaceDir, "meta-link")
+	require.NoError(t, os.MkdirAll(workspaceDir, 0o755))
+	require.NoError(t, os.MkdirAll(hostileGitDir, 0o755))
+	require.NoError(t, os.Symlink(hostileGitDir, symlinkPath))
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, ".git"), []byte("gitdir: meta-link\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceDir, ".jj"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, ".jj", "repo"), []byte("/tmp/root/.jj/repo"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceDir, ".sgai"), 0o755))
+
+	err := initializeWorkspaceDir(workspaceDir)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "escapes repository metadata boundary")
+	_, errStat := os.Stat(filepath.Join(hostileGitDir, "info", "exclude"))
+	assert.True(t, os.IsNotExist(errStat))
+}
+
+func TestInitializeWorkspaceDirRejectsSymlinkedGitEntry(t *testing.T) {
+	base := t.TempDir()
+	workspaceDir := filepath.Join(base, "workspace")
+	hostileGitDir := filepath.Join(base, "elsewhere", ".git")
+	require.NoError(t, os.MkdirAll(workspaceDir, 0o755))
+	require.NoError(t, os.MkdirAll(hostileGitDir, 0o755))
+	require.NoError(t, os.Symlink(hostileGitDir, filepath.Join(workspaceDir, ".git")))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceDir, ".jj"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, ".jj", "repo"), []byte("/tmp/root/.jj/repo"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceDir, ".sgai"), 0o755))
+
+	err := initializeWorkspaceDir(workspaceDir)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "symlinked .git entry")
+	_, errStat := os.Stat(filepath.Join(hostileGitDir, "info", "exclude"))
+	assert.True(t, os.IsNotExist(errStat))
+}
+
+func TestInitializeWorkspaceDirRejectsSymlinkedGitInfoDir(t *testing.T) {
+	base := t.TempDir()
+	workspaceDir := filepath.Join(base, "workspace")
+	hostileInfoDir := filepath.Join(base, "elsewhere", "info")
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceDir, ".git"), 0o755))
+	require.NoError(t, os.MkdirAll(hostileInfoDir, 0o755))
+	require.NoError(t, os.Symlink(hostileInfoDir, filepath.Join(workspaceDir, ".git", "info")))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceDir, ".jj"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, ".jj", "repo"), []byte("/tmp/root/.jj/repo"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceDir, ".sgai"), 0o755))
+
+	err := initializeWorkspaceDir(workspaceDir)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "symlinked path is not allowed")
+	_, errStat := os.Stat(filepath.Join(hostileInfoDir, "exclude"))
+	assert.True(t, os.IsNotExist(errStat))
+}
+
+func TestInitializeWorkspaceDirRejectsSymlinkedGitExcludeFile(t *testing.T) {
+	base := t.TempDir()
+	workspaceDir := filepath.Join(base, "workspace")
+	hostileExcludePath := filepath.Join(base, "elsewhere", "exclude")
+	gitInfoDir := filepath.Join(workspaceDir, ".git", "info")
+	require.NoError(t, os.MkdirAll(gitInfoDir, 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Dir(hostileExcludePath), 0o755))
+	require.NoError(t, os.WriteFile(hostileExcludePath, []byte("node_modules\n"), 0o644))
+	require.NoError(t, os.Symlink(hostileExcludePath, filepath.Join(gitInfoDir, "exclude")))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceDir, ".jj"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, ".jj", "repo"), []byte("/tmp/root/.jj/repo"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceDir, ".sgai"), 0o755))
+
+	err := initializeWorkspaceDir(workspaceDir)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "symlinked path is not allowed")
+	content, errRead := os.ReadFile(hostileExcludePath)
+	require.NoError(t, errRead)
+	assert.Equal(t, "node_modules\n", string(content))
+}
+
+func TestInitializeWorkspaceDirPreservesObsoleteFiles(t *testing.T) {
+	dir := t.TempDir()
+	obsoletePath := filepath.Join(dir, ".sgai", "skills", "obsolete", "SKILL.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(obsoletePath), 0o755))
+	require.NoError(t, os.WriteFile(obsoletePath, []byte("keep me"), 0o644))
+
+	err := initializeWorkspaceDir(dir)
+	require.NoError(t, err)
+
+	content, errRead := os.ReadFile(obsoletePath)
+	require.NoError(t, errRead)
+	assert.Equal(t, "keep me", string(content))
 }
 
 func TestFormatDurationVariants(t *testing.T) {
@@ -667,7 +1098,7 @@ func TestValidateModelsPartial(t *testing.T) {
 		if _, err := exec.LookPath("opencode"); err != nil {
 			t.Skip("opencode not found in PATH")
 		}
-		models := map[string]any{"coordinator": "anthropic/claude-opus-4-6"}
+		models := map[string]any{"coordinator": "opencode/claude-opus-4-6"}
 		err := validateModels(models)
 		assert.NoError(t, err)
 	})
@@ -686,7 +1117,7 @@ func TestValidateModelsPartial(t *testing.T) {
 		if _, err := exec.LookPath("opencode"); err != nil {
 			t.Skip("opencode not found in PATH")
 		}
-		models := map[string]any{"coordinator": []any{"anthropic/claude-opus-4-6", "anthropic/claude-sonnet-4-6"}}
+		models := map[string]any{"coordinator": []any{"opencode/claude-opus-4-6", "opencode/claude-sonnet-4-6"}}
 		err := validateModels(models)
 		assert.NoError(t, err)
 	})
@@ -695,7 +1126,7 @@ func TestValidateModelsPartial(t *testing.T) {
 		if _, err := exec.LookPath("opencode"); err != nil {
 			t.Skip("opencode not found in PATH")
 		}
-		models := map[string]any{"coordinator": []any{"anthropic/claude-opus-4-6", "fake-model-abc"}}
+		models := map[string]any{"coordinator": []any{"opencode/claude-opus-4-6", "fake-model-abc"}}
 		err := validateModels(models)
 		assert.Error(t, err)
 	})
@@ -720,26 +1151,27 @@ func TestSaveState(t *testing.T) {
 }
 
 func TestCopyLayerSubfolder(t *testing.T) {
-	srcDir := t.TempDir()
-	dstDir := t.TempDir()
+	workspaceDir := t.TempDir()
+	srcDir := filepath.Join(workspaceDir, "sgai", "sub")
+	dstDir := filepath.Join(workspaceDir, ".sgai", "sub")
 
-	subDir := filepath.Join(srcDir, "sub")
-	require.NoError(t, os.MkdirAll(subDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(subDir, "file.txt"), []byte("content"), 0o644))
+	require.NoError(t, os.MkdirAll(srcDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("content"), 0o644))
 
-	require.NoError(t, copyLayerSubfolder(srcDir, dstDir, "sub"))
+	require.NoError(t, copyLayerSubfolder(workspaceDir, srcDir, dstDir, "sub"))
 
-	data, errRead := os.ReadFile(filepath.Join(dstDir, "sub", "file.txt"))
+	data, errRead := os.ReadFile(filepath.Join(dstDir, "file.txt"))
 	require.NoError(t, errRead)
 	assert.Equal(t, "content", string(data))
 }
 
 func TestCopyLayerSubfolderNonExistent(t *testing.T) {
-	srcDir := t.TempDir()
-	dstDir := t.TempDir()
+	workspaceDir := t.TempDir()
+	srcDir := filepath.Join(workspaceDir, "sgai", "nonexistent")
+	dstDir := filepath.Join(workspaceDir, ".sgai", "nonexistent")
 
-	require.NoError(t, copyLayerSubfolder(srcDir, dstDir, "nonexistent"))
-	_, err := os.Stat(filepath.Join(dstDir, "nonexistent"))
+	require.NoError(t, copyLayerSubfolder(workspaceDir, srcDir, dstDir, "nonexistent"))
+	_, err := os.Stat(dstDir)
 	assert.True(t, os.IsNotExist(err))
 }
 
@@ -2128,10 +2560,11 @@ func TestApplyLayerFolderOverlay(t *testing.T) {
 
 func TestAgentHasUnreadOutgoingMessages(t *testing.T) {
 	tests := []struct {
-		name      string
-		messages  []state.Message
-		agentName string
-		expected  bool
+		name         string
+		messages     []state.Message
+		agentName    string
+		currentModel string
+		expected     bool
 	}{
 		{
 			name:      "noMessages",
@@ -2163,11 +2596,20 @@ func TestAgentHasUnreadOutgoingMessages(t *testing.T) {
 			agentName: "test-agent",
 			expected:  false,
 		},
+		{
+			name: "unreadFromCurrentModel",
+			messages: []state.Message{
+				{ID: 1, FromAgent: "project-critic-council:model-a", ToAgent: "coordinator", Body: "hello", Read: false},
+			},
+			agentName:    "project-critic-council",
+			currentModel: "project-critic-council:model-a",
+			expected:     true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			wf := state.Workflow{Messages: tt.messages}
+			wf := state.Workflow{Messages: tt.messages, CurrentModel: tt.currentModel}
 			result := agentHasUnreadOutgoingMessages(wf, tt.agentName)
 			assert.Equal(t, tt.expected, result)
 		})
@@ -2235,6 +2677,28 @@ func TestBuildAgentMessage(t *testing.T) {
 				},
 			},
 			metadata:     GoalMetadata{},
+			wantContains: []string{"messages that haven't been read yet"},
+		},
+		{
+			name: "withUnreadOutboxMessagesFromCurrentModel",
+			cfg: multiModelConfig{
+				agent:   "project-critic-council",
+				flowDag: dag,
+				dir:     t.TempDir(),
+			},
+			wfState: state.Workflow{
+				Status:       state.StatusWorking,
+				VisitCounts:  map[string]int{"project-critic-council": 1},
+				CurrentModel: "project-critic-council:model-a",
+				Messages: []state.Message{
+					{ID: 1, FromAgent: "project-critic-council:model-a", ToAgent: "coordinator", Body: "review this", Read: false},
+				},
+			},
+			metadata: GoalMetadata{
+				Models: map[string]any{
+					"project-critic-council": []any{"model-a", "model-b"},
+				},
+			},
 			wantContains: []string{"messages that haven't been read yet"},
 		},
 	}
@@ -3400,8 +3864,51 @@ func TestJSONPrettyWriterRecordStepCost(t *testing.T) {
 	assert.InDelta(t, 0.05, wfState.Cost.TotalCost, 0.001)
 	assert.Equal(t, 100, wfState.Cost.TotalTokens.Input)
 	assert.Equal(t, 50, wfState.Cost.TotalTokens.Output)
+	assert.InDelta(t, 0.033333, wfState.Cost.Dollars.Input, 0.0001)
+	assert.InDelta(t, 0.016667, wfState.Cost.Dollars.Output, 0.0001)
+	assert.InDelta(t, 0.05, wfState.Cost.Dollars.Total, 0.0001)
 	assert.Len(t, wfState.Cost.ByAgent, 1)
 	assert.Equal(t, "test-agent", wfState.Cost.ByAgent[0].Agent)
+}
+
+func TestJSONPrettyWriterRecordStepCostTracksDollarBreakdown(t *testing.T) {
+	dir := t.TempDir()
+	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	w := &jsonPrettyWriter{
+		prefix:       " ",
+		w:            &buf,
+		startTime:    time.Now(),
+		coord:        coord,
+		currentAgent: "test-agent",
+		stepCounter:  1,
+	}
+
+	w.recordStepCost(part{
+		Cost: 1.2,
+		Tokens: partTokens{
+			Input:     40,
+			Output:    20,
+			Reasoning: 10,
+			Cache: cacheStats{
+				Read:  20,
+				Write: 10,
+			},
+		},
+	}, time.Now().UnixMilli())
+
+	wfState := coord.State()
+	assert.InDelta(t, 0.48, wfState.Cost.Dollars.Input, 0.0001)
+	assert.InDelta(t, 0.24, wfState.Cost.Dollars.Output, 0.0001)
+	assert.InDelta(t, 0.12, wfState.Cost.Dollars.Reasoning, 0.0001)
+	assert.InDelta(t, 0.24, wfState.Cost.Dollars.CacheRead, 0.0001)
+	assert.InDelta(t, 0.12, wfState.Cost.Dollars.CacheWrite, 0.0001)
+	assert.InDelta(t, 1.2, wfState.Cost.Dollars.Total, 0.0001)
+	require.Len(t, wfState.Cost.ByAgent, 1)
+	assert.InDelta(t, 1.2, wfState.Cost.ByAgent[0].Dollars.Total, 0.0001)
+	assert.InDelta(t, 0.12, wfState.Cost.ByAgent[0].Steps[0].Dollars.Reasoning, 0.0001)
 }
 
 func TestJSONPrettyWriterRecordStepCostMultipleSteps(t *testing.T) {
@@ -3477,6 +3984,56 @@ func TestJSONPrettyWriterRecordStepCostZeroValues(t *testing.T) {
 	w.recordStepCost(part{Cost: 0, Tokens: partTokens{}}, time.Now().UnixMilli())
 	wfState := coord.State()
 	assert.InDelta(t, 0.0, wfState.Cost.TotalCost, 0.001)
+}
+
+func TestJSONPrettyWriterRecordStepCostCachedTokensWithoutCost(t *testing.T) {
+	dir := t.TempDir()
+	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	w := &jsonPrettyWriter{
+		prefix:       " ",
+		w:            &buf,
+		startTime:    time.Now(),
+		coord:        coord,
+		currentAgent: "agent",
+		stepCounter:  3,
+	}
+
+	w.recordStepCost(part{Tokens: partTokens{Cache: cacheStats{Read: 200, Write: 50}}}, time.Now().UnixMilli())
+
+	wfState := coord.State()
+	assert.Equal(t, 200, wfState.Cost.TotalTokens.CacheRead)
+	assert.Equal(t, 50, wfState.Cost.TotalTokens.CacheWrite)
+	require.Len(t, wfState.Cost.ByAgent, 1)
+	assert.Equal(t, 200, wfState.Cost.ByAgent[0].Tokens.CacheRead)
+	assert.Equal(t, 50, wfState.Cost.ByAgent[0].Tokens.CacheWrite)
+	assert.Len(t, wfState.Cost.ByAgent[0].Steps, 1)
+}
+
+func TestJSONPrettyWriterRecordStepCostReasoningTokensWithoutCost(t *testing.T) {
+	dir := t.TempDir()
+	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	w := &jsonPrettyWriter{
+		prefix:       " ",
+		w:            &buf,
+		startTime:    time.Now(),
+		coord:        coord,
+		currentAgent: "agent",
+		stepCounter:  4,
+	}
+
+	w.recordStepCost(part{Tokens: partTokens{Reasoning: 125}}, time.Now().UnixMilli())
+
+	wfState := coord.State()
+	assert.Equal(t, 125, wfState.Cost.TotalTokens.Reasoning)
+	require.Len(t, wfState.Cost.ByAgent, 1)
+	assert.Equal(t, 125, wfState.Cost.ByAgent[0].Tokens.Reasoning)
+	assert.Len(t, wfState.Cost.ByAgent[0].Steps, 1)
 }
 
 func TestJSONPrettyWriterFormatTodoOutput(t *testing.T) {
@@ -3558,6 +4115,50 @@ func TestJSONPrettyWriterProcessEventStepFinish(t *testing.T) {
 	assert.Contains(t, buf.String(), "some text")
 	wfState := coord.State()
 	assert.InDelta(t, 0.1, wfState.Cost.TotalCost, 0.01)
+}
+
+func TestJSONPrettyWriterProcessEventHyphenatedStepEvents(t *testing.T) {
+	dir := t.TempDir()
+	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	w := &jsonPrettyWriter{
+		prefix:       " ",
+		w:            &buf,
+		startTime:    time.Now(),
+		coord:        coord,
+		currentAgent: "test-agent",
+	}
+
+	w.processEvent(streamEvent{Type: "step-start"})
+	w.processEvent(streamEvent{
+		Type:      "step-finish",
+		Timestamp: time.Now().UnixMilli(),
+		Part: part{
+			Cost: 0.2,
+			Tokens: partTokens{
+				Input:     120,
+				Output:    30,
+				Reasoning: 10,
+				Cache: cacheStats{
+					Read:  40,
+					Write: 5,
+				},
+			},
+		},
+	})
+
+	wfState := coord.State()
+	require.Len(t, wfState.Cost.ByAgent, 1)
+	assert.InDelta(t, 0.2, wfState.Cost.TotalCost, 0.0001)
+	assert.Equal(t, 120, wfState.Cost.TotalTokens.Input)
+	assert.Equal(t, 30, wfState.Cost.TotalTokens.Output)
+	assert.Equal(t, 10, wfState.Cost.TotalTokens.Reasoning)
+	assert.Equal(t, 40, wfState.Cost.TotalTokens.CacheRead)
+	assert.Equal(t, 5, wfState.Cost.TotalTokens.CacheWrite)
+	assert.Equal(t, "test-agent-step-1", wfState.Cost.ByAgent[0].Steps[0].StepID)
+	assert.InDelta(t, 0.2, wfState.Cost.ByAgent[0].Steps[0].Dollars.Total, 0.0001)
 }
 
 func TestJSONPrettyWriterToolNilState(t *testing.T) {
@@ -4002,12 +4603,102 @@ func TestCopyLayerSubfolderWithProtected(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "coordinator.md"), []byte("# Override"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "builder.md"), []byte("# Builder"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(dstDir, "coordinator.md"), []byte("# Original"), 0644))
-	err := copyLayerSubfolder(srcDir, dstDir, "agent")
+	err := copyLayerSubfolder(dir, srcDir, dstDir, "agent")
 	require.NoError(t, err)
-	coordContent, _ := os.ReadFile(filepath.Join(dstDir, "coordinator.md"))
+	coordContent, errReadCoord := os.ReadFile(filepath.Join(dstDir, "coordinator.md"))
+	require.NoError(t, errReadCoord)
 	assert.Equal(t, "# Original", string(coordContent))
-	builderContent, _ := os.ReadFile(filepath.Join(dstDir, "builder.md"))
+	builderContent, errReadBuilder := os.ReadFile(filepath.Join(dstDir, "builder.md"))
+	require.NoError(t, errReadBuilder)
 	assert.Equal(t, "# Builder", string(builderContent))
+}
+
+func TestCopyLayerSubfolderRejectsSymlinkedDestination(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior differs on windows")
+	}
+
+	workspaceDir := t.TempDir()
+	srcDir := filepath.Join(workspaceDir, "sgai", "skills")
+	require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "demo"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "demo", "SKILL.md"), []byte("# skill"), 0o644))
+
+	externalDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceDir, ".sgai"), 0o755))
+	require.NoError(t, os.Symlink(externalDir, filepath.Join(workspaceDir, ".sgai", "skills")))
+
+	err := copyLayerSubfolder(workspaceDir, srcDir, filepath.Join(workspaceDir, ".sgai", "skills"), "skills")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "symlinked path is not allowed")
+	assert.NoFileExists(t, filepath.Join(externalDir, "demo", "SKILL.md"))
+}
+
+func TestCopyLayerSubfolderRejectsSymlinkedDestinationFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior differs on windows")
+	}
+
+	workspaceDir := t.TempDir()
+	srcDir := filepath.Join(workspaceDir, "sgai", "skills")
+	require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "demo"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "demo", "SKILL.md"), []byte("# overlay"), 0o644))
+
+	externalDir := t.TempDir()
+	externalFile := filepath.Join(externalDir, "SKILL.md")
+	require.NoError(t, os.WriteFile(externalFile, []byte("# external"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceDir, ".sgai", "skills", "demo"), 0o755))
+	require.NoError(t, os.Symlink(externalFile, filepath.Join(workspaceDir, ".sgai", "skills", "demo", "SKILL.md")))
+
+	err := copyLayerSubfolder(workspaceDir, srcDir, filepath.Join(workspaceDir, ".sgai", "skills"), "skills")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "symlinked path is not allowed")
+
+	content, errRead := os.ReadFile(externalFile)
+	require.NoError(t, errRead)
+	assert.Equal(t, "# external", string(content))
+}
+
+func TestCopyLayerSubfolderRejectsSymlinkedSourceSubfolder(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior differs on windows")
+	}
+
+	workspaceDir := t.TempDir()
+	externalDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(externalDir, "demo"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(externalDir, "demo", "SKILL.md"), []byte("# external"), 0o644))
+
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceDir, "sgai"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceDir, ".sgai"), 0o755))
+	require.NoError(t, os.Symlink(externalDir, filepath.Join(workspaceDir, "sgai", "skills")))
+
+	err := copyLayerSubfolder(workspaceDir, filepath.Join(workspaceDir, "sgai", "skills"), filepath.Join(workspaceDir, ".sgai", "skills"), "skills")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "overlay source path")
+	assert.ErrorContains(t, err, "symlinked path is not allowed")
+	assert.NoDirExists(t, filepath.Join(workspaceDir, ".sgai", "skills", "demo"))
+}
+
+func TestCopyLayerSubfolderRejectsSymlinkedSourceFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior differs on windows")
+	}
+
+	workspaceDir := t.TempDir()
+	srcDir := filepath.Join(workspaceDir, "sgai", "skills")
+	dstDir := filepath.Join(workspaceDir, ".sgai", "skills")
+	require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "demo"), 0o755))
+	require.NoError(t, os.MkdirAll(dstDir, 0o755))
+
+	externalFile := filepath.Join(t.TempDir(), "SKILL.md")
+	require.NoError(t, os.WriteFile(externalFile, []byte("# external"), 0o644))
+	require.NoError(t, os.Symlink(externalFile, filepath.Join(srcDir, "demo", "SKILL.md")))
+
+	err := copyLayerSubfolder(workspaceDir, srcDir, dstDir, "skills")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "overlay source path")
+	assert.ErrorContains(t, err, "symlinked path is not allowed")
+	assert.NoFileExists(t, filepath.Join(dstDir, "demo", "SKILL.md"))
 }
 
 func TestInitializeJJForkWorkspace(t *testing.T) {
@@ -4028,6 +4719,14 @@ func TestComputeGoalChecksumDifferentBody(t *testing.T) {
 	hash2, err2 := computeGoalChecksum(goalPath)
 	require.NoError(t, err2)
 	assert.NotEqual(t, hash1, hash2)
+}
+
+func readSkeletonFileForTest(t *testing.T, relPath string) string {
+	t.Helper()
+
+	content, errRead := fs.ReadFile(skelFS, filepath.Join("skel", relPath))
+	require.NoError(t, errRead)
+	return string(content)
 }
 
 func TestExtractBodyWithFrontmatter(t *testing.T) {

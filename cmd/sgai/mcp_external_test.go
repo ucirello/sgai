@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -144,6 +145,17 @@ func TestRegisterWorkspaceTools(t *testing.T) {
 	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "sgai-test"}, nil)
 	registerWorkspaceTools(mcpServer, ctx)
 	assert.NotNil(t, mcpServer)
+}
+
+func TestRegisterWorkspaceToolsOmitsCreateWorkspace(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	cs := connectMCPClient(t, srv)
+	result, errList := cs.ListTools(context.Background(), &mcp.ListToolsParams{})
+	require.NoError(t, errList)
+
+	for _, tool := range result.Tools {
+		assert.NotEqual(t, "create_workspace", tool.Name)
+	}
 }
 
 func TestRegisterSessionTools(t *testing.T) {
@@ -303,16 +315,58 @@ func TestMCPToolGetWorkspaceDiff(t *testing.T) {
 	require.NotNil(t, result)
 }
 
-func TestMCPToolCreateWorkspace(t *testing.T) {
+func TestMCPToolBrowseDirectories(t *testing.T) {
 	srv, _ := setupTestServer(t)
+	browseDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(browseDir, "repo-a"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(browseDir, "repo-b"), 0o755))
 	cs := connectMCPClient(t, srv)
+
 	result, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
-		Name:      "create_workspace",
-		Arguments: map[string]any{"name": "**invalid**"},
+		Name:      "browse_directories",
+		Arguments: map[string]any{"path": browseDir},
 	})
 	require.NoError(t, err)
+	require.NotNil(t, result)
 	tc := result.Content[0].(*mcp.TextContent)
-	assert.Contains(t, tc.Text, "error:")
+	assert.Contains(t, tc.Text, "repo-a")
+	assert.Contains(t, tc.Text, "repo-b")
+}
+
+func TestMCPToolAttachWorkspace(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	extDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(extDir, "GOAL.md"), []byte("# External"), 0o644))
+	cs := connectMCPClient(t, srv)
+
+	result, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "attach_workspace",
+		Arguments: map[string]any{"path": extDir},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	tc := result.Content[0].(*mcp.TextContent)
+	assert.Contains(t, tc.Text, filepath.Base(extDir))
+	assert.Contains(t, tc.Text, `"HasGoal":true`)
+}
+
+func TestMCPToolDetachWorkspace(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	extDir := t.TempDir()
+	canonical := resolveSymlinks(extDir)
+	srv.mu.Lock()
+	srv.externalDirs[canonical] = true
+	srv.mu.Unlock()
+	cs := connectMCPClient(t, srv)
+
+	result, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "detach_workspace",
+		Arguments: map[string]any{"path": extDir},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	tc := result.Content[0].(*mcp.TextContent)
+	assert.Contains(t, tc.Text, "external workspace detached")
 }
 
 func TestMCPToolDeleteFork(t *testing.T) {
@@ -674,13 +728,43 @@ func TestMCPToolListModels(t *testing.T) {
 	require.NotNil(t, result)
 }
 
-func TestMCPToolForkWorkspaceError(t *testing.T) {
+func TestMCPToolForkWorkspace(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "fork-src-mcp")
+	workspacePath := setupTestWorkspace(t, rootDir, "fork-src-mcp")
+	require.NoError(t, initializeWorkspace(workspacePath))
+	cs := connectMCPClient(t, srv)
+	goalContent := "---\nflow: |\n  \"a\" -> \"b\"\n---\n# Fork Goal"
+	result, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "fork_workspace",
+		Arguments: map[string]any{"workspace": "fork-src-mcp", "goalContent": goalContent},
+	})
+	require.NoError(t, err)
+
+	type forkResponse struct {
+		Name string
+		Dir  string
+	}
+
+	var response forkResponse
+	require.NoError(t, json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &response))
+	assert.NotEmpty(t, response.Name)
+	assert.DirExists(t, response.Dir)
+
+	goalPath := filepath.Join(response.Dir, "GOAL.md")
+	goalBytes, errRead := os.ReadFile(goalPath)
+	require.NoError(t, errRead)
+	assert.Equal(t, goalContent, string(goalBytes))
+	assert.NotEqual(t, goalContent, response.Name)
+}
+
+func TestMCPToolForkWorkspaceEmptyGoalContent(t *testing.T) {
+	srv, rootDir := setupTestServer(t)
+	workspacePath := setupTestWorkspace(t, rootDir, "fork-src-empty-mcp")
+	require.NoError(t, initializeWorkspace(workspacePath))
 	cs := connectMCPClient(t, srv)
 	result, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
 		Name:      "fork_workspace",
-		Arguments: map[string]any{"workspace": "fork-src-mcp", "name": ""},
+		Arguments: map[string]any{"workspace": "fork-src-empty-mcp", "goalContent": ""},
 	})
 	require.NoError(t, err)
 	tc := result.Content[0].(*mcp.TextContent)
@@ -716,18 +800,6 @@ func TestMCPToolWaitForQuestionTimeout(t *testing.T) {
 		Arguments: map[string]any{"workspace": "wait-mcp"},
 	})
 	assert.Error(t, err)
-}
-
-func TestMCPToolCreateWorkspaceSuccess(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	cs := connectMCPClient(t, srv)
-	result, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
-		Name:      "create_workspace",
-		Arguments: map[string]any{"name": "test-create-mcp"},
-	})
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	assert.False(t, result.IsError)
 }
 
 func TestMCPToolGetGoalNoGoal(t *testing.T) {
@@ -1205,7 +1277,7 @@ func TestMCPToolDeleteMessageWithExistingMessage(t *testing.T) {
 	coord := srv.workspaceCoordinator(wsDir)
 	require.NoError(t, coord.UpdateState(func(wf *state.Workflow) {
 		wf.Messages = []state.Message{
-			{ID: 42, FromAgent: "agent1", ToAgent: "agent2", Body: "test message"},
+			{ID: 42, FromAgent: "agent1", ToAgent: "agent2", Body: "test message", Read: true, ReadAt: "2026-03-09T10:00:00Z", ReadBy: "agent2"},
 		}
 	}))
 

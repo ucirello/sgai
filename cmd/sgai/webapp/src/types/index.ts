@@ -174,8 +174,18 @@ export interface ApiModelsResponse {
 
 export interface ApiSessionCost {
   totalCost: number;
+  dollars: ApiDollarBreakdown;
   totalTokens: ApiTokenUsage;
   byAgent: ApiAgentCost[];
+}
+
+export interface ApiDollarBreakdown {
+  input: number;
+  output: number;
+  reasoning: number;
+  cacheRead: number;
+  cacheWrite: number;
+  total: number;
 }
 
 export interface ApiTokenUsage {
@@ -190,6 +200,7 @@ export interface ApiStepCost {
   stepId: string;
   agent: string;
   cost: number;
+  dollars: ApiDollarBreakdown;
   tokens: ApiTokenUsage;
   timestamp: string;
 }
@@ -197,6 +208,7 @@ export interface ApiStepCost {
 export interface ApiAgentCost {
   agent: string;
   cost: number;
+  dollars: ApiDollarBreakdown;
   tokens: ApiTokenUsage;
   steps: ApiStepCost[];
 }
@@ -425,4 +437,3 @@ export interface ApiBrowseDirectoryEntry {
 export interface ApiBrowseDirectoriesResponse {
   entries: ApiBrowseDirectoryEntry[];
 }
-

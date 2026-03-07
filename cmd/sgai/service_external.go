@@ -15,7 +15,6 @@ import (
 var (
 	errPathNotAbsolute = errors.New("path must be absolute")
 	errNotADirectory   = errors.New("path is not a directory")
-	errUnderRootDir    = errors.New("path is within the root directory; use a local workspace instead")
 	errAlreadyAttached = errors.New("directory is already attached as an external workspace")
 	errNotAttached     = errors.New("directory is not attached as an external workspace")
 )
@@ -92,17 +91,6 @@ func (s *Server) attachExternalWorkspaceService(path string) (attachExternalResu
 	}
 
 	canonical := resolveSymlinks(path)
-
-	absRoot, errAbs := filepath.Abs(s.rootDir)
-	if errAbs != nil {
-		absRoot = s.rootDir
-	}
-	rootResolved := resolveSymlinks(absRoot)
-
-	if canonical == rootResolved || strings.HasPrefix(canonical+string(filepath.Separator), rootResolved+string(filepath.Separator)) {
-		return attachExternalResult{}, errUnderRootDir
-	}
-
 	s.mu.Lock()
 	if s.externalDirs[canonical] {
 		s.mu.Unlock()
@@ -127,9 +115,16 @@ func (s *Server) attachExternalWorkspaceService(path string) (attachExternalResu
 		s.mu.Unlock()
 		return attachExternalResult{}, errAlreadyAttached
 	}
+	s.mu.Unlock()
+
+	s.mu.Lock()
 	s.externalDirs[canonical] = true
 	s.mu.Unlock()
+
 	if errSave := s.saveExternalDirs(); errSave != nil {
+		s.mu.Lock()
+		delete(s.externalDirs, canonical)
+		s.mu.Unlock()
 		return attachExternalResult{}, fmt.Errorf("saving external dirs: %w", errSave)
 	}
 
@@ -157,10 +152,16 @@ func (s *Server) detachExternalWorkspaceService(path string) (detachExternalResu
 		s.mu.Unlock()
 		return detachExternalResult{}, errNotAttached
 	}
+	s.mu.Unlock()
+
+	s.mu.Lock()
 	delete(s.externalDirs, canonical)
 	s.mu.Unlock()
 
 	if errSave := s.saveExternalDirs(); errSave != nil {
+		s.mu.Lock()
+		s.externalDirs[canonical] = true
+		s.mu.Unlock()
 		return detachExternalResult{}, fmt.Errorf("saving external dirs: %w", errSave)
 	}
 

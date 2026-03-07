@@ -25,7 +25,7 @@ Response:
       "description": "Coordinates the work flow between specialized agents."
     },
     {
-      "name": "backend-go-developer",
+      "name": "go-developer",
       "description": "Expert Go backend developer for building production-quality APIs."
     },
     {
@@ -235,7 +235,7 @@ The workspace's `.sgai/` directory layout:
 .sgai/
   agent/
     coordinator.md       # agent definition files
-    backend-go-developer.md
+    go-developer.md
   skills/
     test-driven-development/
       SKILL.md           # skill definition

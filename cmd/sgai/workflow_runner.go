@@ -71,7 +71,10 @@ func (r *workflowRunner) resolveCurrentAgent() string {
 }
 
 func (r *workflowRunner) runAgent(ctx context.Context, currentAgent string) runResult {
-	r.prepareAgent(currentAgent)
+	if errPrepare := r.prepareAgent(currentAgent); errPrepare != nil {
+		log.Println("failed to prepare agent:", errPrepare)
+		return resultInterrupt
+	}
 
 	var errReload error
 	r.metadata, errReload = tryReloadGoalMetadata(r.goalPath, r.metadata, r.flowDag)
@@ -119,12 +122,12 @@ func (r *workflowRunner) resolveNextAgent(currentAgent string) string {
 	return determineNextAgent(r.flowDag, currentAgent)
 }
 
-func (r *workflowRunner) prepareAgent(currentAgent string) {
+func (r *workflowRunner) prepareAgent(currentAgent string) error {
 	if r.previousAgent != "" && r.previousAgent != currentAgent {
 		fmt.Println("["+r.paddedsgai+"]", r.previousAgent, "->", currentAgent)
 		r.wfState.Todos = []state.TodoItem{}
 		if errOverlay := applyLayerFolderOverlay(r.dir); errOverlay != nil {
-			log.Println("failed to apply overlay on agent transition:", errOverlay)
+			return fmt.Errorf("apply overlay on agent transition: %w", errOverlay)
 		}
 	}
 	r.previousAgent = currentAgent
@@ -140,6 +143,8 @@ func (r *workflowRunner) prepareAgent(currentAgent string) {
 	}); errUpdate != nil {
 		log.Println("failed to save state:", errUpdate)
 	}
+
+	return nil
 }
 
 func (r *workflowRunner) executeAgent(ctx context.Context, currentAgent string) state.Workflow {

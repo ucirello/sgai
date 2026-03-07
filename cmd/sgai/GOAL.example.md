@@ -1,24 +1,24 @@
 ---
 flow: |
-  "backend-go-developer" -> "go-readability-reviewer"
+  "go-developer" -> "go-reviewer"
   "react-developer" -> "react-reviewer"
   "general-purpose"
   "project-critic-council"
   "skill-writer"
   "stpa-analyst"
 alias:
-  # "backend-go-developer-lite": "backend-go-developer"
+  # "go-developer-lite": "go-developer"
 models:
   "coordinator": "anthropic/claude-opus-4-6 (max)"
-  "backend-go-developer": "anthropic/claude-opus-4-6"
-  "go-readability-reviewer": "anthropic/claude-opus-4-6"
+  "go-developer": "anthropic/claude-opus-4-6"
+  "go-reviewer": "anthropic/claude-opus-4-6"
   "general-purpose": "anthropic/claude-opus-4-6"
   "react-developer": "anthropic/claude-opus-4-6"
   "react-reviewer": "anthropic/claude-opus-4-6"
   "stpa-analyst": "anthropic/claude-opus-4-6"
   "project-critic-council": ["anthropic/claude-opus-4-6"]
   "skill-writer": "anthropic/claude-opus-4-6 (max)"
-  # "backend-go-developer-lite": "anthropic/claude-haiku-4-5"
+  # "go-developer-lite": "anthropic/claude-haiku-4-5"
 ---
 
 # Title of your Goal

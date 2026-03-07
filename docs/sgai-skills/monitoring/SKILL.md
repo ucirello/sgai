@@ -35,7 +35,7 @@ Response:
       "status": "working",
       "badgeClass": "badge-running",
       "badgeText": "Running",
-      "currentAgent": "backend-go-developer",
+      "currentAgent": "go-developer",
       "currentModel": "anthropic/claude-sonnet-4-6",
       "task": "Writing authentication endpoints",
       "latestProgress": "Created JWT middleware",
@@ -105,7 +105,7 @@ Response:
   {
     "id": 42,
     "fromAgent": "coordinator",
-    "toAgent": "backend-go-developer",
+    "toAgent": "go-developer",
     "body": "Please implement the authentication module",
     "subject": "Implement auth",
     "read": true,
@@ -216,7 +216,7 @@ Response:
     "isCurrent": false
   },
   {
-    "agent": "backend-go-developer",
+    "agent": "go-developer",
     "model": "anthropic/claude-sonnet-4-6",
     "elapsedTime": "8m 42s",
     "isCurrent": true

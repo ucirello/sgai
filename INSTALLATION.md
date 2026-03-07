@@ -279,14 +279,14 @@ mkdir -p ./sgai/TodoApp/.sgai
 ```markdown
 ---
 flow: |
-  "backend-go-developer" -> "go-readability-reviewer"
-  "backend-go-developer" -> "stpa-analyst"
-  "go-readability-reviewer" -> "stpa-analyst"
+  "go-developer" -> "go-reviewer"
+  "go-developer" -> "stpa-analyst"
+  "go-reviewer" -> "stpa-analyst"
   "general-purpose" -> "stpa-analyst"
 models:
   "coordinator": "opencode/big-pickle"
-  "backend-go-developer": "opencode/big-pickle"
-  "go-readability-reviewer": "opencode/big-pickle"
+  "go-developer": "opencode/big-pickle"
+  "go-reviewer": "opencode/big-pickle"
   "general-purpose": "opencode/big-pickle"
   "stpa-analyst": "opencode/big-pickle"
 interactive: yes

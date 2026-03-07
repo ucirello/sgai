@@ -301,6 +301,7 @@ func NewServerWithConfig(rootDir, editorConfig string) *Server {
 		externalDirs:       make(map[string]bool),
 		externalConfigDir:  filepath.Join(xdg.ConfigHome, "sgai"),
 		adhocStates:        make(map[string]*adhocPromptState),
+		shutdownCtx:        context.Background(),
 		signals:            newSignalBroker(),
 		composerSessions:   make(map[string]*composerSession),
 		rootDir:            absRootDir,
@@ -1014,15 +1015,33 @@ func classifyWorkspace(dir string) workspaceKind {
 }
 
 func (s *Server) classifyWorkspaceCached(dir string) workspaceKind {
+	canonicalDir := resolveSymlinks(dir)
 	if kind, ok := s.classifyCache.get(dir); ok {
 		return kind
 	}
-	kind, _ := s.classifyFlight.do(dir, func() (workspaceKind, error) {
+	if kind, ok := s.classifyCache.get(canonicalDir); ok {
+		return kind
+	}
+	cacheKey := dir
+	if canonicalDir != "" {
+		cacheKey = canonicalDir
+	}
+	kind, _ := s.classifyFlight.do(cacheKey, func() (workspaceKind, error) {
 		if kind, ok := s.classifyCache.get(dir); ok {
 			return kind, nil
 		}
-		kind := classifyWorkspace(dir)
+		if kind, ok := s.classifyCache.get(canonicalDir); ok {
+			return kind, nil
+		}
+		lookupDir := dir
+		if canonicalDir != "" {
+			lookupDir = canonicalDir
+		}
+		kind := classifyWorkspace(lookupDir)
 		s.classifyCache.set(dir, kind)
+		if canonicalDir != dir {
+			s.classifyCache.set(canonicalDir, kind)
+		}
 		return kind, nil
 	})
 	return kind
@@ -1487,61 +1506,86 @@ func (s *Server) invalidateWorkspaceScanCache() {
 }
 
 func (s *Server) doScanWorkspaceGroups() ([]workspaceGroup, error) {
-	projects, err := scanForProjects(s.rootDir)
-	if err != nil {
-		return nil, err
-	}
-
-	rootMap := make(map[string]*workspaceGroup)
-	var standaloneGroups []workspaceGroup
-
-	for _, proj := range projects {
-		resolvedDir := resolveSymlinks(proj.Directory)
-		classification := s.classifyWorkspaceCached(proj.Directory)
-
-		switch classification {
-		case workspaceRoot:
-			if _, exists := rootMap[resolvedDir]; !exists {
-				rootMap[resolvedDir] = &workspaceGroup{
-					Root: s.createWorkspaceInfo(proj.Directory, proj.DirName, true, proj.HasWorkspace, false),
-				}
-			}
-		case workspaceFork:
-			rootPath := resolveSymlinks(getRootWorkspacePath(proj.Directory))
-			if rootPath == "" {
-				standaloneGroups = append(standaloneGroups, workspaceGroup{
-					Root: s.createWorkspaceInfo(proj.Directory, proj.DirName, false, proj.HasWorkspace, false),
-				})
-				continue
-			}
-			if existing, exists := rootMap[rootPath]; exists {
-				existing.Forks = append(existing.Forks, s.createWorkspaceInfo(proj.Directory, proj.DirName, false, proj.HasWorkspace, false))
-			} else {
-				rootMap[rootPath] = &workspaceGroup{
-					Root:  s.createWorkspaceInfo(rootPath, filepath.Base(rootPath), true, hassgaiDirectory(rootPath), false),
-					Forks: []workspaceInfo{s.createWorkspaceInfo(proj.Directory, proj.DirName, false, proj.HasWorkspace, false)},
-				}
-			}
-		default:
-			standaloneGroups = append(standaloneGroups, workspaceGroup{
-				Root: s.createWorkspaceInfo(proj.Directory, proj.DirName, false, proj.HasWorkspace, false),
-			})
-		}
-	}
-
 	s.mu.Lock()
 	externalDirsCopy := maps.Clone(s.externalDirs)
 	s.mu.Unlock()
 
+	if len(externalDirsCopy) == 0 {
+		return nil, nil
+	}
+
+	type attachedWorkspace struct {
+		directory    string
+		resolvedDir  string
+		dirName      string
+		hasWorkspace bool
+		kind         workspaceKind
+	}
+
+	attached := make([]attachedWorkspace, 0, len(externalDirsCopy))
 	for dir := range externalDirsCopy {
+		if _, errStat := os.Stat(dir); errStat != nil {
+			return nil, fmt.Errorf("stat attached workspace: %w", errStat)
+		}
 		resolvedDir := resolveSymlinks(dir)
-		if _, exists := rootMap[resolvedDir]; exists {
+		attached = append(attached, attachedWorkspace{
+			directory:    dir,
+			resolvedDir:  resolvedDir,
+			dirName:      filepath.Base(dir),
+			hasWorkspace: hassgaiDirectory(dir),
+			kind:         s.classifyWorkspaceCached(dir),
+		})
+	}
+
+	slices.SortFunc(attached, func(a, b attachedWorkspace) int {
+		return strings.Compare(strings.ToLower(a.dirName), strings.ToLower(b.dirName))
+	})
+
+	rootMap := make(map[string]*workspaceGroup)
+	var standaloneGroups []workspaceGroup
+
+	for _, ws := range attached {
+		if ws.kind != workspaceRoot {
 			continue
 		}
-		hasWorkspace := hassgaiDirectory(dir)
+		rootMap[ws.resolvedDir] = &workspaceGroup{
+			Root: s.createWorkspaceInfo(ws.directory, ws.dirName, true, ws.hasWorkspace, true),
+		}
+	}
+
+	for _, ws := range attached {
+		switch ws.kind {
+		case workspaceFork:
+			rootPath := resolveSymlinks(getRootWorkspacePath(ws.directory))
+			if rootPath == "" || !externalDirsCopy[rootPath] {
+				standaloneGroups = append(standaloneGroups, workspaceGroup{
+					Root: s.createWorkspaceInfo(ws.directory, ws.dirName, false, ws.hasWorkspace, true),
+				})
+				continue
+			}
+			grp, exists := rootMap[rootPath]
+			if !exists {
+				grp = &workspaceGroup{
+					Root: s.createWorkspaceInfo(rootPath, filepath.Base(rootPath), true, hassgaiDirectory(rootPath), true),
+				}
+				rootMap[rootPath] = grp
+			}
+			grp.Forks = append(grp.Forks, s.createWorkspaceInfo(ws.directory, ws.dirName, false, ws.hasWorkspace, true))
+		case workspaceStandalone:
+			standaloneGroups = append(standaloneGroups, workspaceGroup{
+				Root: s.createWorkspaceInfo(ws.directory, ws.dirName, false, ws.hasWorkspace, true),
+			})
+		}
+	}
+
+	for resolvedDir, grp := range rootMap {
+		if len(grp.Forks) > 0 {
+			continue
+		}
 		standaloneGroups = append(standaloneGroups, workspaceGroup{
-			Root: s.createWorkspaceInfo(dir, filepath.Base(dir), false, hasWorkspace, true),
+			Root: s.createWorkspaceInfo(grp.Root.Directory, grp.Root.DirName, false, grp.Root.HasWorkspace, true),
 		})
+		delete(rootMap, resolvedDir)
 	}
 
 	var groups []workspaceGroup
@@ -1666,6 +1710,9 @@ func unpackSkeleton(workspacePath string) error {
 			return err
 		}
 		outPath := filepath.Join(workspacePath, path)
+		if err := rejectSymlinkedWorkspacePath(workspacePath, outPath); err != nil {
+			return err
+		}
 		if d.IsDir() {
 			if err := os.MkdirAll(outPath, 0755); err != nil {
 				return err
@@ -1680,16 +1727,182 @@ func unpackSkeleton(workspacePath string) error {
 	})
 }
 
+func gitMetadataDirForWorkspace(dir string) (string, error) {
+	gitPath := filepath.Join(dir, ".git")
+	gitInfo, errStat := os.Lstat(gitPath)
+	if os.IsNotExist(errStat) {
+		return "", nil
+	}
+	if errStat != nil {
+		return "", fmt.Errorf("statting .git: %w", errStat)
+	}
+	if gitInfo.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("statting .git: symlinked .git entry is not allowed")
+	}
+	if gitInfo.IsDir() {
+		return gitPath, nil
+	}
+
+	content, errRead := os.ReadFile(gitPath)
+	if errRead != nil {
+		return "", fmt.Errorf("reading .git file: %w", errRead)
+	}
+
+	gitDir, errGitDir := gitDirFromFile(dir, content)
+	if errGitDir != nil {
+		return "", errGitDir
+	}
+	return gitDir, nil
+}
+
+func gitDirFromFile(workspaceDir string, content []byte) (string, error) {
+	line := strings.TrimSpace(string(content))
+	if !strings.HasPrefix(line, "gitdir:") {
+		return "", fmt.Errorf("parsing .git file: missing gitdir prefix")
+	}
+
+	rawGitDir := strings.TrimSpace(strings.TrimPrefix(line, "gitdir:"))
+	if rawGitDir == "" {
+		return "", fmt.Errorf("parsing .git file: missing gitdir path")
+	}
+
+	gitDir, errGitDir := resolveGitPointerPath(workspaceDir, rawGitDir)
+	if errGitDir != nil {
+		return "", fmt.Errorf("parsing .git file: %w", errGitDir)
+	}
+	resolvedGitDir, errResolvedGitDir := resolveGitMetadataPath(gitDir)
+	if errResolvedGitDir != nil {
+		return "", fmt.Errorf("parsing .git file: %w", errResolvedGitDir)
+	}
+
+	withinWorkspace, errWithinWorkspace := gitDirWithinWorkspace(workspaceDir, resolvedGitDir)
+	if errWithinWorkspace != nil {
+		return "", fmt.Errorf("parsing .git file: %w", errWithinWorkspace)
+	}
+	if withinWorkspace {
+		return resolvedGitDir, nil
+	}
+
+	allowed, errAllowed := gitDirReferencesWorkspaceGitFile(workspaceDir, resolvedGitDir)
+	if errAllowed != nil {
+		return "", fmt.Errorf("parsing .git file: %w", errAllowed)
+	}
+	if allowed {
+		return resolvedGitDir, nil
+	}
+
+	return "", fmt.Errorf("parsing .git file: gitdir path escapes repository metadata boundary")
+}
+
+func resolveGitPointerPath(baseDir, rawPath string) (string, error) {
+	if filepath.IsAbs(rawPath) {
+		return filepath.Clean(rawPath), nil
+	}
+
+	basePath, errBasePath := filepath.Abs(baseDir)
+	if errBasePath != nil {
+		return "", fmt.Errorf("resolving base path: %w", errBasePath)
+	}
+	return filepath.Clean(filepath.Join(basePath, rawPath)), nil
+}
+
+func resolveGitMetadataPath(path string) (string, error) {
+	absPath, errAbsPath := filepath.Abs(path)
+	if errAbsPath != nil {
+		return "", fmt.Errorf("resolving metadata path: %w", errAbsPath)
+	}
+
+	resolvedPath, errResolvedPath := filepath.EvalSymlinks(absPath)
+	if errResolvedPath == nil {
+		return filepath.Clean(resolvedPath), nil
+	}
+	if !os.IsNotExist(errResolvedPath) {
+		return "", fmt.Errorf("resolving metadata path: %w", errResolvedPath)
+	}
+
+	parentPath := filepath.Dir(absPath)
+	resolvedParentPath, errResolvedParentPath := filepath.EvalSymlinks(parentPath)
+	if errResolvedParentPath != nil {
+		return "", fmt.Errorf("resolving metadata path: %w", errResolvedParentPath)
+	}
+	return filepath.Join(filepath.Clean(resolvedParentPath), filepath.Base(absPath)), nil
+}
+
+func gitDirWithinWorkspace(workspaceDir, gitDir string) (bool, error) {
+	workspacePath, errWorkspacePath := resolveGitMetadataPath(workspaceDir)
+	if errWorkspacePath != nil {
+		return false, fmt.Errorf("resolving workspace path: %w", errWorkspacePath)
+	}
+
+	relPath, errRelPath := filepath.Rel(filepath.Clean(workspacePath), filepath.Clean(gitDir))
+	if errRelPath != nil {
+		return false, fmt.Errorf("checking workspace boundary: %w", errRelPath)
+	}
+	return relPath == "." || (!strings.HasPrefix(relPath, "..") && relPath != ".."), nil
+}
+
+func gitDirReferencesWorkspaceGitFile(workspaceDir, gitDir string) (bool, error) {
+	metadataBoundary, ok := worktreeMetadataBoundary(gitDir)
+	if !ok {
+		return false, nil
+	}
+
+	backReference, errBackReference := gitWorktreeBackReferencePath(gitDir)
+	if os.IsNotExist(errBackReference) {
+		return false, nil
+	}
+	if errBackReference != nil {
+		return false, fmt.Errorf("reading gitdir back-reference: %w", errBackReference)
+	}
+
+	workspaceGitFile, errWorkspaceGitFile := filepath.Abs(filepath.Join(workspaceDir, ".git"))
+	if errWorkspaceGitFile != nil {
+		return false, fmt.Errorf("resolving workspace git path: %w", errWorkspaceGitFile)
+	}
+	if filepath.Clean(backReference) != filepath.Clean(workspaceGitFile) {
+		return false, nil
+	}
+
+	commonDir, errCommonDir := gitWorktreeCommonDir(gitDir)
+	if os.IsNotExist(errCommonDir) {
+		return false, nil
+	}
+	if errCommonDir != nil {
+		return false, fmt.Errorf("reading commondir boundary: %w", errCommonDir)
+	}
+
+	if filepath.Clean(commonDir) != filepath.Clean(metadataBoundary) {
+		return false, nil
+	}
+
+	validMetadataLayout, errValidMetadataLayout := gitCommonDirLooksValid(metadataBoundary)
+	if errValidMetadataLayout != nil {
+		return false, fmt.Errorf("checking common git metadata: %w", errValidMetadataLayout)
+	}
+	return validMetadataLayout, nil
+}
+
 func addGitExclude(dir string) error {
-	gitDir := filepath.Join(dir, ".git")
-	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+	gitDir, errGitDir := gitMetadataDirForWorkspace(dir)
+	if errGitDir != nil {
+		return errGitDir
+	}
+	if gitDir == "" {
 		return nil
 	}
+
 	gitInfoDir := filepath.Join(gitDir, "info")
+	if err := rejectSymlinkedGitMetadataPath(gitDir, gitInfoDir); err != nil {
+		return fmt.Errorf("checking .git/info directory: %w", err)
+	}
 	if err := os.MkdirAll(gitInfoDir, 0755); err != nil {
 		return fmt.Errorf("creating .git/info directory: %w", err)
 	}
+
 	excludePath := filepath.Join(gitInfoDir, "exclude")
+	if err := rejectSymlinkedGitMetadataPath(gitDir, excludePath); err != nil {
+		return fmt.Errorf("checking .git/info/exclude: %w", err)
+	}
 	existingContent, err := os.ReadFile(excludePath)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("reading .git/info/exclude: %w", err)
@@ -1697,10 +1910,180 @@ func addGitExclude(dir string) error {
 	if dotSGAILinePresent(existingContent) {
 		return nil
 	}
+	if len(existingContent) > 0 && existingContent[len(existingContent)-1] != '\n' {
+		existingContent = append(existingContent, '\n')
+	}
 	existingContent = append(existingContent, []byte("/.sgai\n")...)
 	if err := os.WriteFile(excludePath, existingContent, 0644); err != nil {
 		return fmt.Errorf("writing .git/info/exclude: %w", err)
 	}
+	return nil
+}
+
+func gitWorktreeBackReferencePath(gitDir string) (string, error) {
+	content, errRead := readGitMetadataFile(filepath.Join(gitDir, "gitdir"), "gitdir back-reference")
+	if errRead != nil {
+		return "", errRead
+	}
+
+	backReference, errBackReference := resolveGitPointerPath(gitDir, strings.TrimSpace(string(content)))
+	if errBackReference != nil {
+		return "", fmt.Errorf("resolving gitdir back-reference: %w", errBackReference)
+	}
+	return filepath.Clean(backReference), nil
+}
+
+func gitWorktreeCommonDir(gitDir string) (string, error) {
+	content, errRead := readGitMetadataFile(filepath.Join(gitDir, "commondir"), "commondir")
+	if errRead != nil {
+		return "", errRead
+	}
+
+	commonDir, errCommonDir := resolveGitPointerPath(gitDir, strings.TrimSpace(string(content)))
+	if errCommonDir != nil {
+		return "", fmt.Errorf("resolving commondir: %w", errCommonDir)
+	}
+
+	resolvedCommonDir, errResolvedCommonDir := resolveGitMetadataPath(commonDir)
+	if errResolvedCommonDir != nil {
+		return "", fmt.Errorf("resolving commondir: %w", errResolvedCommonDir)
+	}
+	return resolvedCommonDir, nil
+}
+
+func worktreeMetadataBoundary(gitDir string) (string, bool) {
+	worktreesDir := filepath.Dir(gitDir)
+	if filepath.Base(worktreesDir) != "worktrees" {
+		return "", false
+	}
+
+	metadataBoundary := filepath.Dir(worktreesDir)
+	if filepath.Base(metadataBoundary) != ".git" {
+		return "", false
+	}
+
+	return metadataBoundary, true
+}
+
+func gitCommonDirLooksValid(path string) (bool, error) {
+	hasHeadFile, errHasHeadFile := gitMetadataRegularFileExists(filepath.Join(path, "HEAD"))
+	if errHasHeadFile != nil {
+		return false, errHasHeadFile
+	}
+	if !hasHeadFile {
+		return false, nil
+	}
+
+	hasObjectsDir, errHasObjectsDir := gitMetadataDirectoryExists(filepath.Join(path, "objects"))
+	if errHasObjectsDir != nil {
+		return false, errHasObjectsDir
+	}
+	if !hasObjectsDir {
+		return false, nil
+	}
+
+	hasRefsDir, errHasRefsDir := gitMetadataDirectoryExists(filepath.Join(path, "refs"))
+	if errHasRefsDir != nil {
+		return false, errHasRefsDir
+	}
+	if !hasRefsDir {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+func gitMetadataRegularFileExists(path string) (bool, error) {
+	info, errLstat := os.Lstat(path)
+	if os.IsNotExist(errLstat) {
+		return false, nil
+	}
+	if errLstat != nil {
+		return false, errLstat
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, fmt.Errorf("symlinked path is not allowed: %s", path)
+	}
+	if info.IsDir() {
+		return false, nil
+	}
+	return true, nil
+}
+
+func gitMetadataDirectoryExists(path string) (bool, error) {
+	info, errLstat := os.Lstat(path)
+	if os.IsNotExist(errLstat) {
+		return false, nil
+	}
+	if errLstat != nil {
+		return false, errLstat
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, fmt.Errorf("symlinked path is not allowed: %s", path)
+	}
+	return info.IsDir(), nil
+}
+
+func readGitMetadataFile(path, name string) ([]byte, error) {
+	info, errLstat := os.Lstat(path)
+	if errLstat != nil {
+		return nil, errLstat
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("symlinked %s is not allowed", name)
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("%s must be a file", name)
+	}
+
+	content, errRead := os.ReadFile(path)
+	if errRead != nil {
+		return nil, errRead
+	}
+	return content, nil
+}
+
+func rejectSymlinkedGitMetadataPath(rootPath, dstPath string) error {
+	return rejectSymlinkedPath(rootPath, dstPath, "repository metadata boundary", "destination")
+}
+
+func rejectSymlinkedPath(rootPath, dstPath, boundaryLabel, pathLabel string) error {
+	absRootPath, errAbsRootPath := filepath.Abs(rootPath)
+	if errAbsRootPath != nil {
+		return fmt.Errorf("resolving root path: %w", errAbsRootPath)
+	}
+
+	absDstPath, errAbsDstPath := filepath.Abs(dstPath)
+	if errAbsDstPath != nil {
+		return fmt.Errorf("resolving %s path: %w", pathLabel, errAbsDstPath)
+	}
+
+	relPath, errRelPath := filepath.Rel(absRootPath, absDstPath)
+	if errRelPath != nil {
+		return fmt.Errorf("checking %s path: %w", pathLabel, errRelPath)
+	}
+	if relPath == ".." || strings.HasPrefix(relPath, ".."+string(os.PathSeparator)) {
+		return fmt.Errorf("checking %s path: %s escapes %s", pathLabel, dstPath, boundaryLabel)
+	}
+
+	currentPath := absRootPath
+	for _, pathPart := range strings.Split(relPath, string(os.PathSeparator)) {
+		if pathPart == "." || pathPart == "" {
+			continue
+		}
+		currentPath = filepath.Join(currentPath, pathPart)
+		pathInfo, errLstat := os.Lstat(currentPath)
+		if os.IsNotExist(errLstat) {
+			return nil
+		}
+		if errLstat != nil {
+			return fmt.Errorf("checking %s path: %w", pathLabel, errLstat)
+		}
+		if pathInfo.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("checking %s path: symlinked path is not allowed: %s", pathLabel, currentPath)
+		}
+	}
+
 	return nil
 }
 

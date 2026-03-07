@@ -102,28 +102,51 @@ func (t *TokenUsage) Add(other TokenUsage) {
 	t.CacheWrite += other.CacheWrite
 }
 
+// DollarBreakdown tracks dollar amounts by token category.
+type DollarBreakdown struct {
+	Input      float64 `json:"input"`
+	Output     float64 `json:"output"`
+	Reasoning  float64 `json:"reasoning"`
+	CacheRead  float64 `json:"cacheRead"`
+	CacheWrite float64 `json:"cacheWrite"`
+	Total      float64 `json:"total"`
+}
+
+// Add accumulates dollar amounts from another DollarBreakdown into this one.
+func (d *DollarBreakdown) Add(other DollarBreakdown) {
+	d.Input += other.Input
+	d.Output += other.Output
+	d.Reasoning += other.Reasoning
+	d.CacheRead += other.CacheRead
+	d.CacheWrite += other.CacheWrite
+	d.Total += other.Total
+}
+
 // StepCost tracks cost for a single step.
 type StepCost struct {
-	StepID    string     `json:"stepId"`
-	Agent     string     `json:"agent"`
-	Cost      float64    `json:"cost"`
-	Tokens    TokenUsage `json:"tokens"`
-	Timestamp string     `json:"timestamp"`
+	StepID    string          `json:"stepId"`
+	Agent     string          `json:"agent"`
+	Cost      float64         `json:"cost"`
+	Dollars   DollarBreakdown `json:"dollars"`
+	Tokens    TokenUsage      `json:"tokens"`
+	Timestamp string          `json:"timestamp"`
 }
 
 // AgentCost aggregates costs for an agent.
 type AgentCost struct {
-	Agent  string     `json:"agent"`
-	Cost   float64    `json:"cost"`
-	Tokens TokenUsage `json:"tokens"`
-	Steps  []StepCost `json:"steps"`
+	Agent   string          `json:"agent"`
+	Cost    float64         `json:"cost"`
+	Dollars DollarBreakdown `json:"dollars"`
+	Tokens  TokenUsage      `json:"tokens"`
+	Steps   []StepCost      `json:"steps"`
 }
 
 // SessionCost tracks all costs for the session.
 type SessionCost struct {
-	TotalCost   float64     `json:"totalCost"`
-	TotalTokens TokenUsage  `json:"totalTokens"`
-	ByAgent     []AgentCost `json:"byAgent"`
+	TotalCost   float64         `json:"totalCost"`
+	Dollars     DollarBreakdown `json:"dollars"`
+	TotalTokens TokenUsage      `json:"totalTokens"`
+	ByAgent     []AgentCost     `json:"byAgent"`
 }
 
 // Workflow represents the complete workflow state for a sgai session.

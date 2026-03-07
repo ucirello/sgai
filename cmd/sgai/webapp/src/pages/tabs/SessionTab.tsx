@@ -9,7 +9,7 @@ import { MarkdownContent } from "@/components/MarkdownContent";
 import { ChevronRight } from "lucide-react";
 import { api } from "@/lib/api";
 import { useFactoryState, triggerFactoryRefresh } from "@/lib/factory-state";
-import type { ApiAgentCost, ApiStepCost, ApiTodoEntry, ApiActionEntry } from "@/types";
+import type { ApiAgentCost, ApiDollarBreakdown, ApiStepCost, ApiTodoEntry, ApiActionEntry, ApiSessionCost, ApiTokenUsage } from "@/types";
 
 interface SessionTabProps {
   workspaceName: string;
@@ -56,60 +56,103 @@ function formatStepCost(cost: number): string {
   return `$${cost.toFixed(6)}`;
 }
 
-function CostSection({ cost }: { cost: { totalCost: number; totalTokens?: { input?: number; output?: number; cacheRead?: number }; byAgent?: ApiAgentCost[] } }) {
-  const totalInput = (cost.totalTokens?.input ?? 0) + (cost.totalTokens?.cacheRead ?? 0);
+type TokenMetricKey = keyof ApiTokenUsage | "total";
+
+const TOKEN_METRICS: Array<{ key: TokenMetricKey; label: string; description: string }> = [
+  { key: "input", label: "Input", description: "New prompt tokens processed for the session." },
+  { key: "output", label: "Output", description: "Tokens generated in responses." },
+  { key: "reasoning", label: "Reasoning", description: "Reasoning tokens consumed while the model worked." },
+  { key: "cacheRead", label: "Cache Read", description: "Tokens served from cache instead of reprocessing." },
+  { key: "cacheWrite", label: "Cache Write", description: "Tokens written into cache for reuse." },
+  { key: "total", label: "Total", description: "Combined token usage and total dollar cost." },
+] as const;
+
+function totalTokens(tokens: Partial<ApiTokenUsage> | undefined): number {
+  if (!tokens) {
+    return 0;
+  }
+  return (tokens.input ?? 0)
+    + (tokens.output ?? 0)
+    + (tokens.reasoning ?? 0)
+    + (tokens.cacheRead ?? 0)
+    + (tokens.cacheWrite ?? 0);
+}
+
+function tokensForMetric(key: TokenMetricKey, tokens: Partial<ApiTokenUsage> | undefined): number {
+  if (key === "total") {
+    return totalTokens(tokens);
+  }
+  return tokens?.[key] ?? 0;
+}
+
+function dollarsForMetric(key: TokenMetricKey, dollars: Partial<ApiDollarBreakdown> | undefined, totalCost: number): number {
+  if (key === "total") {
+    return dollars?.total ?? totalCost;
+  }
+  return dollars?.[key] ?? 0;
+}
+
+function MetricBreakdown(
+  {
+    tokens,
+    dollars,
+    totalCost,
+    formatDollarValue = formatCost,
+  }: {
+    tokens: Partial<ApiTokenUsage> | undefined;
+    dollars: Partial<ApiDollarBreakdown> | undefined;
+    totalCost: number;
+    formatDollarValue?: (cost: number) => string;
+  },
+) {
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      {TOKEN_METRICS.map((metric) => (
+        <Tooltip key={metric.key}>
+          <TooltipTrigger asChild>
+            <div className="rounded-lg border bg-muted/20 px-3 py-2 text-sm">
+              <div className="text-xs text-muted-foreground">{metric.label}</div>
+              <div className="mt-1 flex items-baseline justify-between gap-3">
+                <span className="font-semibold">{tokensForMetric(metric.key, tokens).toLocaleString()} tok</span>
+                <span className="font-mono text-xs text-muted-foreground">
+                  {formatDollarValue(dollarsForMetric(metric.key, dollars, totalCost))}
+                </span>
+              </div>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent>{metric.description}</TooltipContent>
+        </Tooltip>
+      ))}
+    </div>
+  );
+}
+
+function CostSection({ cost }: { cost: ApiSessionCost }) {
+  const agentCosts = Array.isArray(cost.byAgent) ? cost.byAgent : [];
 
   return (
     <Card>
       <CardHeader className="pb-3">
         <CardTitle className="text-base">Cost Tracking</CardTitle>
       </CardHeader>
-      <CardContent>
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-sm">
+      <CardContent className="space-y-4">
+        <div className="space-y-2">
           <div>
-            <span className="text-muted-foreground text-xs">Total Cost</span>
-            <div className="font-semibold">{formatCost(cost.totalCost)}</div>
+            <div className="text-sm font-medium">Session Breakdown</div>
+            <p className="text-xs text-muted-foreground">
+              Token counts and dollar totals across the full session from the API.
+            </p>
           </div>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="cursor-help">
-                <span className="text-muted-foreground text-xs">Total Input</span>
-                <div className="font-semibold">{totalInput.toLocaleString()}</div>
-              </div>
-            </TooltipTrigger>
-            <TooltipContent>Total input = new tokens + cached tokens</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="cursor-help">
-                <span className="text-muted-foreground text-xs">New Tokens</span>
-                <div className="font-semibold">{(cost.totalTokens?.input ?? 0).toLocaleString()}</div>
-              </div>
-            </TooltipTrigger>
-            <TooltipContent>Newly processed tokens (not from cache)</TooltipContent>
-          </Tooltip>
-          <div>
-            <span className="text-muted-foreground text-xs">Output Tokens</span>
-            <div className="font-semibold">{(cost.totalTokens?.output ?? 0).toLocaleString()}</div>
-          </div>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="cursor-help">
-                <span className="text-muted-foreground text-xs">Cache Read</span>
-                <div className="font-semibold">{(cost.totalTokens?.cacheRead ?? 0).toLocaleString()}</div>
-              </div>
-            </TooltipTrigger>
-            <TooltipContent>Tokens served from prompt cache</TooltipContent>
-          </Tooltip>
+          <MetricBreakdown tokens={cost.totalTokens} dollars={cost.dollars} totalCost={cost.totalCost} />
         </div>
 
-        {cost.byAgent && cost.byAgent.length > 0 && (
+        {agentCosts.length > 0 && (
           <details className="mt-4">
             <summary className="cursor-pointer text-sm font-medium">
-              By Agent ({cost.byAgent.length} agents)
+              By Agent ({agentCosts.length} agents)
             </summary>
             <div className="mt-2 space-y-2">
-              {cost.byAgent.map((agent: ApiAgentCost) => (
+              {agentCosts.map((agent) => (
                 <AgentCostDetail key={agent.agent} agentCost={agent} />
               ))}
             </div>
@@ -121,6 +164,19 @@ function CostSection({ cost }: { cost: { totalCost: number; totalTokens?: { inpu
 }
 
 function AgentCostDetail({ agentCost }: { agentCost: ApiAgentCost }) {
+  const steps = Array.isArray(agentCost.steps) ? agentCost.steps : [];
+
+  const stepTokenSummary = (tokens: ApiTokenUsage): string => {
+    const parts = [
+      `${tokens.input} in`,
+      `${tokens.output} out`,
+      `${tokens.reasoning} reason`,
+      `${tokens.cacheRead} cache-read`,
+      `${tokens.cacheWrite} cache-write`,
+    ];
+    return `${parts.join(" | ")} | ${totalTokens(tokens)} total`;
+  };
+
   return (
     <details className="ml-2">
       <summary className="cursor-pointer text-sm flex items-center gap-2">
@@ -131,24 +187,39 @@ function AgentCostDetail({ agentCost }: { agentCost: ApiAgentCost }) {
           <TooltipContent>{agentCost.agent}</TooltipContent>
         </Tooltip>
         <span className="text-muted-foreground">{formatCost(agentCost.cost)}</span>
-        <span className="text-xs text-muted-foreground">({agentCost.steps?.length ?? 0} steps)</span>
+        <span className="text-xs text-muted-foreground">
+          {totalTokens(agentCost.tokens).toLocaleString()} tok | {steps.length} steps
+        </span>
       </summary>
-      {agentCost.steps && agentCost.steps.length > 0 && (
-        <div className="ml-4 mt-1 space-y-0.5">
-          {agentCost.steps.map((step: ApiStepCost) => (
-            <div key={`${step.stepId}-${step.timestamp}`} className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="truncate max-w-[150px] cursor-help">{step.stepId}</span>
-                </TooltipTrigger>
-                <TooltipContent>{step.stepId}</TooltipContent>
-              </Tooltip>
-              <span>{formatStepCost(step.cost)}</span>
-              <span>({step.tokens.input} in, {step.tokens.output} out)</span>
-            </div>
-          ))}
-        </div>
-      )}
+      <div className="ml-4 mt-2 space-y-3">
+        <MetricBreakdown tokens={agentCost.tokens} dollars={agentCost.dollars} totalCost={agentCost.cost} />
+        {steps.length > 0 && (
+          <div className="space-y-1">
+            {steps.map((step: ApiStepCost) => (
+              <div key={`${step.stepId}-${step.timestamp}`} className="rounded-md border bg-muted/10 p-2">
+                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="truncate max-w-[150px] cursor-help">{step.stepId}</span>
+                    </TooltipTrigger>
+                    <TooltipContent>{step.stepId}</TooltipContent>
+                  </Tooltip>
+                  <span>{formatStepCost(step.cost)}</span>
+                  <span>{stepTokenSummary(step.tokens)}</span>
+                </div>
+                <div className="mt-2">
+                  <MetricBreakdown
+                    tokens={step.tokens}
+                    dollars={step.dollars}
+                    totalCost={step.cost}
+                    formatDollarValue={formatStepCost}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </details>
   );
 }

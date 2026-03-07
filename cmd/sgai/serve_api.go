@@ -16,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -78,7 +79,6 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/snippets", s.handleAPISnippets)
 	mux.HandleFunc("GET /api/v1/snippets/{lang}", s.handleAPISnippetsByLanguage)
 	mux.HandleFunc("GET /api/v1/snippets/{lang}/{fileName}", s.handleAPISnippetDetail)
-	mux.HandleFunc("POST /api/v1/workspaces", s.handleAPICreateWorkspace)
 
 	mux.HandleFunc("POST /api/v1/workspaces/{name}/respond", s.handleAPIRespond)
 	mux.HandleFunc("POST /api/v1/workspaces/{name}/start", s.handleAPIStartSession)
@@ -92,6 +92,7 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/workspaces/{name}/adhoc", s.handleAPIAdhocStatus)
 	mux.HandleFunc("POST /api/v1/workspaces/{name}/adhoc", s.handleAPIAdhoc)
 	mux.HandleFunc("DELETE /api/v1/workspaces/{name}/adhoc", s.handleAPIAdhocStop)
+	mux.HandleFunc("DELETE /api/v1/workspaces/{name}/messages/{id}", s.handleAPIDeleteMessage)
 
 	mux.HandleFunc("GET /api/v1/workspaces/{name}/workflow.svg", s.handleAPIWorkflowSVG)
 	mux.HandleFunc("POST /api/v1/workspaces/{name}/steer", s.handleAPISteer)
@@ -100,7 +101,6 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/workspaces/{name}/open-editor/goal", s.handleAPIOpenEditorGoal)
 	mux.HandleFunc("POST /api/v1/workspaces/{name}/open-editor/project-management", s.handleAPIOpenEditorProjectManagement)
 	mux.HandleFunc("GET /api/v1/workspaces/{name}/diff", s.handleAPIWorkspaceDiff)
-	mux.HandleFunc("DELETE /api/v1/workspaces/{name}/messages/{id}", s.handleAPIDeleteMessage)
 	mux.HandleFunc("GET /api/v1/models", s.handleAPIListModels)
 	mux.HandleFunc("GET /api/v1/compose", s.handleAPIComposeState)
 	mux.HandleFunc("POST /api/v1/compose", s.handleAPIComposeSave)
@@ -368,7 +368,7 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 		NeedsInput:      needsInput,
 		InProgress:      ws.InProgress,
 		Pinned:          ws.Pinned,
-		IsRoot:          kind == workspaceRoot,
+		IsRoot:          ws.IsRoot,
 		IsFork:          kind == workspaceFork,
 		IsExternal:      ws.External,
 		HasSGAI:         ws.HasWorkspace,
@@ -406,7 +406,7 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 		Actions:         loadActionsForAPI(ws.Directory),
 	}
 
-	if kind == workspaceRoot {
+	if ws.IsRoot {
 		full.Forks = s.collectForksForAPIFromGroups(ws.Directory, groups)
 	}
 
@@ -911,42 +911,6 @@ func convertAgentSequence(displays []agentSequenceDisplay) []apiAgentSequenceEnt
 	return result
 }
 
-type apiCreateWorkspaceRequest struct {
-	Name string `json:"name"`
-}
-
-type apiCreateWorkspaceResponse struct {
-	Name string `json:"name"`
-	Dir  string `json:"dir"`
-}
-
-func (s *Server) handleAPICreateWorkspace(w http.ResponseWriter, r *http.Request) {
-	var req apiCreateWorkspaceRequest
-	if errDecode := json.NewDecoder(r.Body).Decode(&req); errDecode != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	result, errCreate := s.createWorkspaceService(req.Name)
-	if errCreate != nil {
-		statusCode := http.StatusInternalServerError
-		switch {
-		case errors.Is(errCreate, errDirectoryExists):
-			statusCode = http.StatusConflict
-		case errors.Is(errCreate, errWorkspaceNameInvalid):
-			statusCode = http.StatusBadRequest
-		}
-		http.Error(w, errCreate.Error(), statusCode)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	if err := json.NewEncoder(w).Encode(apiCreateWorkspaceResponse(result)); err != nil {
-		log.Println("failed to encode json response:", err)
-	}
-}
-
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(v); err != nil {
@@ -1368,61 +1332,27 @@ func (s *Server) handleAPIStartSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.classifyWorkspaceCached(workspacePath) == workspaceRoot {
-		http.Error(w, "root workspace cannot start agentic work", http.StatusBadRequest)
-		return
-	}
-
 	var req apiStartSessionRequest
 	if errDecode := json.NewDecoder(r.Body).Decode(&req); errDecode != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	coord := s.workspaceCoordinator(workspacePath)
-	continuousPrompt := readContinuousModePrompt(workspacePath)
-
-	var interactionMode string
-	switch {
-	case continuousPrompt != "":
-		interactionMode = state.ModeContinuous
-	case req.Auto:
-		interactionMode = state.ModeSelfDrive
-	default:
-		interactionMode = state.ModeBrainstorming
-	}
-
-	if errUpdate := coord.UpdateState(func(wf *state.Workflow) {
-		wf.InteractionMode = interactionMode
-	}); errUpdate != nil {
-		http.Error(w, "failed to save workflow state", http.StatusInternalServerError)
+	result, errStart := s.startSessionService(workspacePath, req.Auto)
+	if errStart != nil {
+		statusCode := http.StatusInternalServerError
+		if errors.Is(errStart, errRootWorkspaceCannotStart) {
+			statusCode = http.StatusBadRequest
+		}
+		http.Error(w, errStart.Error(), statusCode)
 		return
 	}
-
-	result := s.startSession(workspacePath)
-
-	if result.alreadyRunning {
-		writeJSON(w, apiSessionActionResponse{
-			Name:    filepath.Base(workspacePath),
-			Status:  "running",
-			Running: true,
-			Message: "session already running",
-		})
-		return
-	}
-
-	if result.startError != nil {
-		http.Error(w, result.startError.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	s.notifyStateChange()
 
 	writeJSON(w, apiSessionActionResponse{
-		Name:    filepath.Base(workspacePath),
-		Status:  "running",
-		Running: true,
-		Message: "session started",
+		Name:    result.Name,
+		Status:  result.Status,
+		Running: result.Running,
+		Message: result.Message,
 	})
 }
 
@@ -1939,8 +1869,8 @@ func (s *Server) handleAPIForkTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.classifyWorkspaceCached(workspacePath) != workspaceRoot {
-		http.Error(w, "workspace is not a root workspace", http.StatusBadRequest)
+	if s.classifyWorkspaceCached(workspacePath) == workspaceFork {
+		http.Error(w, "workspace is a fork workspace", http.StatusBadRequest)
 		return
 	}
 
@@ -1948,14 +1878,14 @@ func (s *Server) handleAPIForkTemplate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, apiForkTemplateResponse{Content: content})
 }
 
-func (s *Server) resolveForkTemplateContent(rootDir string) string {
+func (s *Server) resolveForkTemplateContent(workspaceDir string) string {
 	groups, errScan := s.scanWorkspaceGroups()
 	if errScan != nil {
 		return goalExampleContent
 	}
 
 	for _, grp := range groups {
-		if grp.Root.Directory != rootDir {
+		if grp.Root.Directory != workspaceDir {
 			continue
 		}
 		if len(grp.Forks) == 0 {
@@ -2443,6 +2373,12 @@ type apiModelsResponse struct {
 	DefaultModel string          `json:"defaultModel,omitempty"`
 }
 
+type apiDeleteMessageResponse struct {
+	Deleted bool   `json:"deleted"`
+	ID      int    `json:"id"`
+	Message string `json:"message"`
+}
+
 func (s *Server) handleAPIListModels(w http.ResponseWriter, r *http.Request) {
 	validModels, errFetch := fetchValidModels()
 	if errFetch != nil {
@@ -2462,6 +2398,37 @@ func (s *Server) handleAPIListModels(w http.ResponseWriter, r *http.Request) {
 
 	defaultModel := s.coordinatorModelFromWorkspace(r.URL.Query().Get("workspace"))
 	writeJSON(w, apiModelsResponse{Models: entries, DefaultModel: defaultModel})
+}
+
+func (s *Server) handleAPIDeleteMessage(w http.ResponseWriter, r *http.Request) {
+	workspacePath, ok := s.resolveWorkspaceFromPath(w, r)
+	if !ok {
+		return
+	}
+
+	idStr := r.PathValue("id")
+	if idStr == "" {
+		http.Error(w, "message id is required", http.StatusBadRequest)
+		return
+	}
+
+	messageID, errParseID := strconv.Atoi(idStr)
+	if errParseID != nil {
+		http.Error(w, "invalid message id", http.StatusBadRequest)
+		return
+	}
+
+	deleteResult, errDelete := s.deleteMessageService(workspacePath, messageID)
+	if errDelete != nil {
+		if errors.Is(errDelete, errMessageNotFound) {
+			http.Error(w, "message not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "failed to save workspace state", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, apiDeleteMessageResponse(deleteResult))
 }
 
 func (s *Server) coordinatorModelFromWorkspace(workspace string) string {
@@ -2520,45 +2487,6 @@ func collectAgentModels(workspacePath string) []apiAgentModelEntry {
 	return result
 }
 
-// apiDeleteMessageResponse represents the response from deleting a message.
-type apiDeleteMessageResponse struct {
-	Deleted bool   `json:"deleted"`
-	ID      int    `json:"id"`
-	Message string `json:"message"`
-}
-
-// handleAPIDeleteMessage handles DELETE requests to remove a message from a workspace.
-func (s *Server) handleAPIDeleteMessage(w http.ResponseWriter, r *http.Request) {
-	workspacePath, ok := s.resolveWorkspaceFromPath(w, r)
-	if !ok {
-		return
-	}
-
-	idStr := r.PathValue("id")
-	if idStr == "" {
-		http.Error(w, "message id is required", http.StatusBadRequest)
-		return
-	}
-
-	var messageID int
-	if _, errScan := fmt.Sscanf(idStr, "%d", &messageID); errScan != nil {
-		http.Error(w, "invalid message id", http.StatusBadRequest)
-		return
-	}
-
-	deleteResult, errDelete := s.deleteMessageService(workspacePath, messageID)
-	if errDelete != nil {
-		if errors.Is(errDelete, errMessageNotFound) {
-			http.Error(w, "message not found", http.StatusNotFound)
-			return
-		}
-		http.Error(w, "failed to save workspace state", http.StatusInternalServerError)
-		return
-	}
-
-	writeJSON(w, apiDeleteMessageResponse(deleteResult))
-}
-
 type apiBrowseDirectoriesResponse struct {
 	Path    string           `json:"path"`
 	Entries []directoryEntry `json:"entries"`
@@ -2598,8 +2526,6 @@ func (s *Server) handleAPIAttachWorkspace(w http.ResponseWriter, r *http.Request
 		case errors.Is(errAttach, errPathNotAbsolute):
 			statusCode = http.StatusBadRequest
 		case errors.Is(errAttach, errNotADirectory):
-			statusCode = http.StatusBadRequest
-		case errors.Is(errAttach, errUnderRootDir):
 			statusCode = http.StatusBadRequest
 		case errors.Is(errAttach, errAlreadyAttached):
 			statusCode = http.StatusConflict

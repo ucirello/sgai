@@ -55,9 +55,6 @@ const WizardFinish = lazy(() =>
 const ComposePreviewPage = lazy(() =>
   import("./pages/ComposePreviewPage").then((m) => ({ default: m.ComposePreviewPage })),
 );
-const NewWorkspace = lazy(() =>
-  import("./pages/NewWorkspace").then((m) => ({ default: m.NewWorkspace })),
-);
 const AttachExternal = lazy(() =>
   import("./pages/AttachExternal").then((m) => ({ default: m.AttachExternal })),
 );
@@ -131,7 +128,7 @@ export const router = createBrowserRouter([
       },
       {
         path: "workspaces/new",
-        element: withSuspense(NewWorkspace),
+        element: <Navigate to="/workspaces/attach" replace />,
       },
       {
         path: "workspaces/attach",

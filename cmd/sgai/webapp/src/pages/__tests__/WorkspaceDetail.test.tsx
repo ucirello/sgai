@@ -1,10 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
-import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Routes, Route } from "react-router";
+import { MemoryRouter, Routes, Route, createMemoryRouter, RouterProvider } from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { WorkspaceDetail } from "../WorkspaceDetail";
+
+function deferredValue<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 // Override pointer-events on body to allow interactions in tests
 beforeEach(() => {
@@ -62,6 +72,8 @@ const mockTogglePin = mock(() => Promise.resolve({ pinned: true }));
 const mockOpenEditor = mock(() => Promise.resolve({ opened: true }));
 const mockDeleteWorkspace = mock(() => Promise.resolve({ deleted: true }));
 const mockDeleteFork = mock(() => Promise.resolve({ deleted: true }));
+const mockForkTemplate = mock(() => Promise.resolve({ content: "# New task\n\nShip it" }));
+const mockFork = mock(() => Promise.resolve({ name: "test-workspace-fork" }));
 const mockTriggerFactoryRefresh = mock(() => {});
 const mockRespond = mock(() => Promise.resolve({ success: true }));
 const mockNavigate = mock(() => {});
@@ -89,6 +101,8 @@ mock.module("@/lib/api", () => ({
       openEditor: mockOpenEditor,
       deleteWorkspace: mockDeleteWorkspace,
       deleteFork: mockDeleteFork,
+      forkTemplate: mockForkTemplate,
+      fork: mockFork,
       respond: mockRespond,
     },
   },
@@ -115,6 +129,25 @@ mock.module("@/hooks/use-mobile", () => ({
   useIsMobile: () => false,
 }));
 
+mock.module("@/components/MarkdownEditor", () => ({
+  MarkdownEditor: ({ value, onChange, disabled, placeholder }: {
+    value: string;
+    onChange: (v: string | undefined) => void;
+    disabled: boolean;
+    placeholder?: string;
+  }) => (
+    <div data-testid="markdown-editor">
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        data-testid="fork-editor-textarea"
+        placeholder={placeholder}
+      />
+    </div>
+  ),
+}));
+
 function renderWorkspaceDetail(workspaceName = "test-workspace", tab = "progress") {
   return render(
     <MemoryRouter initialEntries={[`/workspaces/${workspaceName}/${tab}`]}>
@@ -127,6 +160,28 @@ function renderWorkspaceDetail(workspaceName = "test-workspace", tab = "progress
       </TooltipProvider>
     </MemoryRouter>
   );
+}
+
+function renderWorkspaceDetailRouter(initialPath = "/workspaces/test-workspace/progress") {
+  const router = createMemoryRouter([
+    {
+      path: "/workspaces/:name/*",
+      element: (
+        <TooltipProvider>
+          <SidebarProvider>
+            <WorkspaceDetail />
+          </SidebarProvider>
+        </TooltipProvider>
+      ),
+    },
+  ], {
+    initialEntries: [initialPath],
+  });
+
+  return {
+    router,
+    ...render(<RouterProvider router={router} />),
+  };
 }
 
 afterEach(() => {
@@ -142,12 +197,102 @@ describe("WorkspaceDetail", () => {
     mockOpenEditor.mockClear();
     mockDeleteWorkspace.mockClear();
     mockDeleteFork.mockClear();
+    mockForkTemplate.mockClear();
+    mockFork.mockClear();
     mockTriggerFactoryRefresh.mockClear();
     mockRespond.mockClear();
     mockNavigate.mockClear();
   });
 
   describe("start/stop buttons work", () => {
+    it("shows a dedicated Fork tab for standalone workspaces", async () => {
+      mockWorkspaces = [createMockWorkspace()];
+      renderWorkspaceDetail();
+
+      await waitFor(() => {
+        expect(screen.getByRole("link", { name: "Fork" })).toBeTruthy();
+      });
+
+      expect(screen.queryByRole("button", { name: "Create Fork" })).toBeNull();
+      expect(mockForkTemplate).not.toHaveBeenCalled();
+    });
+
+    it("renders the fork editor only on the Fork tab", async () => {
+      mockWorkspaces = [createMockWorkspace()];
+
+      renderWorkspaceDetail("test-workspace", "fork");
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Create Fork" })).toBeTruthy();
+      });
+
+      expect(mockForkTemplate).toHaveBeenCalledWith("test-workspace");
+    });
+
+    it("never shows the previous workspace draft while switching standalone workspaces", async () => {
+      const nextWorkspaceTemplate = deferredValue<{ content: string }>();
+      mockWorkspaces = [
+        createMockWorkspace({ name: "test-workspace" }),
+        createMockWorkspace({ name: "next-workspace", description: "Next Workspace" }),
+      ];
+
+      mockForkTemplate.mockImplementation((workspaceName: string) => {
+        if (workspaceName === "test-workspace") {
+          return Promise.resolve({ content: "# First Goal\n\nFirst workspace task" });
+        }
+        if (workspaceName === "next-workspace") {
+          return nextWorkspaceTemplate.promise;
+        }
+        return Promise.resolve({ content: "" });
+      });
+
+      const { router } = renderWorkspaceDetailRouter("/workspaces/test-workspace/fork");
+
+      await waitFor(() => {
+        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toContain("First workspace task");
+      });
+
+      await act(async () => {
+        await router.navigate("/workspaces/next-workspace/fork");
+      });
+
+      await waitFor(() => {
+        expect(mockForkTemplate).toHaveBeenCalledWith("next-workspace");
+      });
+
+      expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toBe("");
+      expect(screen.queryByDisplayValue(/First workspace task/)).toBeNull();
+      expect(screen.getByRole("button", { name: "Create Fork" }).hasAttribute("disabled")).toBe(true);
+
+      nextWorkspaceTemplate.resolve({ content: "# Second Goal\n\nSecond workspace task" });
+
+      await waitFor(() => {
+        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toContain("Second workspace task");
+      });
+    });
+
+    it("does not show a Fork tab for fork workspaces", async () => {
+      mockWorkspaces = [createMockWorkspace({ isFork: true })];
+      renderWorkspaceDetail();
+
+      await waitFor(() => {
+        expect(screen.queryByRole("link", { name: "Fork" })).toBeNull();
+      });
+
+      expect(mockForkTemplate).not.toHaveBeenCalled();
+    });
+
+    it("keeps root repository fork navigation unchanged", async () => {
+      mockWorkspaces = [createMockWorkspace({ isRoot: true, forks: [{ name: "test-workspace-fork", dir: "/path/to/test-workspace-fork", running: false, needsInput: false, inProgress: false, pinned: false, description: "Fork 1", commitAhead: 0, commits: [] }] })];
+      renderWorkspaceDetail("test-workspace", "forks");
+
+      await waitFor(() => {
+        expect(screen.getByRole("link", { name: "Forks" })).toBeTruthy();
+      });
+
+      expect(screen.queryByRole("link", { name: "Fork" })).toBeNull();
+    });
+
     it("shows Start button when workspace is not running", async () => {
       renderWorkspaceDetail();
 

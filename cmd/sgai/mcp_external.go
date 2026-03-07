@@ -149,36 +149,68 @@ func registerStateTools(server *mcp.Server, ctx *externalMCPContext) {
 }
 
 func registerWorkspaceTools(server *mcp.Server, ctx *externalMCPContext) {
-	type createWorkspaceArgs struct {
-		Name string `json:"name" jsonschema:"The workspace name (lowercase letters, numbers, dashes only)"`
+	type browseDirectoriesArgs struct {
+		Path string `json:"path,omitempty" jsonschema:"The directory path to browse. Defaults to the home directory when omitted."`
 	}
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "create_workspace",
-		Description: "Create a new workspace with the given name.",
-		InputSchema: mustSchema[createWorkspaceArgs](),
-	}, func(_ context.Context, _ *mcp.CallToolRequest, args createWorkspaceArgs) (*mcp.CallToolResult, emptyResult, error) {
-		createResult, err := ctx.srv.createWorkspaceService(args.Name)
+		Name:        "browse_directories",
+		Description: "Browse directories when selecting an external repository to attach.",
+		InputSchema: mustSchema[browseDirectoriesArgs](),
+	}, func(_ context.Context, _ *mcp.CallToolRequest, args browseDirectoriesArgs) (*mcp.CallToolResult, emptyResult, error) {
+		entries, err := browseDirectoriesService(args.Path)
 		if err != nil {
 			return textResult("error: " + err.Error()), emptyResult{}, nil
 		}
-		result, err := jsonResult(createResult)
+		result, err := jsonResult(entries)
+		return result, emptyResult{}, err
+	})
+
+	type attachWorkspaceArgs struct {
+		Path string `json:"path" jsonschema:"The absolute path of the external repository to attach"`
+	}
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "attach_workspace",
+		Description: "Attach an external repository as a workspace.",
+		InputSchema: mustSchema[attachWorkspaceArgs](),
+	}, func(_ context.Context, _ *mcp.CallToolRequest, args attachWorkspaceArgs) (*mcp.CallToolResult, emptyResult, error) {
+		attachResult, err := ctx.srv.attachExternalWorkspaceService(args.Path)
+		if err != nil {
+			return textResult("error: " + err.Error()), emptyResult{}, nil
+		}
+		result, err := jsonResult(attachResult)
+		return result, emptyResult{}, err
+	})
+
+	type detachWorkspaceArgs struct {
+		Path string `json:"path" jsonschema:"The absolute path of the external repository to detach"`
+	}
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "detach_workspace",
+		Description: "Detach an external repository workspace.",
+		InputSchema: mustSchema[detachWorkspaceArgs](),
+	}, func(_ context.Context, _ *mcp.CallToolRequest, args detachWorkspaceArgs) (*mcp.CallToolResult, emptyResult, error) {
+		detachResult, err := ctx.srv.detachExternalWorkspaceService(args.Path)
+		if err != nil {
+			return textResult("error: " + err.Error()), emptyResult{}, nil
+		}
+		result, err := jsonResult(detachResult)
 		return result, emptyResult{}, err
 	})
 
 	type forkWorkspaceArgs struct {
-		Workspace string `json:"workspace" jsonschema:"The parent workspace name to fork from"`
-		Name      string `json:"name" jsonschema:"The fork name"`
+		Workspace   string `json:"workspace" jsonschema:"The parent workspace name to fork from"`
+		GoalContent string `json:"goalContent" jsonschema:"The GOAL.md content for the new fork workspace"`
 	}
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "fork_workspace",
-		Description: "Create a fork of an existing workspace.",
+		Description: "Create a fork of an existing workspace using the provided GOAL.md content.",
 		InputSchema: mustSchema[forkWorkspaceArgs](),
 	}, func(_ context.Context, _ *mcp.CallToolRequest, args forkWorkspaceArgs) (*mcp.CallToolResult, emptyResult, error) {
 		workspacePath, err := ctx.resolveWorkspacePath(args.Workspace)
 		if err != nil {
 			return nil, emptyResult{}, err
 		}
-		forkResult, err := ctx.srv.forkWorkspaceService(workspacePath, args.Name)
+		forkResult, err := ctx.srv.forkWorkspaceService(workspacePath, args.GoalContent)
 		if err != nil {
 			return textResult("error: " + err.Error()), emptyResult{}, nil
 		}
@@ -249,6 +281,27 @@ func registerWorkspaceTools(server *mcp.Server, ctx *externalMCPContext) {
 		return result, emptyResult{}, err
 	})
 
+	type deleteMessageArgs struct {
+		Workspace string `json:"workspace" jsonschema:"The workspace name"`
+		ID        int    `json:"id" jsonschema:"The message ID to delete"`
+	}
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "delete_message",
+		Description: "Delete any message from a workspace by ID.",
+		InputSchema: mustSchema[deleteMessageArgs](),
+	}, func(_ context.Context, _ *mcp.CallToolRequest, args deleteMessageArgs) (*mcp.CallToolResult, emptyResult, error) {
+		workspacePath, err := ctx.resolveWorkspacePath(args.Workspace)
+		if err != nil {
+			return nil, emptyResult{}, err
+		}
+		deleteResult, err := ctx.srv.deleteMessageService(workspacePath, args.ID)
+		if err != nil {
+			return textResult("error: " + err.Error()), emptyResult{}, nil
+		}
+		result, err := jsonResult(deleteResult)
+		return result, emptyResult{}, err
+	})
+
 	type togglePinArgs struct {
 		Workspace string `json:"workspace" jsonschema:"The workspace name"`
 	}
@@ -290,26 +343,6 @@ func registerWorkspaceTools(server *mcp.Server, ctx *externalMCPContext) {
 		return result, emptyResult{}, err
 	})
 
-	type deleteMessageArgs struct {
-		Workspace string `json:"workspace" jsonschema:"The workspace name"`
-		ID        int    `json:"id" jsonschema:"The message ID to delete"`
-	}
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "delete_message",
-		Description: "Delete a message from a workspace.",
-		InputSchema: mustSchema[deleteMessageArgs](),
-	}, func(_ context.Context, _ *mcp.CallToolRequest, args deleteMessageArgs) (*mcp.CallToolResult, emptyResult, error) {
-		workspacePath, err := ctx.resolveWorkspacePath(args.Workspace)
-		if err != nil {
-			return nil, emptyResult{}, err
-		}
-		deleteResult, err := ctx.srv.deleteMessageService(workspacePath, args.ID)
-		if err != nil {
-			return textResult("error: " + err.Error()), emptyResult{}, nil
-		}
-		result, err := jsonResult(deleteResult)
-		return result, emptyResult{}, err
-	})
 }
 
 func registerSessionTools(server *mcp.Server, ctx *externalMCPContext) {

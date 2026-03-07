@@ -17,13 +17,6 @@ import {
   AlertDialogAction,
   AlertDialogCancel,
 } from "@/components/ui/alert-dialog";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu";
 import sgaiLogo from "@/assets/sgai-logo.svg";
 import {
   Sidebar,
@@ -38,8 +31,7 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { Loader2, Inbox, Trash2, FolderPlus, Link as LinkIcon } from "lucide-react";
-import { api } from "@/lib/api";
+import { Loader2, Inbox, Trash2, Link as LinkIcon } from "lucide-react";
 import { useFactoryState, triggerFactoryRefresh } from "@/lib/factory-state";
 import { useSidebarResize } from "@/hooks/useSidebarResize";
 import { cn } from "@/lib/utils";
@@ -862,10 +854,6 @@ function DashboardContent({ children, onSidebarResizeMouseDown }: DashboardConte
     }
   }, [selectedName, setOpenMobile]);
 
-  const handleNewWorkspace = useCallback(() => {
-    navigate("/workspaces/new");
-  }, [navigate]);
-
   const handleAttachExternal = useCallback(() => {
     navigate("/workspaces/attach");
   }, [navigate]);
@@ -901,24 +889,17 @@ function DashboardContent({ children, onSidebarResizeMouseDown }: DashboardConte
         </SidebarContent>
         <Separator />
         <SidebarFooter className="p-2">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" className="w-full">
-                [ + ]
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent side="top" align="center" className="w-48">
-              <DropdownMenuItem onClick={handleNewWorkspace}>
-                <FolderPlus className="mr-2 h-4 w-4" />
-                New Workspace
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={handleAttachExternal}>
-                <LinkIcon className="mr-2 h-4 w-4" />
-                Attach External
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full justify-center gap-2"
+            aria-label="Attach external repository"
+            onClick={handleAttachExternal}
+          >
+            <span>[ + ]</span>
+            <LinkIcon className="h-4 w-4" />
+            <span>Attach External</span>
+          </Button>
         </SidebarFooter>
         <SidebarRail />
         <div

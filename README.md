@@ -124,11 +124,11 @@ You can create agent aliases that reuse an existing agent's prompt and tools wit
 ```markdown
 ---
 flow: |
-  "backend-go-developer-lite" -> "go-readability-reviewer"
+  "go-developer-lite" -> "go-reviewer"
 alias:
-  "backend-go-developer-lite": "backend-go-developer"
+  "go-developer-lite": "go-developer"
 models:
-  "backend-go-developer-lite": "anthropic/claude-haiku-4-5"
+  "go-developer-lite": "anthropic/claude-haiku-4-5"
 ---
 ```
 

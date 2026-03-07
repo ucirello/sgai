@@ -2,6 +2,8 @@ THE ONLY ACCEPTABLE PLACE FOR PROJECT_MANAGEMENT.md IS `.sgai/PROJECT_MANAGEMENT
 
 Every time you are asked to make a source code (or prompt) modification  to `/.sgai` you have to make the modification to `sgai/` (the overlay directory) instead.
 
+When work involves external attachment rules or standalone/root/forked repository behavior, consult the decision records in `PRDs/` before changing code, prompts, tests, or reviews.
+
 In term of Go code style, I prefer total absence of inline comments; organize functions and if blocks in a way that they have intention revealing names, and use that instead.
 
 In term of Go code style, I prefer very private functions over public functions; private struct over public structs; local types and structs over global structs; public functions and structs must have godoc comments.

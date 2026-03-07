@@ -16,9 +16,9 @@ Verifies that TypeScript Claude Agent SDK applications are properly configured, 
 
 ---
 
-## backend-go-developer
+## go-developer
 
-Expert Go backend developer for building production-quality APIs, CLI tools, and services with idiomatic Go patterns. This agent writes, tests, and refactors Go code following official Go conventions and best practices from Effective Go. It handles HTTP/API development, database operations, testing, and uses modern Go features (Go 1.21+) including generics, the slices package, and iterators. The agent works closely with the go-readability-reviewer for code quality assurance and must address all review feedback before completing work.
+Expert Go backend developer for building production-quality APIs, CLI tools, and services with idiomatic Go patterns. This agent writes, tests, and refactors Go code following official Go conventions and best practices from Effective Go. It handles HTTP/API development, database operations, testing, and uses modern Go features (Go 1.21+) including generics, the slices package, and iterators. The agent works closely with the go-reviewer for code quality assurance and must address all review feedback before completing work.
 
 ---
 
@@ -64,9 +64,9 @@ General-purpose agent for researching complex questions, searching for code, and
 
 ---
 
-## go-readability-reviewer
+## go-reviewer
 
-Reviews Go code for readability, idioms, and best practices following Go Code Review Comments and the Google Go Style Guide. This is a read-only reviewer that cannot modify files - it provides detailed feedback with line numbers and sends fix recommendations to the backend-go-developer agent via messaging. The agent uses a comprehensive checklist covering formatting, naming, error handling, concurrency, interfaces, documentation, type safety, and modern Go idioms. Every issue identified is mandatory and must be addressed before work can proceed.
+Reviews Go code for readability, idioms, and best practices following Go Code Review Comments and the Google Go Style Guide. This is a read-only reviewer that cannot modify files - it provides detailed feedback with line numbers and sends fix recommendations to the go-developer agent via messaging. The agent uses a comprehensive checklist covering formatting, naming, error handling, concurrency, interfaces, documentation, type safety, and modern Go idioms. Every issue identified is mandatory and must be addressed before work can proceed.
 
 ---
 
