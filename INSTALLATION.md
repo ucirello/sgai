@@ -226,13 +226,13 @@ The SGAI binary embeds the React web dashboard at build time. You must build fro
 > **Why `bash -c`?** The `git clone` and `cp` commands below access directories outside the current working directory. Tools like [opencode](https://opencode.ai/docs/permissions#external-directories) restrict external directory access by default. Wrapping these operations in `bash -c` (or `tmux`) avoids triggering permission prompts.
 
 ```sh
-bash -c 'git clone https://github.com/sandgardenhq/sgai.git ./sgai-source && cd ./sgai-source && make build && cp ./bin/sgai "$(go env GOPATH)/bin/sgai"'
+bash -c 'git clone https://github.com/ucirello/sgai.git ./sgai-source && cd ./sgai-source && make build && cp ./bin/sgai "$(go env GOPATH)/bin/sgai"'
 ```
 
 Alternatively, use tmux if you prefer a detached build:
 
 ```sh
-tmux new-session -d -s build-sgai 'git clone https://github.com/sandgardenhq/sgai.git ./sgai-source && cd ./sgai-source && make build && cp ./bin/sgai "$(go env GOPATH)/bin/sgai"'
+tmux new-session -d -s build-sgai 'git clone https://github.com/ucirello/sgai.git ./sgai-source && cd ./sgai-source && make build && cp ./bin/sgai "$(go env GOPATH)/bin/sgai"'
 # Wait for the build to finish:
 tmux wait-for build-sgai 2>/dev/null || sleep 120
 ```
