@@ -95,7 +95,8 @@ Parameters: {
 
 ### Human Communication
 
-Use `ask_user_question` to present structured multi-choice questions to the human partner. This is the sole channel for human communication.
+- If you are the coordinator, use the human-facing tools directly (`sgai_ask_user_question`)
+- If you are any other agent and you need human clarification, send a message to the coordinator instead (for example `sgai_send_message({toAgent: "coordinator", body: "QUESTION: <your question>"})`). The coordinator owns direct human communication.
 
 ---
 

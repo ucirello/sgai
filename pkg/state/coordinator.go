@@ -2,26 +2,27 @@ package state
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"sync"
 	"time"
 )
 
 const agentDoneWatchdogTimeout = time.Minute
 
+var errPendingHumanInput = errors.New("human input already pending")
+
 // Coordinator manages workflow state in memory with blocking ask/answer delivery
 // and a soft-stop watchdog for agent-done transitions.
-//
-// It wraps a Workflow with per-question response channels for direct answer
-// delivery (no file I/O), a save path for retrospective persistence, and a
-// sync.Once-guarded timer that cancels the context one minute after agent-done
-// is called.
 type Coordinator struct {
-	mu                sync.Mutex
-	wf                Workflow
-	currentResponseCh chan string
-	savePath          string
+	mu                 sync.Mutex
+	wf                 Workflow
+	currentResponseCh  chan string
+	currentPromptToken string
+	promptSeq          uint64
+	savePath           string
 
 	doneOnce    sync.Once
 	doneTimer   *time.Timer
@@ -104,112 +105,103 @@ func (c *Coordinator) UpdateState(fn func(*Workflow)) error {
 	return nil
 }
 
-// AskAndWait sets the question state on the workflow, saves it, and blocks until
-// the human partner answers via Respond or the context is cancelled.
-// After the answer arrives, it clears the waiting state before returning.
-// On context cancellation, the question state is preserved so the UI
-// notification (⚠) remains visible for the human partner, and the response
-// channel is kept alive so a subsequent call can immediately collect a buffered
-// answer.
-// It returns the human's answer string or a context error.
-//
-// Each call creates its own response channel (channel-in-channel pattern) so
-// that concurrent or sequential calls never share state and MCP tool timeouts
-// do not corrupt pending question channels. If the previous call timed out and
-// the human has already answered (buffered in the existing channel), the answer
-// is collected immediately without blocking.
+// AskAndWait stores the pending question in memory and blocks until Respond
+// delivers an answer or ctx ends.
 func (c *Coordinator) AskAndWait(ctx context.Context, question *MultiChoiceQuestion, humanMessage string) (string, error) {
-	c.mu.Lock()
-	existingCh := c.currentResponseCh
-	c.mu.Unlock()
-
-	if existingCh != nil {
-		select {
-		case buffered := <-existingCh:
-			log.Println("askandwait: collected buffered answer from previous call")
-			c.mu.Lock()
-			if c.currentResponseCh == existingCh {
-				c.currentResponseCh = nil
-			}
-			c.mu.Unlock()
-			c.clearWaitingState()
-			return buffered, nil
-		default:
-		}
-	}
-
 	responseCh := make(chan string, 1)
 
 	c.mu.Lock()
+	if c.currentResponseCh != nil {
+		c.mu.Unlock()
+		return "", errPendingHumanInput
+	}
 	c.currentResponseCh = responseCh
+	c.promptSeq++
+	c.currentPromptToken = strconv.FormatUint(c.promptSeq, 10)
 	c.mu.Unlock()
 
 	if err := c.UpdateState(func(wf *Workflow) {
 		wf.MultiChoiceQuestion = question
 		wf.HumanMessage = humanMessage
-		wf.Status = StatusWaitingForHuman
 	}); err != nil {
-		c.mu.Lock()
-		if c.currentResponseCh == responseCh {
-			c.currentResponseCh = nil
-		}
-		c.mu.Unlock()
+		c.clearPendingQuestion(responseCh)
 		return "", fmt.Errorf("saving question state: %w", err)
 	}
-	log.Println("askandwait: question state set, status changed to waiting-for-human")
 
 	log.Println("askandwait: blocking for human answer")
-	var answer string
 	select {
+	case answer := <-responseCh:
+		log.Println("askandwait: answer received from human")
+		c.clearPendingQuestion(responseCh)
+		return answer, nil
 	case <-ctx.Done():
 		log.Println("askandwait: context cancelled:", ctx.Err())
+		c.clearPendingQuestion(responseCh)
 		return "", ctx.Err()
-	case answer = <-responseCh:
-		log.Println("askandwait: answer received from human")
 	}
+}
 
+func (c *Coordinator) clearPendingQuestion(responseCh chan string) {
 	c.mu.Lock()
 	if c.currentResponseCh == responseCh {
 		c.currentResponseCh = nil
+		c.currentPromptToken = ""
 	}
 	c.mu.Unlock()
 
-	c.clearWaitingState()
-	return answer, nil
-}
-
-func (c *Coordinator) clearWaitingState() {
-	log.Println("askandwait: clearing waiting state")
 	if err := c.UpdateState(func(wf *Workflow) {
 		wf.MultiChoiceQuestion = nil
 		wf.HumanMessage = ""
-		if IsHumanPending(wf.Status) {
-			wf.Status = StatusWorking
-		}
 	}); err != nil {
-		log.Println("failed to clear waiting state:", err)
+		log.Println("failed to clear pending human input:", err)
 	}
 }
 
 // Respond delivers the human's answer to the blocked AskAndWait call.
-// The state is cleared by AskAndWait after it receives the answer.
-// Respond does not block. If no AskAndWait is currently waiting, the answer
-// is silently discarded.
-func (c *Coordinator) Respond(answer string) {
+func (c *Coordinator) Respond(answer string) bool {
+	return c.respondIfCurrent("", answer)
+}
+
+// CurrentPromptToken returns the in-memory token for the current pending prompt.
+func (c *Coordinator) CurrentPromptToken() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.currentResponseCh == nil {
+		return ""
+	}
+	return c.currentPromptToken
+}
+
+// RespondIfCurrent delivers the answer only when promptToken matches the
+// current in-memory prompt. An empty promptToken responds to whichever prompt
+// is currently pending.
+func (c *Coordinator) RespondIfCurrent(promptToken, answer string) bool {
+	return c.respondIfCurrent(promptToken, answer)
+}
+
+func (c *Coordinator) respondIfCurrent(promptToken, answer string) bool {
 	c.mu.Lock()
 	responseCh := c.currentResponseCh
+	currentPromptToken := c.currentPromptToken
 	c.mu.Unlock()
 
 	if responseCh == nil {
 		log.Println("askandwait: no pending question, discarding response")
-		return
+		return false
+	}
+
+	if promptToken != "" && promptToken != currentPromptToken {
+		log.Println("askandwait: stale prompt token, discarding response")
+		return false
 	}
 
 	select {
 	case responseCh <- answer:
 		log.Println("askandwait: response queued for delivery")
+		return true
 	default:
 		log.Println("askandwait: response channel full, response discarded")
+		return false
 	}
 }
 

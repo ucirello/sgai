@@ -27,6 +27,38 @@ var (
 	testServersByRootDir   = map[string]*Server{}
 )
 
+func attachSessionCoordinator(t *testing.T, srv *Server, wsDir string, wf state.Workflow) {
+	t.Helper()
+	statePath := filepath.Join(wsDir, ".sgai", "state.json")
+	coord := state.NewCoordinatorEmpty(statePath)
+	require.NoError(t, coord.UpdateState(func(current *state.Workflow) {
+		*current = wf
+	}))
+	srv.mu.Lock()
+	srv.sessions[wsDir] = &session{coord: coord}
+	srv.mu.Unlock()
+}
+
+func startWaitingSessionQuestion(t *testing.T, srv *Server, wsDir string, question *state.MultiChoiceQuestion, humanMessage string) (*state.Coordinator, <-chan error, context.CancelFunc) {
+	t.Helper()
+	statePath := filepath.Join(wsDir, ".sgai", "state.json")
+	coord := state.NewCoordinatorEmpty(statePath)
+	srv.mu.Lock()
+	srv.sessions[wsDir] = &session{coord: coord}
+	srv.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := coord.AskAndWait(ctx, question, humanMessage)
+		errCh <- err
+	}()
+	require.Eventually(t, func() bool {
+		return coord.State().NeedsHumanInput()
+	}, time.Second, 10*time.Millisecond)
+	return coord, errCh, cancel
+}
+
 func TestIsAPIRoute(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -239,54 +271,6 @@ func TestFindSteerInsertPosition(t *testing.T) {
 	}
 }
 
-func TestGenerateQuestionID(t *testing.T) {
-	tests := []struct {
-		name        string
-		wfState     state.Workflow
-		expectEmpty bool
-	}{
-		{
-			name: "noQuestion",
-			wfState: state.Workflow{
-				Status: state.StatusWorking,
-			},
-			expectEmpty: true,
-		},
-		{
-			name: "humanMessage",
-			wfState: state.Workflow{
-				Status:       state.StatusWaitingForHuman,
-				HumanMessage: "What should I do?",
-			},
-			expectEmpty: false,
-		},
-		{
-			name: "multiChoice",
-			wfState: state.Workflow{
-				Status: state.StatusWaitingForHuman,
-				MultiChoiceQuestion: &state.MultiChoiceQuestion{
-					Questions: []state.QuestionItem{
-						{Question: "Choose an option"},
-					},
-				},
-			},
-			expectEmpty: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := generateQuestionID(tt.wfState)
-			if tt.expectEmpty {
-				assert.Empty(t, result)
-			} else {
-				assert.NotEmpty(t, result)
-				assert.Len(t, result, 16)
-			}
-		})
-	}
-}
-
 func TestQuestionType(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -303,7 +287,7 @@ func TestQuestionType(t *testing.T) {
 		{
 			name: "freeText",
 			wfState: state.Workflow{
-				Status:       state.StatusWaitingForHuman,
+				Status:       state.StatusWorking,
 				HumanMessage: "What should I do?",
 			},
 			expected: "free-text",
@@ -311,7 +295,7 @@ func TestQuestionType(t *testing.T) {
 		{
 			name: "multiChoice",
 			wfState: state.Workflow{
-				Status: state.StatusWaitingForHuman,
+				Status: state.StatusWorking,
 				MultiChoiceQuestion: &state.MultiChoiceQuestion{
 					Questions: []state.QuestionItem{
 						{Question: "Choose an option"},
@@ -323,7 +307,7 @@ func TestQuestionType(t *testing.T) {
 		{
 			name: "workGate",
 			wfState: state.Workflow{
-				Status: state.StatusWaitingForHuman,
+				Status: state.StatusWorking,
 				MultiChoiceQuestion: &state.MultiChoiceQuestion{
 					Questions: []state.QuestionItem{
 						{Question: "Approve?"},
@@ -692,16 +676,6 @@ func TestIsStaticAssetVariants(t *testing.T) {
 	assert.False(t, isStaticAsset("/"))
 }
 
-func TestGenerateQuestionIDDeterministic(t *testing.T) {
-	wf := state.Workflow{
-		Status:       state.StatusWaitingForHuman,
-		HumanMessage: "test question",
-	}
-	id1 := generateQuestionID(wf)
-	id2 := generateQuestionID(wf)
-	assert.Equal(t, id1, id2)
-}
-
 func TestBuildAPIResponseTextWithChoices(t *testing.T) {
 	req := apiRespondRequest{
 		SelectedChoices: []string{"Option A", "Option B"},
@@ -979,7 +953,7 @@ func TestResolveRootForDeleteForkForkReturnsPath(t *testing.T) {
 
 func TestQuestionTypeFreeformMessage(t *testing.T) {
 	wf := state.Workflow{
-		Status:       state.StatusWaitingForHuman,
+		Status:       state.StatusWorking,
 		HumanMessage: "What do you think?",
 	}
 	assert.Equal(t, "free-text", questionType(wf))
@@ -987,7 +961,7 @@ func TestQuestionTypeFreeformMessage(t *testing.T) {
 
 func TestQuestionTypeMultiChoiceQuestions(t *testing.T) {
 	wf := state.Workflow{
-		Status: state.StatusWaitingForHuman,
+		Status: state.StatusWorking,
 		MultiChoiceQuestion: &state.MultiChoiceQuestion{
 			Questions: []state.QuestionItem{{Question: "Pick one", Choices: []string{"A", "B"}}},
 		},
@@ -997,7 +971,7 @@ func TestQuestionTypeMultiChoiceQuestions(t *testing.T) {
 
 func TestQuestionTypeWorkGateFlag(t *testing.T) {
 	wf := state.Workflow{
-		Status: state.StatusWaitingForHuman,
+		Status: state.StatusWorking,
 		MultiChoiceQuestion: &state.MultiChoiceQuestion{
 			IsWorkGate: true,
 			Questions:  []state.QuestionItem{{Question: "Approve?", Choices: []string{"Yes", "No"}}},
@@ -2529,12 +2503,12 @@ func TestRespondNoSessionViaHTTP(t *testing.T) {
 	wsDir := setupTestWorkspace(t, rootDir, "respond-nosess-v2")
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-		Status:       state.StatusWaitingForHuman,
+		Status:       state.StatusWorking,
 		HumanMessage: "What should I do?",
 	})
 	require.NoError(t, errCoord)
 
-	w := serveHTTP(srv, "POST", "/api/v1/workspaces/respond-nosess-v2/respond", `{"answer":"do this","questionId":"q-123"}`)
+	w := serveHTTP(srv, "POST", "/api/v1/workspaces/respond-nosess-v2/respond", `{"answer":"do this","promptToken":"q-123"}`)
 	assert.NotEqual(t, http.StatusNotFound, w.Code)
 }
 
@@ -2757,9 +2731,8 @@ func TestHandleAPIStateWithPendingQuestion(t *testing.T) {
 	wsDir := setupTestWorkspace(t, rootDir, "pq-int")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
-	statePath := filepath.Join(wsDir, ".sgai", "state.json")
-	_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-		Status:       state.StatusWaitingForHuman,
+	attachSessionCoordinator(t, srv, wsDir, state.Workflow{
+		Status:       state.StatusWorking,
 		HumanMessage: "Which approach should I take?",
 		CurrentAgent: "coordinator",
 		MultiChoiceQuestion: &state.MultiChoiceQuestion{
@@ -2769,7 +2742,6 @@ func TestHandleAPIStateWithPendingQuestion(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, errCoord)
 
 	w := serveHTTP(srv, "GET", "/api/v1/state", "")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -2785,42 +2757,58 @@ func TestHandleAPIStateWithPendingQuestion(t *testing.T) {
 	assert.Equal(t, "coordinator", ws.PendingQuestion.AgentName)
 }
 
+func TestHandleAPIStatePendingQuestionUsesPromptToken(t *testing.T) {
+	srv, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, rootDir, "pq-token")
+	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
+
+	coord, errCh, cancel := startWaitingSessionQuestion(t, srv, wsDir, &state.MultiChoiceQuestion{
+		Questions: []state.QuestionItem{{Question: "Pick one", Choices: []string{"A", "B"}}},
+	}, "Pick one")
+	defer cancel()
+	promptToken := waitForSessionPromptToken(t, coord)
+
+	w := serveHTTP(srv, "GET", "/api/v1/state", "")
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	workspaces, ok := resp["workspaces"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, workspaces)
+	pendingQuestion, ok := workspaces[0].(map[string]any)["pendingQuestion"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, promptToken, pendingQuestion["promptToken"])
+	_, hasLegacyField := pendingQuestion["questionId"]
+	assert.False(t, hasLegacyField)
+
+	cancel()
+	require.ErrorIs(t, <-errCh, context.Canceled)
+}
+
 func TestRespondViaCoordinatorFullPath(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "respond-full")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
-	statePath := filepath.Join(wsDir, ".sgai", "state.json")
-	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-		Status:       state.StatusWaitingForHuman,
-		HumanMessage: "Pick an option",
-		CurrentAgent: "coordinator",
-		MultiChoiceQuestion: &state.MultiChoiceQuestion{
-			Questions: []state.QuestionItem{
-				{Question: "Pick one", Choices: []string{"A", "B"}},
-			},
-		},
-	})
-	require.NoError(t, errCoord)
-
-	srv.mu.Lock()
-	srv.sessions[wsDir] = &session{coord: coord}
-	srv.mu.Unlock()
-
-	qid := generateQuestionID(coord.State())
-	body := `{"answer":"go with A","questionId":"` + qid + `","selectedChoices":["A"]}`
+	coord, errCh, cancel := startWaitingSessionQuestion(t, srv, wsDir, &state.MultiChoiceQuestion{
+		Questions: []state.QuestionItem{{Question: "Pick one", Choices: []string{"A", "B"}}},
+	}, "Pick an option")
+	defer cancel()
+	body := `{"answer":"go with A","selectedChoices":["A"]}`
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/respond-full/respond", body)
 	assert.Equal(t, http.StatusOK, w.Code)
+	require.NoError(t, <-errCh)
+	assert.Empty(t, coord.State().HumanMessage)
 }
 
-func TestRespondViaCoordinatorWrongQuestion(t *testing.T) {
+func TestRespondViaCoordinatorWithoutActiveToolCall(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "respond-wrong")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
-	statePath := filepath.Join(wsDir, ".sgai", "state.json")
-	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-		Status:       state.StatusWaitingForHuman,
+	attachSessionCoordinator(t, srv, wsDir, state.Workflow{
+		Status:       state.StatusWorking,
 		HumanMessage: "Pick an option",
 		MultiChoiceQuestion: &state.MultiChoiceQuestion{
 			Questions: []state.QuestionItem{
@@ -2828,13 +2816,8 @@ func TestRespondViaCoordinatorWrongQuestion(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, errCoord)
 
-	srv.mu.Lock()
-	srv.sessions[wsDir] = &session{coord: coord}
-	srv.mu.Unlock()
-
-	body := `{"answer":"go with A","questionId":"wrong-id","selectedChoices":["A"]}`
+	body := `{"answer":"go with A","selectedChoices":["A"]}`
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/respond-wrong/respond", body)
 	assert.Equal(t, http.StatusConflict, w.Code)
 }
@@ -3040,13 +3023,11 @@ func TestBuildWorkspaceFullStateWithEditedGoal(t *testing.T) {
 func TestBuildWorkspaceFullStateWithFreeformPending(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
-	sp := filepath.Join(wsDir, ".sgai", "state.json")
-	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{
-		Status:       state.StatusWaitingForHuman,
+	attachSessionCoordinator(t, server, wsDir, state.Workflow{
+		Status:       state.StatusWorking,
 		HumanMessage: "What should I do next?",
 		CurrentAgent: "builder",
 	})
-	require.NoError(t, errCoord)
 
 	ws := workspaceInfo{Directory: wsDir, DirName: "test-ws"}
 	result := server.buildWorkspaceFullState(ws, nil)
@@ -3085,9 +3066,8 @@ func TestBuildWorkspaceFullStateWithLogLines(t *testing.T) {
 func TestBuildWorkspaceFullStateWithMultiChoicePendingQuestion(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
-	sp := filepath.Join(wsDir, ".sgai", "state.json")
-	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{
-		Status: state.StatusWaitingForHuman,
+	attachSessionCoordinator(t, server, wsDir, state.Workflow{
+		Status: state.StatusWorking,
 		MultiChoiceQuestion: &state.MultiChoiceQuestion{
 			Questions: []state.QuestionItem{
 				{Question: "Pick one", Choices: []string{"A", "B"}, MultiSelect: true},
@@ -3095,7 +3075,6 @@ func TestBuildWorkspaceFullStateWithMultiChoicePendingQuestion(t *testing.T) {
 		},
 		CurrentAgent: "coordinator",
 	})
-	require.NoError(t, errCoord)
 
 	ws := workspaceInfo{Directory: wsDir, DirName: "test-ws"}
 	result := server.buildWorkspaceFullState(ws, nil)
@@ -3140,9 +3119,8 @@ func TestBuildWorkspaceFullStateWithProgress(t *testing.T) {
 func TestBuildWorkspaceFullStateWithWorkGatePending(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
-	sp := filepath.Join(wsDir, ".sgai", "state.json")
-	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{
-		Status: state.StatusWaitingForHuman,
+	attachSessionCoordinator(t, server, wsDir, state.Workflow{
+		Status: state.StatusWorking,
 		MultiChoiceQuestion: &state.MultiChoiceQuestion{
 			IsWorkGate: true,
 			Questions: []state.QuestionItem{
@@ -3151,7 +3129,6 @@ func TestBuildWorkspaceFullStateWithWorkGatePending(t *testing.T) {
 		},
 		CurrentAgent: "coordinator",
 	})
-	require.NoError(t, errCoord)
 
 	ws := workspaceInfo{Directory: wsDir, DirName: "test-ws"}
 	result := server.buildWorkspaceFullState(ws, nil)
@@ -4123,14 +4100,14 @@ func TestHandleRespondViaCoordinator(t *testing.T) {
 		assert.Contains(t, w.Body.String(), "no pending question")
 	})
 
-	t.Run("expiredQuestion", func(t *testing.T) {
+	t.Run("questionNotAvailable", func(t *testing.T) {
 		srv, _ := setupTestServer(t)
 		dir := t.TempDir()
 		sgaiDir := filepath.Join(dir, ".sgai")
 		require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 		statePath := filepath.Join(sgaiDir, "state.json")
 		coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-			Status:       state.StatusWaitingForHuman,
+			Status:       state.StatusWorking,
 			HumanMessage: "Pick one",
 			MultiChoiceQuestion: &state.MultiChoiceQuestion{
 				Questions: []state.QuestionItem{{Question: "Pick one", Choices: []string{"A", "B"}}},
@@ -4139,12 +4116,9 @@ func TestHandleRespondViaCoordinator(t *testing.T) {
 		require.NoError(t, errCoord)
 
 		w := httptest.NewRecorder()
-		srv.handleRespondViaCoordinator(w, coord, apiRespondRequest{
-			QuestionID: "wrong-id",
-			Answer:     "yes",
-		})
+		srv.handleRespondViaCoordinator(w, coord, apiRespondRequest{Answer: "yes"})
 		assert.Equal(t, http.StatusConflict, w.Code)
-		assert.Contains(t, w.Body.String(), "question expired")
+		assert.Contains(t, w.Body.String(), "question not available")
 	})
 
 	t.Run("emptyResponse", func(t *testing.T) {
@@ -4154,7 +4128,7 @@ func TestHandleRespondViaCoordinator(t *testing.T) {
 		require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 		statePath := filepath.Join(sgaiDir, "state.json")
 		coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-			Status:       state.StatusWaitingForHuman,
+			Status:       state.StatusWorking,
 			HumanMessage: "Choose",
 			MultiChoiceQuestion: &state.MultiChoiceQuestion{
 				Questions: []state.QuestionItem{{Question: "Choose", Choices: []string{"X", "Y"}}},
@@ -4162,141 +4136,45 @@ func TestHandleRespondViaCoordinator(t *testing.T) {
 		})
 		require.NoError(t, errCoord)
 
-		questionID := generateQuestionID(coord.State())
-
 		w := httptest.NewRecorder()
-		srv.handleRespondViaCoordinator(w, coord, apiRespondRequest{
-			QuestionID: questionID,
-		})
+		srv.handleRespondViaCoordinator(w, coord, apiRespondRequest{})
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 		assert.Contains(t, w.Body.String(), "response cannot be empty")
 	})
 
-	t.Run("successfulResponse", func(t *testing.T) {
-		srv, _ := setupTestServer(t)
-		dir := t.TempDir()
-		sgaiDir := filepath.Join(dir, ".sgai")
-		require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
-		statePath := filepath.Join(sgaiDir, "state.json")
-		coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-			Status:       state.StatusWaitingForHuman,
-			HumanMessage: "Confirm?",
-			MultiChoiceQuestion: &state.MultiChoiceQuestion{
-				Questions: []state.QuestionItem{{Question: "Confirm?", Choices: []string{"Yes", "No"}}},
-			},
-		})
-		require.NoError(t, errCoord)
+	t.Run("stalePromptToken", func(t *testing.T) {
+		srv, rootDir := setupTestServer(t)
+		wsDir := setupTestWorkspace(t, rootDir, "stale-token")
+		coord := state.NewCoordinatorEmpty(filepath.Join(wsDir, ".sgai", "state.json"))
+		firstErrCh, cancelFirst := startCoordinatorQuestion(t, coord, &state.MultiChoiceQuestion{
+			Questions: []state.QuestionItem{{Question: "Pick one", Choices: []string{"A", "B"}}},
+		}, "Pick one")
+		firstToken := waitForSessionPromptToken(t, coord)
+		cancelFirst()
+		require.ErrorIs(t, <-firstErrCh, context.Canceled)
 
-		questionID := generateQuestionID(coord.State())
+		secondErrCh, cancelSecond := startCoordinatorQuestion(t, coord, &state.MultiChoiceQuestion{
+			Questions: []state.QuestionItem{{Question: "Pick one", Choices: []string{"A", "B"}}},
+		}, "Pick one")
+		defer cancelSecond()
+		secondToken := waitForSessionPromptToken(t, coord)
+		require.NotEqual(t, firstToken, secondToken)
 
-		go func() {
-			coord.Respond("Selected: Yes")
-		}()
+		srv.mu.Lock()
+		srv.sessions[wsDir] = &session{coord: coord}
+		srv.mu.Unlock()
 
-		w := httptest.NewRecorder()
-		srv.handleRespondViaCoordinator(w, coord, apiRespondRequest{
-			QuestionID:      questionID,
-			SelectedChoices: []string{"Yes"},
-		})
-		assert.Equal(t, http.StatusOK, w.Code)
-		var resp apiRespondResponse
-		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-		assert.True(t, resp.Success)
-	})
-}
-
-func TestHandleRespondLegacy(t *testing.T) {
-	t.Run("noPendingQuestion", func(t *testing.T) {
-		srv, _ := setupTestServer(t)
-		dir := t.TempDir()
-		sgaiDir := filepath.Join(dir, ".sgai")
-		require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
-		statePath := filepath.Join(sgaiDir, "state.json")
-		_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-			Status: state.StatusWorking,
-		})
-		require.NoError(t, errCoord)
-
-		w := httptest.NewRecorder()
-		srv.handleRespondLegacy(w, dir, apiRespondRequest{Answer: "yes"})
+		staleBody, errMarshal := json.Marshal(map[string]any{"promptToken": firstToken, "answer": "stale answer"})
+		require.NoError(t, errMarshal)
+		w := serveHTTP(srv, "POST", "/api/v1/workspaces/stale-token/respond", string(staleBody))
 		assert.Equal(t, http.StatusConflict, w.Code)
-	})
+		assert.Contains(t, w.Body.String(), "question not available")
 
-	t.Run("expiredQuestion", func(t *testing.T) {
-		srv, _ := setupTestServer(t)
-		dir := t.TempDir()
-		sgaiDir := filepath.Join(dir, ".sgai")
-		require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
-		statePath := filepath.Join(sgaiDir, "state.json")
-		_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-			Status:       state.StatusWaitingForHuman,
-			HumanMessage: "Pick one",
-			MultiChoiceQuestion: &state.MultiChoiceQuestion{
-				Questions: []state.QuestionItem{{Question: "Pick one", Choices: []string{"A", "B"}}},
-			},
-		})
-		require.NoError(t, errCoord)
-
-		w := httptest.NewRecorder()
-		srv.handleRespondLegacy(w, dir, apiRespondRequest{
-			QuestionID: "wrong-id",
-			Answer:     "yes",
-		})
-		assert.Equal(t, http.StatusConflict, w.Code)
-	})
-
-	t.Run("emptyResponse", func(t *testing.T) {
-		srv, _ := setupTestServer(t)
-		dir := t.TempDir()
-		sgaiDir := filepath.Join(dir, ".sgai")
-		require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
-		statePath := filepath.Join(sgaiDir, "state.json")
-		_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-			Status:       state.StatusWaitingForHuman,
-			HumanMessage: "Choose",
-			MultiChoiceQuestion: &state.MultiChoiceQuestion{
-				Questions: []state.QuestionItem{{Question: "Choose", Choices: []string{"X", "Y"}}},
-			},
-		})
-		require.NoError(t, errCoord)
-
-		coord := srv.workspaceCoordinator(dir)
-		questionID := generateQuestionID(coord.State())
-
-		w := httptest.NewRecorder()
-		srv.handleRespondLegacy(w, dir, apiRespondRequest{
-			QuestionID: questionID,
-		})
-		assert.Equal(t, http.StatusBadRequest, w.Code)
-	})
-
-	t.Run("successfulResponse", func(t *testing.T) {
-		srv, _ := setupTestServer(t)
-		dir := t.TempDir()
-		sgaiDir := filepath.Join(dir, ".sgai")
-		require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
-		statePath := filepath.Join(sgaiDir, "state.json")
-		_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-			Status:       state.StatusWaitingForHuman,
-			HumanMessage: "Confirm?",
-			MultiChoiceQuestion: &state.MultiChoiceQuestion{
-				Questions: []state.QuestionItem{{Question: "Confirm?", Choices: []string{"Yes", "No"}}},
-			},
-		})
-		require.NoError(t, errCoord)
-
-		coord := srv.workspaceCoordinator(dir)
-		questionID := generateQuestionID(coord.State())
-
-		w := httptest.NewRecorder()
-		srv.handleRespondLegacy(w, dir, apiRespondRequest{
-			QuestionID:      questionID,
-			SelectedChoices: []string{"Yes"},
-		})
+		currentBody, errMarshal := json.Marshal(map[string]any{"promptToken": secondToken, "answer": "current answer"})
+		require.NoError(t, errMarshal)
+		w = serveHTTP(srv, "POST", "/api/v1/workspaces/stale-token/respond", string(currentBody))
 		assert.Equal(t, http.StatusOK, w.Code)
-		var resp apiRespondResponse
-		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-		assert.True(t, resp.Success)
+		require.NoError(t, <-secondErrCh)
 	})
 }
 
@@ -4661,22 +4539,14 @@ func TestGetWorkspaceStatusComplete(t *testing.T) {
 func TestHandleAPIRespondViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "respond-ws")
-	statePath := filepath.Join(wsDir, ".sgai", "state.json")
-	_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-		Status:       state.StatusWaitingForHuman,
-		HumanMessage: "Pick one",
-		MultiChoiceQuestion: &state.MultiChoiceQuestion{
-			Questions: []state.QuestionItem{{Question: "Pick one", Choices: []string{"A", "B"}}},
-		},
-	})
-	require.NoError(t, errCoord)
-
-	coord := srv.workspaceCoordinator(wsDir)
-	questionID := generateQuestionID(coord.State())
-
-	body := `{"questionId":"` + questionID + `","selectedChoices":["A"]}`
+	_, errCh, cancel := startWaitingSessionQuestion(t, srv, wsDir, &state.MultiChoiceQuestion{
+		Questions: []state.QuestionItem{{Question: "Pick one", Choices: []string{"A", "B"}}},
+	}, "Pick one")
+	defer cancel()
+	body := `{"selectedChoices":["A"]}`
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/respond-ws/respond", body)
 	assert.Equal(t, http.StatusOK, w.Code)
+	require.NoError(t, <-errCh)
 }
 
 func TestCollectSkillCategories(t *testing.T) {
@@ -5120,7 +4990,7 @@ func TestHandleAPIUpdateGoalValidContent(t *testing.T) {
 func TestHandleAPIRespondNoPendingQuestion(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	setupTestWorkspace(t, rootDir, "test-ws")
-	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/respond", `{"questionId":"q1","answer":"test"}`)
+	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/respond", `{"promptToken":"q1","answer":"test"}`)
 	assert.Equal(t, http.StatusConflict, w.Code)
 	assert.Contains(t, w.Body.String(), "no pending question")
 }

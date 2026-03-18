@@ -117,9 +117,9 @@ type respondResult struct {
 	Message string
 }
 
-func (s *Server) respondService(workspacePath, questionID, answer string, selectedChoices []string) (respondResult, error) {
+func (s *Server) respondService(workspacePath, promptToken string, answer string, selectedChoices []string) (respondResult, error) {
 	req := apiRespondRequest{
-		QuestionID:      questionID,
+		PromptToken:     promptToken,
 		Answer:          answer,
 		SelectedChoices: selectedChoices,
 	}
@@ -131,8 +131,8 @@ func (s *Server) respondService(workspacePath, questionID, answer string, select
 		return s.respondViaCoordinatorService(coord, req)
 	}
 
-	log.Println("respond-service:", wsName, "no session coordinator found, falling back to legacy path")
-	return s.respondLegacyService(workspacePath, req)
+	log.Println("respond-service:", wsName, "rejected, no session coordinator found")
+	return respondResult{}, fmt.Errorf("no pending question")
 }
 
 func (s *Server) respondViaCoordinatorService(coord *state.Coordinator, req apiRespondRequest) (respondResult, error) {
@@ -143,15 +143,13 @@ func (s *Server) respondViaCoordinatorService(coord *state.Coordinator, req apiR
 		return respondResult{}, fmt.Errorf("no pending question")
 	}
 
-	currentID := generateQuestionID(wfState)
-	if req.QuestionID != currentID {
-		log.Println("respond-service: coordinator path rejected, question expired, got:", req.QuestionID, "want:", currentID)
-		return respondResult{}, fmt.Errorf("question expired")
-	}
-
 	responseText := buildAPIResponseText(req)
 	if responseText == "" {
 		return respondResult{}, fmt.Errorf("response cannot be empty")
+	}
+
+	if !coord.RespondIfCurrent(req.PromptToken, responseText) {
+		return respondResult{}, fmt.Errorf("question not available")
 	}
 
 	if wfState.MultiChoiceQuestion != nil && wfState.MultiChoiceQuestion.IsWorkGate {
@@ -166,44 +164,6 @@ func (s *Server) respondViaCoordinatorService(coord *state.Coordinator, req apiR
 			}
 		}
 	}
-
-	coord.Respond(responseText)
-	s.notifyStateChange()
-
-	return respondResult{Success: true, Message: "response submitted"}, nil
-}
-
-func (s *Server) respondLegacyService(workspacePath string, req apiRespondRequest) (respondResult, error) {
-	wsName := filepath.Base(workspacePath)
-	log.Println("respond-service:", wsName, "using legacy path (no channel delivery, state-only update)")
-	coord := s.workspaceCoordinator(workspacePath)
-	wfState := coord.State()
-
-	if !wfState.NeedsHumanInput() {
-		log.Println("respond-service:", wsName, "legacy path rejected, no pending question, status:", wfState.Status)
-		return respondResult{}, fmt.Errorf("no pending question in legacy path")
-	}
-
-	currentID := generateQuestionID(wfState)
-	if req.QuestionID != currentID {
-		log.Println("respond-service:", wsName, "legacy path rejected, question expired")
-		return respondResult{}, fmt.Errorf("question expired")
-	}
-
-	responseText := buildAPIResponseText(req)
-	if responseText == "" {
-		return respondResult{}, fmt.Errorf("response cannot be empty")
-	}
-
-	if errUpdate := coord.UpdateState(func(wf *state.Workflow) {
-		wf.Status = state.StatusWorking
-		wf.HumanMessage = ""
-		wf.MultiChoiceQuestion = nil
-		wf.Task = ""
-	}); errUpdate != nil {
-		return respondResult{}, fmt.Errorf("failed to save state: %w", errUpdate)
-	}
-
 	s.notifyStateChange()
 
 	return respondResult{Success: true, Message: "response submitted"}, nil

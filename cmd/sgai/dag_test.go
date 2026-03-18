@@ -20,6 +20,7 @@ func TestComposeFlowTemplate(t *testing.T) {
 			currentAgent: "coordinator",
 			validate: func(t *testing.T, result string) {
 				assert.Contains(t, result, flowSectionPreamble)
+				assert.Contains(t, result, `skill({"name":"set-workflow-state"})`)
 				assert.Contains(t, result, flowSectionHumanCommDirect)
 				assert.Contains(t, result, flowSectionMessaging)
 				assert.Contains(t, result, flowSectionPeekMessageBus)
@@ -29,6 +30,9 @@ func TestComposeFlowTemplate(t *testing.T) {
 				assert.Contains(t, result, flowSectionGuidelines)
 				assert.Contains(t, result, flowSectionTailCoordinator)
 				assert.Contains(t, result, flowSectionCommonTail)
+				assert.NotContains(t, result, "CALL skills({")
+				assert.NotContains(t, result, "Use skills({")
+				assert.NotContains(t, result, "blocked and a blocked message")
 			},
 		},
 		{
@@ -45,6 +49,9 @@ func TestComposeFlowTemplate(t *testing.T) {
 				assert.Contains(t, result, flowSectionGuidelines)
 				assert.Contains(t, result, flowSectionTailNonCoordinator)
 				assert.Contains(t, result, flowSectionCommonTail)
+				assert.NotContains(t, result, "CALL skills({")
+				assert.NotContains(t, result, "Use skills({")
+				assert.NotContains(t, result, "blocked and a blocked message")
 			},
 		},
 	}
@@ -419,7 +426,7 @@ func TestBuildFlowMessageWithAgentDescription(t *testing.T) {
 			"worker":      {Name: "worker", Successors: []string{}, Predecessors: []string{"coordinator"}},
 		},
 	}
-	msg := buildFlowMessage(d, "worker", map[string]int{"coordinator": 1, "worker": 1}, dir, "brainstorming", map[string]string{})
+	msg := buildFlowMessage(d, "worker", map[string]int{"coordinator": 1, "worker": 1}, dir, map[string]string{})
 	assert.Contains(t, msg, "Orchestrates the workflow")
 	assert.Contains(t, msg, "Does the work")
 	assert.Contains(t, msg, "sgai_find_snippets()")
@@ -440,7 +447,7 @@ func TestBuildFlowMessageAgentNoDescription(t *testing.T) {
 			"worker":      {Name: "worker", Successors: []string{}, Predecessors: []string{"coordinator"}},
 		},
 	}
-	msg := buildFlowMessage(d, "worker", map[string]int{"coordinator": 1, "worker": 0}, dir, "brainstorming", map[string]string{})
+	msg := buildFlowMessage(d, "worker", map[string]int{"coordinator": 1, "worker": 0}, dir, map[string]string{})
 	assert.Contains(t, msg, "Orchestrates the workflow")
 	assert.NotContains(t, msg, "description:")
 }
@@ -481,13 +488,12 @@ func isSorted(s []string) bool {
 
 func TestBuildFlowMessage(t *testing.T) {
 	tests := []struct {
-		name            string
-		dag             *dag
-		currentAgent    string
-		visitCounts     map[string]int
-		interactionMode string
-		alias           map[string]string
-		validate        func(*testing.T, string)
+		name         string
+		dag          *dag
+		currentAgent string
+		visitCounts  map[string]int
+		alias        map[string]string
+		validate     func(*testing.T, string)
 	}{
 		{
 			name: "buildMessageForEntryNode",
@@ -497,10 +503,9 @@ func TestBuildFlowMessage(t *testing.T) {
 					"agent1":      {Name: "agent1", Successors: []string{}, Predecessors: []string{"coordinator"}},
 				},
 			},
-			currentAgent:    "coordinator",
-			visitCounts:     map[string]int{"coordinator": 1, "agent1": 0},
-			interactionMode: "brainstorming",
-			alias:           map[string]string{},
+			currentAgent: "coordinator",
+			visitCounts:  map[string]int{"coordinator": 1, "agent1": 0},
+			alias:        map[string]string{},
 			validate: func(t *testing.T, msg string) {
 				assert.Contains(t, msg, "coordinator")
 				assert.Contains(t, msg, "(none - entry node)")
@@ -516,10 +521,9 @@ func TestBuildFlowMessage(t *testing.T) {
 					"agent1":      {Name: "agent1", Successors: []string{}, Predecessors: []string{"coordinator"}},
 				},
 			},
-			currentAgent:    "agent1",
-			visitCounts:     map[string]int{"coordinator": 1, "agent1": 1},
-			interactionMode: "brainstorming",
-			alias:           map[string]string{},
+			currentAgent: "agent1",
+			visitCounts:  map[string]int{"coordinator": 1, "agent1": 1},
+			alias:        map[string]string{},
 			validate: func(t *testing.T, msg string) {
 				assert.Contains(t, msg, "agent1")
 				assert.Contains(t, msg, "coordinator")
@@ -536,10 +540,9 @@ func TestBuildFlowMessage(t *testing.T) {
 					"agent2":      {Name: "agent2", Successors: []string{}, Predecessors: []string{"agent1"}},
 				},
 			},
-			currentAgent:    "agent1",
-			visitCounts:     map[string]int{"coordinator": 1, "agent1": 1, "agent2": 0},
-			interactionMode: "brainstorming",
-			alias:           map[string]string{},
+			currentAgent: "agent1",
+			visitCounts:  map[string]int{"coordinator": 1, "agent1": 1, "agent2": 0},
+			alias:        map[string]string{},
 			validate: func(t *testing.T, msg string) {
 				assert.Contains(t, msg, "agent1")
 				assert.Contains(t, msg, "coordinator")
@@ -555,10 +558,9 @@ func TestBuildFlowMessage(t *testing.T) {
 					"agent1-alias": {Name: "agent1-alias", Successors: []string{}, Predecessors: []string{"coordinator"}},
 				},
 			},
-			currentAgent:    "agent1-alias",
-			visitCounts:     map[string]int{"coordinator": 1, "agent1-alias": 1},
-			interactionMode: "brainstorming",
-			alias:           map[string]string{"agent1-alias": "agent1"},
+			currentAgent: "agent1-alias",
+			visitCounts:  map[string]int{"coordinator": 1, "agent1-alias": 1},
+			alias:        map[string]string{"agent1-alias": "agent1"},
 			validate: func(t *testing.T, msg string) {
 				assert.Contains(t, msg, "agent1-alias")
 				assert.Contains(t, msg, "coordinator")
@@ -569,7 +571,7 @@ func TestBuildFlowMessage(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
-			msg := buildFlowMessage(tt.dag, tt.currentAgent, tt.visitCounts, dir, tt.interactionMode, tt.alias)
+			msg := buildFlowMessage(tt.dag, tt.currentAgent, tt.visitCounts, dir, tt.alias)
 			if tt.validate != nil {
 				tt.validate(t, msg)
 			}

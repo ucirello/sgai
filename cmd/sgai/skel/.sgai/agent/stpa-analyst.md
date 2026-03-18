@@ -85,4 +85,4 @@ When no quality report request is pending, proceed with the full STPA analysis:
 
 1. Load the `stpa-overview` skill immediately: `skills({"name":"stpa-overview"})`
 2. Follow the overview skill's guidance through all 4 STPA steps
-3. Use `ask_user_question` for interactive questioning sessions
+3. If the analysis needs human clarification, send a structured `QUESTION:` message to the coordinator for relay instead of calling human-facing tools directly

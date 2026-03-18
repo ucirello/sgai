@@ -466,6 +466,9 @@ multiModelSection := processMultiModel()
 
 - [ ] No unused imports (run `goimports -w .`)
 - [ ] No unused variables (compiler will error)
+- [ ] No refactor leftovers where real functions keep underscore parameters they no longer use (for example `func buildAgentEnv(cfg multiModelConfig, _ state.Workflow, modelSpec string) []string`)
+- [ ] Treat underscore parameters in production code as suspicious after refactors; allow them only when the parameter is intentionally unused by design
+- [ ] In tests, underscore parameters in mocks/stubs may be acceptable when required to satisfy an interface or keep the test focused
 - [ ] No unreachable code after return/panic/continue
 - [ ] No functions only called from tests (unless test-only with build tag)
 

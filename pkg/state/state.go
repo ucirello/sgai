@@ -10,10 +10,9 @@ import (
 
 // Workflow status constants define the possible states of a sgai workflow.
 const (
-	StatusWorking         = "working"
-	StatusAgentDone       = "agent-done"
-	StatusComplete        = "complete"
-	StatusWaitingForHuman = "waiting-for-human"
+	StatusWorking   = "working"
+	StatusAgentDone = "agent-done"
+	StatusComplete  = "complete"
 )
 
 // InteractionMode constants define the possible interaction modes of a sgai session.
@@ -25,21 +24,14 @@ const (
 	ModeContinuous    = "continuous"
 )
 
-// IsHumanPending reports whether the given status indicates the workflow
-// is waiting for a human response.
-func IsHumanPending(status string) bool {
-	return status == StatusWaitingForHuman
-}
-
-// NeedsHumanInput reports whether this workflow is actively waiting for
-// human input, meaning it has a pending question or message for the human.
+// NeedsHumanInput reports whether this workflow currently has pending
+// in-memory human input.
 func (w Workflow) NeedsHumanInput() bool {
-	return w.Status == StatusWaitingForHuman && (w.MultiChoiceQuestion != nil || w.HumanMessage != "")
+	return w.MultiChoiceQuestion != nil || w.HumanMessage != ""
 }
 
 // ValidStatuses contains the workflow status values that agents can set
-// via the update_workflow_state tool. StatusWaitingForHuman is excluded
-// because it is set only by askUserQuestion and askUserWorkGate tools.
+// via the update_workflow_state tool.
 var ValidStatuses = []string{
 	StatusWorking,
 	StatusAgentDone,
@@ -189,12 +181,6 @@ type Workflow struct {
 	SummaryManual bool `json:"summaryManual,omitempty"`
 }
 
-// ToolsAllowed reports whether the current interaction mode permits
-// human-interaction tools (ask_user_question, ask_user_work_gate).
-func (w Workflow) ToolsAllowed() bool {
-	return w.InteractionMode == ModeBrainstorming || w.InteractionMode == ModeRetrospective
-}
-
 // Message represents an inter-agent message in the workflow system.
 type Message struct {
 	ID        int    `json:"id"`
@@ -222,10 +208,14 @@ func load(path string) (Workflow, error) {
 	if wf.ModelStatuses == nil {
 		wf.ModelStatuses = make(map[string]string)
 	}
+	wf.HumanMessage = ""
+	wf.MultiChoiceQuestion = nil
 	return wf, nil
 }
 
 func save(path string, wf Workflow) error {
+	wf.HumanMessage = ""
+	wf.MultiChoiceQuestion = nil
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}

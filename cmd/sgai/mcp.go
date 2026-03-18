@@ -264,14 +264,31 @@ var (
 	schemaAskUserWorkGate  = mustSchema[askUserWorkGateArgs]()
 )
 
+const (
+	autoProceedAnswer           = "I defer to your judgement, proceed with your recommendations"
+	autoRecordQuestionsAnswer   = "Please record your questions into .sgai/PROJECT_MANAGEMENT.md"
+	autoSkipRetrospectiveAnswer = "CRITICAL HUMAN PARTNER OVERRIDE: skip retrospective. Report to coordinator that the retrospective is complete"
+	humanToolTimeout            = 72 * time.Hour
+)
+
+type askUserQuestionFunc func(context.Context, *state.Coordinator, askUserQuestionArgs) (string, error)
+
+type askUserWorkGateFunc func(context.Context, *state.Coordinator, string) (string, error)
+
+type humanToolCallbacks struct {
+	question askUserQuestionFunc
+	workGate askUserWorkGateFunc
+}
+
 func startMCPHTTPServer(workingDir string, coord *state.Coordinator, dagAgents []string) (string, func(), error) {
 	listener, errListen := net.Listen("tcp", "127.0.0.1:0")
 	if errListen != nil {
 		return "", nil, fmt.Errorf("failed to listen on random port: %w", errListen)
 	}
 
+	humanTools := selectHumanToolCallbacks(workingDir, coord)
 	serveMux := http.NewServeMux()
-	serveMux.Handle("/mcp", buildMCPHTTPHandler(workingDir, coord, dagAgents))
+	serveMux.Handle("/mcp", buildMCPHTTPHandler(workingDir, coord, dagAgents, humanTools))
 
 	httpServer := &http.Server{Handler: serveMux}
 	go func() {
@@ -320,17 +337,17 @@ func resolveCallerAgent(headerAgent string, coord *state.Coordinator) string {
 	return "coordinator"
 }
 
-func buildMCPHTTPHandler(workingDir string, coord *state.Coordinator, dagAgents []string) http.Handler {
+func buildMCPHTTPHandler(workingDir string, coord *state.Coordinator, dagAgents []string, humanTools humanToolCallbacks) http.Handler {
 	return mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-		return buildMCPServer(workingDir, r, coord, dagAgents)
+		return buildMCPServer(workingDir, r, coord, dagAgents, humanTools)
 	}, nil)
 }
 
-func buildMCPServer(workingDir string, r *http.Request, coord *state.Coordinator, dagAgents []string) *mcp.Server {
+func buildMCPServer(workingDir string, r *http.Request, coord *state.Coordinator, dagAgents []string, humanTools humanToolCallbacks) *mcp.Server {
 	agentName := resolveCallerAgent(parseAgentIdentityHeader(r), coord)
 
 	server := mcp.NewServer(&mcp.Implementation{Name: "sgai"}, nil)
-	mcpCtx := &mcpContext{workingDir: workingDir, coord: coord, dagAgents: dagAgents, agentName: agentName}
+	mcpCtx := &mcpContext{workingDir: workingDir, coord: coord, dagAgents: dagAgents, agentName: agentName, humanTools: humanTools}
 
 	registerCommonTools(server, mcpCtx, agentName)
 
@@ -378,6 +395,18 @@ func registerCommonTools(server *mcp.Server, mcpCtx *mcpContext, agentName strin
 		Description: "Check for messages you have already sent. Returns all messages sent by the current agent.",
 		InputSchema: schemaEmpty,
 	}, mcpCtx.checkOutboxHandler)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "ask_user_question",
+		Description: "Present one or more multiple-choice questions to the human partner. Depending on the session mode, this tool may wait for the human or return an environment-provided response.",
+		InputSchema: schemaAskUserQuestion,
+	}, mcpCtx.askUserQuestionHandler)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "ask_user_work_gate",
+		Description: "Present the work gate approval question. Depending on the session mode, this tool may wait for the human or return an environment-provided response.",
+		InputSchema: schemaAskUserWorkGate,
+	}, mcpCtx.askUserWorkGateHandler)
 }
 
 func registerCoordinatorTools(server *mcp.Server, mcpCtx *mcpContext, _ string) {
@@ -405,24 +434,6 @@ func registerCoordinatorTools(server *mcp.Server, mcpCtx *mcpContext, _ string) 
 		InputSchema: schemaEmpty,
 	}, mcpCtx.projectTodoReadHandler)
 
-	var wfState state.Workflow
-	if mcpCtx.coord != nil {
-		wfState = mcpCtx.coord.State()
-	}
-
-	if wfState.ToolsAllowed() {
-		mcp.AddTool(server, &mcp.Tool{
-			Name:        "ask_user_question",
-			Description: "Present one or more multiple-choice questions to the human partner. Each question has its own choices and multi-select setting. Use this for gathering structured input from the human. Example: {\"questions\": [{\"question\": \"Which database?\", \"choices\": [\"PostgreSQL\", \"MySQL\"], \"multiSelect\": false}]}",
-			InputSchema: schemaAskUserQuestion,
-		}, mcpCtx.askUserQuestionHandler)
-
-		mcp.AddTool(server, &mcp.Tool{
-			Name:        "ask_user_work_gate",
-			Description: "Present the work gate approval question to the human partner. Requires a summary of what is being approved. When approved, the session switches to self-driving mode for the remainder of the session.",
-			InputSchema: schemaAskUserWorkGate,
-		}, mcpCtx.askUserWorkGateHandler)
-	}
 }
 
 type mcpContext struct {
@@ -430,6 +441,7 @@ type mcpContext struct {
 	coord      *state.Coordinator
 	dagAgents  []string
 	agentName  string
+	humanTools humanToolCallbacks
 }
 
 type emptyResult struct{}
@@ -535,7 +547,7 @@ func (c *mcpContext) projectTodoReadHandler(_ context.Context, _ *mcp.CallToolRe
 }
 
 func (c *mcpContext) askUserQuestionHandler(ctx context.Context, _ *mcp.CallToolRequest, args askUserQuestionArgs) (*mcp.CallToolResult, emptyResult, error) {
-	result, err := askUserQuestion(ctx, c.coord, args)
+	result, err := c.askUserQuestionResponder()(ctx, c.coord, args)
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
@@ -545,7 +557,7 @@ func (c *mcpContext) askUserQuestionHandler(ctx context.Context, _ *mcp.CallTool
 }
 
 func (c *mcpContext) askUserWorkGateHandler(ctx context.Context, _ *mcp.CallToolRequest, args askUserWorkGateArgs) (*mcp.CallToolResult, emptyResult, error) {
-	result, err := askUserWorkGate(ctx, c.coord, args.Summary)
+	result, err := c.askUserWorkGateResponder()(ctx, c.coord, args.Summary)
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
@@ -554,26 +566,75 @@ func (c *mcpContext) askUserWorkGateHandler(ctx context.Context, _ *mcp.CallTool
 	}, emptyResult{}, nil
 }
 
+func (c *mcpContext) askUserQuestionResponder() askUserQuestionFunc {
+	if c.humanTools.question != nil {
+		return c.humanTools.question
+	}
+	return askUserQuestion
+}
+
+func (c *mcpContext) askUserWorkGateResponder() askUserWorkGateFunc {
+	if c.humanTools.workGate != nil {
+		return c.humanTools.workGate
+	}
+	return askUserWorkGate
+}
+
 func askUserQuestion(ctx context.Context, coord *state.Coordinator, args askUserQuestionArgs) (string, error) {
 	if coord == nil {
-		return "Error: Questions are not allowed in the current mode. The session is running without human interaction.", nil
+		return "Error: workflow coordinator not available.", nil
 	}
 
-	wfState := coord.State()
-	if !wfState.ToolsAllowed() {
-		return "Error: Questions are not allowed in the current mode. The session is running without human interaction.", nil
+	switch coord.State().InteractionMode {
+	case state.ModeSelfDrive, state.ModeContinuous:
+		return askUserQuestionAutoResponse(autoProceedAnswer)(ctx, coord, args)
 	}
 
+	return askUserQuestionInteractive(ctx, coord, args)
+}
+
+func askUserQuestionInteractive(ctx context.Context, coord *state.Coordinator, args askUserQuestionArgs) (string, error) {
+	if coord == nil {
+		return "Error: workflow coordinator not available.", nil
+	}
+
+	if validationErr := validateAskUserQuestionArgs(args); validationErr != "" {
+		return validationErr, nil
+	}
+
+	question, humanMessage, questionSummary := buildQuestionRequest(args)
+	answer, errWait := waitForHumanResponse(ctx, coord, question, humanMessage, "ask_user_question")
+	if errWait != nil {
+		return "", fmt.Errorf("waiting for human response: %w", errWait)
+	}
+
+	return questionSummary + "\nHuman response: " + answer, nil
+}
+
+func askUserQuestionAutoResponse(answer string) askUserQuestionFunc {
+	return func(_ context.Context, _ *state.Coordinator, args askUserQuestionArgs) (string, error) {
+		if validationErr := validateAskUserQuestionArgs(args); validationErr != "" {
+			return validationErr, nil
+		}
+		return answer, nil
+	}
+}
+
+func validateAskUserQuestionArgs(args askUserQuestionArgs) string {
 	if len(args.Questions) == 0 {
-		return `Error: At least one question is required. You must provide questions in this format: {"questions": [{"question": "Your question text?", "choices": ["Choice 1", "Choice 2"], "multiSelect": false}]}`, nil
+		return `Error: At least one question is required. You must provide questions in this format: {"questions": [{"question": "Your question text?", "choices": ["Choice 1", "Choice 2"], "multiSelect": false}]}`
 	}
 
 	for i, q := range args.Questions {
 		if len(q.Choices) == 0 {
-			return fmt.Sprintf("Error: Question %d has no choices", i+1), nil
+			return fmt.Sprintf("Error: Question %d has no choices", i+1)
 		}
 	}
 
+	return ""
+}
+
+func buildQuestionRequest(args askUserQuestionArgs) (*state.MultiChoiceQuestion, string, string) {
 	questions := make([]state.QuestionItem, len(args.Questions))
 	for i, q := range args.Questions {
 		questions[i] = state.QuestionItem{
@@ -593,28 +654,34 @@ func askUserQuestion(ctx context.Context, coord *state.Coordinator, args askUser
 		fmt.Fprintf(&result, "  Choices: %v\n", q.Choices)
 		fmt.Fprintf(&result, "  MultiSelect: %v\n", q.MultiSelect)
 	}
-	questionSummary := result.String()
 
-	answer, err := coord.AskAndWait(ctx, question, humanMessage)
-	if err != nil {
-		return "", fmt.Errorf("waiting for human response: %w", err)
-	}
-
-	return questionSummary + "\nHuman response: " + answer, nil
+	return question, humanMessage, result.String()
 }
 
 func askUserWorkGate(ctx context.Context, coord *state.Coordinator, summary string) (string, error) {
-	if strings.TrimSpace(summary) == "" {
-		return "Error: A summary is required. You must compile a comprehensive summary (GOAL items, brainstorming decisions, task breakdown, validation criteria) before asking for work gate approval.", nil
+	if validationErr := validateAskUserWorkGateSummary(summary); validationErr != "" {
+		return validationErr, nil
 	}
 
 	if coord == nil {
-		return "Error: Work gate is not allowed in the current mode. The session is running without human interaction.", nil
+		return "Error: workflow coordinator not available.", nil
 	}
 
-	wfState := coord.State()
-	if !wfState.ToolsAllowed() {
-		return "Error: Work gate is not allowed in the current mode. The session is running without human interaction.", nil
+	switch coord.State().InteractionMode {
+	case state.ModeSelfDrive, state.ModeContinuous:
+		return askUserWorkGateAutoResponse(autoRecordQuestionsAnswer)(ctx, coord, summary)
+	}
+
+	return askUserWorkGateInteractive(ctx, coord, summary)
+}
+
+func askUserWorkGateInteractive(ctx context.Context, coord *state.Coordinator, summary string) (string, error) {
+	if coord == nil {
+		return "Error: workflow coordinator not available.", nil
+	}
+
+	if validationErr := validateAskUserWorkGateSummary(summary); validationErr != "" {
+		return validationErr, nil
 	}
 
 	questionText := summary + "\n\n---\n\nIs the definition complete? May I begin implementation?"
@@ -630,12 +697,112 @@ func askUserWorkGate(ctx context.Context, coord *state.Coordinator, summary stri
 		IsWorkGate: true,
 	}
 
-	answer, err := coord.AskAndWait(ctx, question, questionText)
-	if err != nil {
-		return "", fmt.Errorf("waiting for human response: %w", err)
+	answer, errWait := waitForHumanResponse(ctx, coord, question, questionText, "ask_user_work_gate")
+	if errWait != nil {
+		return "", fmt.Errorf("waiting for human response: %w", errWait)
 	}
 
 	return "Presented work gate question to user:\n\nQuestion: " + questionText + "\n  Choices: [DEFINITION IS COMPLETE, BUILD MAY BEGIN, Not ready yet, need more clarification]\n  MultiSelect: false\n\nHuman response: " + answer, nil
+}
+
+func askUserWorkGateAutoResponse(answer string) askUserWorkGateFunc {
+	return func(_ context.Context, coord *state.Coordinator, summary string) (string, error) {
+		if validationErr := validateAskUserWorkGateSummary(summary); validationErr != "" {
+			return validationErr, nil
+		}
+		if errPromote := promoteAfterWorkGate(coord); errPromote != nil {
+			return "", errPromote
+		}
+		return answer, nil
+	}
+}
+
+func validateAskUserWorkGateSummary(summary string) string {
+	if strings.TrimSpace(summary) == "" {
+		return "Error: A summary is required. You must compile a comprehensive summary (GOAL items, brainstorming decisions, task breakdown, validation criteria) before asking for work gate approval."
+	}
+	return ""
+}
+
+func waitForHumanResponse(ctx context.Context, coord *state.Coordinator, question *state.MultiChoiceQuestion, humanMessage string, toolName string) (string, error) {
+	if coord == nil {
+		return "", fmt.Errorf("workflow coordinator not available")
+	}
+
+	ctxWait, cancel := context.WithTimeout(ctx, humanToolTimeout)
+	defer cancel()
+
+	answer, errWait := coord.AskAndWait(ctxWait, question, humanMessage)
+	if errWait == nil {
+		return answer, nil
+	}
+
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	if errors.Is(errWait, context.DeadlineExceeded) {
+		log.Printf("%s timed out at %s after %s", toolName, timestamp, humanToolTimeout)
+	} else {
+		log.Printf("%s stopped waiting at %s: %v", toolName, timestamp, errWait)
+	}
+
+	return "", errWait
+}
+
+func promoteAfterWorkGate(coord *state.Coordinator) error {
+	if coord == nil {
+		return nil
+	}
+
+	if errUpdate := coord.UpdateState(func(wf *state.Workflow) {
+		if wf.InteractionMode == state.ModeBrainstorming {
+			wf.InteractionMode = state.ModeBuilding
+		}
+	}); errUpdate != nil {
+		return fmt.Errorf("failed to save work gate approval: %w", errUpdate)
+	}
+
+	return nil
+}
+
+func selectHumanToolCallbacks(workingDir string, coord *state.Coordinator) humanToolCallbacks {
+	if coord == nil {
+		return humanToolCallbacks{question: askUserQuestion, workGate: askUserWorkGate}
+	}
+
+	switch coord.State().InteractionMode {
+	case state.ModeSelfDrive, state.ModeContinuous:
+		return humanToolCallbacks{
+			question: askUserQuestionAutoResponse(autoProceedAnswer),
+			workGate: askUserWorkGateAutoResponse(autoRecordQuestionsAnswer),
+		}
+	}
+
+	metadata := readGoalMetadata(workingDir)
+	if !retrospectiveEnabled(metadata) {
+		return humanToolCallbacks{
+			question: askUserQuestionAutoResponse(autoProceedAnswer),
+			workGate: askUserWorkGateAutoResponse(autoSkipRetrospectiveAnswer),
+		}
+	}
+
+	return humanToolCallbacks{question: askUserQuestion, workGate: askUserWorkGate}
+}
+
+func readGoalMetadata(workingDir string) GoalMetadata {
+	if workingDir == "" {
+		return GoalMetadata{}
+	}
+
+	data, errRead := os.ReadFile(filepath.Join(workingDir, "GOAL.md"))
+	if errRead != nil {
+		return GoalMetadata{}
+	}
+
+	metadata, errParse := parseYAMLFrontmatter(data)
+	if errParse != nil {
+		return GoalMetadata{}
+	}
+
+	return metadata
 }
 
 func findSkills(workingDir, name string) (string, error) {
@@ -952,29 +1119,40 @@ func findSnippetsByFuzzyMatch(langDir string, entries []os.DirEntry, query strin
 }
 
 func updateWorkflowState(coord *state.Coordinator, callerAgent string, args updateWorkflowStateArgs) (string, error) {
-	var (
-		response        string
-		statusPreserved bool
-	)
+	var response string
+	var shouldStartWatchdog bool
 
 	if coord == nil {
 		return "Error: workflow coordinator not available.", nil
 	}
 
 	errUpdate := coord.UpdateState(func(currentState *state.Workflow) {
-		if currentState.Progress == nil {
-			currentState.Progress = []state.ProgressEntry{}
-		}
+		nextStatus := currentState.Status
 
-		statusPreserved = state.IsHumanPending(currentState.Status)
-
-		if args.Status != "" && !statusPreserved {
+		if args.Status != "" {
 			status := strings.Trim(string(args.Status), "\"'")
 			if !slices.Contains(state.ValidStatuses, status) {
 				response = fmt.Sprintf("Error: Invalid status '%s'. Must be one of: %s", status, strings.Join(state.ValidStatuses, ", "))
 				return
 			}
-			currentState.Status = status
+			nextStatus = status
+		}
+
+		if nextStatus == state.StatusAgentDone || nextStatus == state.StatusComplete {
+			pendingCount := countPendingTodos(*currentState, currentState.CurrentAgent)
+			if pendingCount > 0 {
+				response = fmt.Sprintf("Error: Cannot transition to '%s' with %d pending TODO items. Please complete all TODO items first.", nextStatus, pendingCount)
+				return
+			}
+		}
+
+		if currentState.Progress == nil {
+			currentState.Progress = []state.ProgressEntry{}
+		}
+
+		if args.Status != "" {
+			currentState.Status = nextStatus
+			shouldStartWatchdog = nextStatus == state.StatusAgentDone
 		}
 
 		currentState.Task = args.Task
@@ -988,24 +1166,12 @@ func updateWorkflowState(coord *state.Coordinator, callerAgent string, args upda
 			currentState.Progress = append(currentState.Progress, entry)
 		}
 
-		if currentState.Status == state.StatusAgentDone || currentState.Status == state.StatusComplete {
-			pendingCount := countPendingTodos(*currentState, currentState.CurrentAgent)
-			if pendingCount > 0 {
-				response = fmt.Sprintf("Error: Cannot transition to '%s' with %d pending TODO items. Please complete all TODO items first.", currentState.Status, pendingCount)
-				return
-			}
-		}
-
 		if (currentState.Status == state.StatusComplete || currentState.Status == state.StatusAgentDone) && currentState.Task != "" {
 			currentState.Task = ""
 		}
 
 		if response == "" {
-			if statusPreserved {
-				response = fmt.Sprintf("Status is currently '%s'. Waiting for human response. Your task and progress notes were updated but status was preserved.\n", currentState.Status)
-			} else {
-				response = "State updated successfully.\n"
-			}
+			response = "State updated successfully.\n"
 			response += fmt.Sprintf("  Status: %s\n", currentState.Status)
 			if currentState.Task != "" {
 				response += fmt.Sprintf("  Current task: %s\n", currentState.Task)
@@ -1025,8 +1191,7 @@ func updateWorkflowState(coord *state.Coordinator, callerAgent string, args upda
 		return response, nil
 	}
 
-	currentState := coord.State()
-	if currentState.Status == state.StatusAgentDone {
+	if shouldStartWatchdog {
 		coord.StartAgentDoneWatchdog(coord.GetAgentCancel())
 	}
 

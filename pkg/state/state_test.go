@@ -1,34 +1,14 @@
 package state
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestIsHumanPending(t *testing.T) {
-	tests := []struct {
-		name     string
-		status   string
-		expected bool
-	}{
-		{"waitingForHuman", StatusWaitingForHuman, true},
-		{"working", StatusWorking, false},
-		{"agentDone", StatusAgentDone, false},
-		{"complete", StatusComplete, false},
-		{"empty", "", false},
-		{"invalid", "invalid", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := IsHumanPending(tt.status)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
 
 func TestNeedsHumanInput(t *testing.T) {
 	tests := []struct {
@@ -37,35 +17,30 @@ func TestNeedsHumanInput(t *testing.T) {
 		expected bool
 	}{
 		{
-			name: "waitingWithQuestion",
+			name: "withQuestion",
 			workflow: Workflow{
-				Status:              StatusWaitingForHuman,
 				MultiChoiceQuestion: &MultiChoiceQuestion{Questions: []QuestionItem{{Question: "test"}}},
 			},
 			expected: true,
 		},
 		{
-			name: "waitingWithMessage",
+			name: "withMessage",
 			workflow: Workflow{
-				Status:       StatusWaitingForHuman,
 				HumanMessage: "Please respond",
 			},
 			expected: true,
 		},
 		{
-			name: "waitingWithBoth",
+			name: "withBoth",
 			workflow: Workflow{
-				Status:              StatusWaitingForHuman,
 				MultiChoiceQuestion: &MultiChoiceQuestion{Questions: []QuestionItem{{Question: "test"}}},
 				HumanMessage:        "Please respond",
 			},
 			expected: true,
 		},
 		{
-			name: "waitingWithoutQuestionOrMessage",
-			workflow: Workflow{
-				Status: StatusWaitingForHuman,
-			},
+			name:     "withoutQuestionOrMessage",
+			workflow: Workflow{},
 			expected: false,
 		},
 		{
@@ -74,7 +49,7 @@ func TestNeedsHumanInput(t *testing.T) {
 				Status:              StatusWorking,
 				MultiChoiceQuestion: &MultiChoiceQuestion{Questions: []QuestionItem{{Question: "test"}}},
 			},
-			expected: false,
+			expected: true,
 		},
 		{
 			name: "workingWithMessage",
@@ -82,7 +57,7 @@ func TestNeedsHumanInput(t *testing.T) {
 				Status:       StatusWorking,
 				HumanMessage: "Please respond",
 			},
-			expected: false,
+			expected: true,
 		},
 		{
 			name: "agentDoneWithQuestion",
@@ -90,7 +65,7 @@ func TestNeedsHumanInput(t *testing.T) {
 				Status:              StatusAgentDone,
 				MultiChoiceQuestion: &MultiChoiceQuestion{Questions: []QuestionItem{{Question: "test"}}},
 			},
-			expected: false,
+			expected: true,
 		},
 		{
 			name: "completeWithQuestion",
@@ -98,7 +73,7 @@ func TestNeedsHumanInput(t *testing.T) {
 				Status:              StatusComplete,
 				MultiChoiceQuestion: &MultiChoiceQuestion{Questions: []QuestionItem{{Question: "test"}}},
 			},
-			expected: false,
+			expected: true,
 		},
 	}
 
@@ -165,25 +140,78 @@ func TestTokenUsageAdd(t *testing.T) {
 	}
 }
 
-func TestWorkflowToolsAllowed(t *testing.T) {
-	tests := []struct {
-		name     string
-		workflow Workflow
-		expected bool
-	}{
-		{
-			name:     "defaultFalse",
-			workflow: Workflow{},
-			expected: false,
-		},
-	}
+func TestQuestionStateIsMemoryOnly(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	question := &MultiChoiceQuestion{Questions: []QuestionItem{{Question: "test", Choices: []string{"yes", "no"}}}}
+	wf := Workflow{HumanMessage: "Please respond", MultiChoiceQuestion: question}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := tt.workflow.ToolsAllowed()
-			assert.Equal(t, tt.expected, result)
-		})
+	coord, err := NewCoordinatorWith(statePath, wf)
+	require.NoError(t, err)
+
+	snapshot := coord.State()
+	assert.Equal(t, "Please respond", snapshot.HumanMessage)
+	assert.NotNil(t, snapshot.MultiChoiceQuestion)
+
+	loaded, err := load(statePath)
+	require.NoError(t, err)
+	assert.Empty(t, loaded.HumanMessage)
+	assert.Nil(t, loaded.MultiChoiceQuestion)
+}
+
+func TestCurrentPromptTokenChangesAcrossQuestions(t *testing.T) {
+	dir := t.TempDir()
+	coord := NewCoordinatorEmpty(filepath.Join(dir, "state.json"))
+
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
+	firstErrCh := make(chan error, 1)
+	go func() {
+		_, err := coord.AskAndWait(firstCtx, nil, "same question")
+		firstErrCh <- err
+	}()
+
+	firstToken := waitForCurrentPromptToken(t, coord)
+	cancelFirst()
+	require.ErrorIs(t, <-firstErrCh, context.Canceled)
+	require.Eventually(t, func() bool {
+		return coord.CurrentPromptToken() == ""
+	}, time.Second, 10*time.Millisecond)
+
+	secondCtx, cancelSecond := context.WithCancel(context.Background())
+	defer cancelSecond()
+	secondAnswerCh := make(chan string, 1)
+	secondErrCh := make(chan error, 1)
+	go func() {
+		answer, err := coord.AskAndWait(secondCtx, nil, "same question")
+		if err != nil {
+			secondErrCh <- err
+			return
+		}
+		secondAnswerCh <- answer
+	}()
+
+	secondToken := waitForCurrentPromptToken(t, coord)
+	assert.NotEqual(t, firstToken, secondToken)
+	assert.False(t, coord.RespondIfCurrent(firstToken, "stale answer"))
+	assert.True(t, coord.RespondIfCurrent(secondToken, "current answer"))
+	assert.Equal(t, "current answer", <-secondAnswerCh)
+	select {
+	case err := <-secondErrCh:
+		require.NoError(t, err)
+	default:
 	}
+	require.Eventually(t, func() bool {
+		return coord.CurrentPromptToken() == ""
+	}, time.Second, 10*time.Millisecond)
+}
+
+func waitForCurrentPromptToken(t *testing.T, coord *Coordinator) string {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return coord.CurrentPromptToken() != ""
+	}, time.Second, 10*time.Millisecond)
+	return coord.CurrentPromptToken()
 }
 
 func TestNewCoordinator(t *testing.T) {

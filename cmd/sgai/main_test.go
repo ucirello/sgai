@@ -26,6 +26,7 @@ func TestExtractModelFromArgs(t *testing.T) {
 		want string
 	}{
 		{"withModel", []string{"run", "--model", "claude-opus-4", "--agent", "build"}, "claude-opus-4"},
+		{"withModelAndVariant", []string{"run", "--model", "claude-opus-4", "--variant", "max", "--agent", "build"}, "claude-opus-4 (max)"},
 		{"noModel", []string{"run", "--agent", "build"}, ""},
 		{"modelAtEnd", []string{"--model"}, ""},
 		{"empty", []string{}, ""},
@@ -254,54 +255,6 @@ func TestTryReloadGoalMetadata(t *testing.T) {
 
 		_, err := tryReloadGoalMetadata(goalPath, GoalMetadata{}, &dag{Nodes: map[string]*dagNode{}})
 		assert.Error(t, err)
-	})
-}
-
-func TestHandleWaitingForHumanStatus(t *testing.T) {
-	t.Run("withPendingQuestion", func(t *testing.T) {
-		dir := t.TempDir()
-		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
-		require.NoError(t, err)
-
-		cfg := multiModelConfig{coord: coord, agent: "coordinator", paddedsgai: "sgai"}
-		newState := state.Workflow{
-			Status:       state.StatusWaitingForHuman,
-			HumanMessage: "What do you want?",
-		}
-
-		result := handleWaitingForHumanStatus(cfg, newState)
-		assert.Equal(t, state.StatusWorking, result.Status)
-	})
-
-	t.Run("withMultiChoiceQuestion", func(t *testing.T) {
-		dir := t.TempDir()
-		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
-		require.NoError(t, err)
-
-		cfg := multiModelConfig{coord: coord, agent: "coordinator", paddedsgai: "sgai"}
-		newState := state.Workflow{
-			Status: state.StatusWaitingForHuman,
-			MultiChoiceQuestion: &state.MultiChoiceQuestion{
-				Questions: []state.QuestionItem{{Question: "pick", Choices: []string{"A"}}},
-			},
-		}
-
-		result := handleWaitingForHumanStatus(cfg, newState)
-		assert.Equal(t, state.StatusWorking, result.Status)
-	})
-
-	t.Run("withoutPendingQuestion", func(t *testing.T) {
-		dir := t.TempDir()
-		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
-		require.NoError(t, err)
-
-		cfg := multiModelConfig{coord: coord, agent: "coordinator", paddedsgai: "sgai"}
-		newState := state.Workflow{
-			Status: state.StatusWaitingForHuman,
-		}
-
-		result := handleWaitingForHumanStatus(cfg, newState)
-		assert.Equal(t, state.StatusWorking, result.Status)
 	})
 }
 
@@ -2425,7 +2378,7 @@ func TestCanResumeWorkflow(t *testing.T) {
 		},
 		{
 			name:            "matchingChecksumHumanPending",
-			wfState:         state.Workflow{GoalChecksum: "abc123", Status: state.StatusWaitingForHuman},
+			wfState:         state.Workflow{GoalChecksum: "abc123", HumanMessage: "question"},
 			currentChecksum: "abc123",
 			expected:        true,
 		},
@@ -2714,15 +2667,16 @@ func TestBuildAgentMessage(t *testing.T) {
 }
 
 func TestBuildAgentEnv(t *testing.T) {
+	t.Setenv("SGAI_SHOULD_BE_FILTERED", "1")
+	t.Setenv("OPENCODE_CONFIG_DIR", "/tmp/should-not-leak")
+
 	cfg := multiModelConfig{
-		agent: "test-agent",
-		dir:   "/tmp/test-workspace",
-	}
-	wfState := state.Workflow{
-		InteractionMode: state.ModeSelfDrive,
+		agent:  "test-agent",
+		dir:    "/tmp/test-workspace",
+		mcpURL: "http://127.0.0.1:9999/mcp",
 	}
 
-	env := buildAgentEnv(cfg, wfState, "")
+	env := buildAgentEnv(cfg, "")
 	envMap := make(map[string]string)
 	for _, e := range env {
 		if len(e) > 0 {
@@ -2736,7 +2690,8 @@ func TestBuildAgentEnv(t *testing.T) {
 	}
 
 	assert.Equal(t, filepath.Join("/tmp/test-workspace", ".sgai"), envMap["OPENCODE_CONFIG_DIR"])
-	assert.Equal(t, "auto", envMap["SGAI_MCP_INTERACTIVE"])
+	assert.Equal(t, "http://127.0.0.1:9999/mcp", envMap["SGAI_MCP_URL"])
+	assert.NotContains(t, envMap, "SGAI_SHOULD_BE_FILTERED")
 	assert.Equal(t, "test-agent", envMap["SGAI_AGENT_IDENTITY"])
 }
 
@@ -2745,9 +2700,8 @@ func TestBuildAgentEnvWithModel(t *testing.T) {
 		agent: "test-agent",
 		dir:   "/tmp/test-workspace",
 	}
-	wfState := state.Workflow{}
 
-	env := buildAgentEnv(cfg, wfState, "anthropic/claude-opus-4-6 (max)")
+	env := buildAgentEnv(cfg, "anthropic/claude-opus-4-6 (max)")
 
 	identityValues := make(map[string]string)
 	for _, e := range env {
@@ -2759,7 +2713,61 @@ func TestBuildAgentEnvWithModel(t *testing.T) {
 		}
 	}
 
-	assert.Contains(t, identityValues["SGAI_AGENT_IDENTITY"], "anthropic/claude-opus-4-6")
+	assert.Equal(t, "test-agent|anthropic/claude-opus-4-6|max", identityValues["SGAI_AGENT_IDENTITY"])
+}
+
+func TestExecuteAgentProcessPreservesVariantInAgentIdentity(t *testing.T) {
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "bin")
+	require.NoError(t, os.MkdirAll(binDir, 0755))
+
+	scriptPath := filepath.Join(binDir, "opencode")
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"printf '%s' \"$SGAI_AGENT_IDENTITY\" > \"$CAPTURE_FILE\"",
+	}, "\n")
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0755))
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	tests := []struct {
+		name         string
+		modelSpec    string
+		wantIdentity string
+	}{
+		{
+			name:         "maxVariant",
+			modelSpec:    "anthropic/claude-opus-4-6 (max)",
+			wantIdentity: "test-agent|anthropic/claude-opus-4-6|max",
+		},
+		{
+			name:         "thinkingVariant",
+			modelSpec:    "anthropic/claude-opus-4-6 (thinking)",
+			wantIdentity: "test-agent|anthropic/claude-opus-4-6|thinking",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			capturePath := filepath.Join(tmpDir, tt.name+".txt")
+			t.Setenv("CAPTURE_FILE", capturePath)
+
+			cfg := multiModelConfig{
+				agent:  "test-agent",
+				dir:    tmpDir,
+				mcpURL: "http://127.0.0.1:7777/mcp",
+				coord:  state.NewCoordinatorEmpty(filepath.Join(tmpDir, tt.name+"-state.json")),
+			}
+
+			agentArgs := buildAgentArgs(cfg.agent, cfg.agent, tt.modelSpec, "")
+			_, _, errExec := executeAgentProcess(context.Background(), cfg, agentArgs, "", "[test]", newRingWriter(), state.Workflow{})
+			require.Nil(t, errExec)
+
+			identity, err := os.ReadFile(capturePath)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantIdentity, string(identity))
+		})
+	}
 }
 
 func TestMarkCurrentAgentInSequence(t *testing.T) {
@@ -4503,25 +4511,6 @@ func TestCopyCompletionArtifactsWithPM(t *testing.T) {
 	assert.NoError(t, errGoal)
 	_, errPM := os.Stat(filepath.Join(retroDir, "PROJECT_MANAGEMENT.md"))
 	assert.NoError(t, errPM)
-}
-
-func TestHandleWaitingForHumanStatusWithMessage(t *testing.T) {
-	dir := t.TempDir()
-	sp := filepath.Join(dir, ".sgai", "state.json")
-	require.NoError(t, os.MkdirAll(filepath.Dir(sp), 0755))
-	coord := state.NewCoordinatorEmpty(sp)
-
-	cfg := multiModelConfig{
-		coord:      coord,
-		agent:      "test",
-		paddedsgai: "sgai",
-	}
-	wfState := state.Workflow{
-		Status:       state.StatusWaitingForHuman,
-		HumanMessage: "question for user",
-	}
-	result := handleWaitingForHumanStatus(cfg, wfState)
-	assert.Equal(t, state.StatusWorking, result.Status)
 }
 
 func TestHandleWorkingLoopReset(t *testing.T) {
