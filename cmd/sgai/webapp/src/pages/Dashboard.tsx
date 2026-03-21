@@ -48,8 +48,6 @@ function workspaceToForkEntry(ws: ApiWorkspaceEntry): ForkEntry {
     inProgress: ws.inProgress,
     pinned: ws.pinned,
     description: ws.description,
-    commitAhead: 0,
-    commits: [],
   };
 }
 

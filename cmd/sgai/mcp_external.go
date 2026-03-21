@@ -80,6 +80,42 @@ func (ctx *externalMCPContext) resolveAnyWorkspacePath(name string) (string, err
 	return groups[0].Root.Directory, nil
 }
 
+type workspaceStateResult struct {
+	Workspace apiWorkspaceFullState
+	Found     bool
+}
+
+func (s *Server) getWorkspaceStateService(workspaceName string) (workspaceStateResult, error) {
+	groups, errScan := s.scanWorkspaceGroups()
+	if errScan != nil {
+		return workspaceStateResult{}, errScan
+	}
+
+	for _, grp := range groups {
+		if grp.Root.DirName == workspaceName {
+			ws := s.buildWorkspaceFullState(grp.Root, groups)
+			return workspaceStateResult{Workspace: ws, Found: true}, nil
+		}
+		for _, fork := range grp.Forks {
+			if fork.DirName == workspaceName {
+				ws := s.buildWorkspaceFullState(fork, groups)
+				return workspaceStateResult{Workspace: ws, Found: true}, nil
+			}
+		}
+	}
+
+	return workspaceStateResult{Found: false}, nil
+}
+
+func (s *Server) getWorkflowSVGService(workspacePath string) string {
+	wfState := s.workspaceCoordinator(workspacePath).State()
+	currentAgent := wfState.CurrentAgent
+	if currentAgent == "" {
+		currentAgent = "Unknown"
+	}
+	return s.getWorkflowSVGCached(workspacePath, currentAgent)
+}
+
 func registerStateTools(server *mcp.Server, ctx *externalMCPContext) {
 	type listWorkspacesArgs struct{}
 	mcp.AddTool(server, &mcp.Tool{
@@ -128,23 +164,6 @@ func registerStateTools(server *mcp.Server, ctx *externalMCPContext) {
 			return textResult("workflow SVG not available"), emptyResult{}, nil
 		}
 		return textResult(svg), emptyResult{}, nil
-	})
-
-	type getWorkspaceDiffArgs struct {
-		Workspace string `json:"workspace" jsonschema:"The workspace name"`
-	}
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "get_workspace_diff",
-		Description: "Get the current git diff for a workspace.",
-		InputSchema: mustSchema[getWorkspaceDiffArgs](),
-	}, func(_ context.Context, _ *mcp.CallToolRequest, args getWorkspaceDiffArgs) (*mcp.CallToolResult, emptyResult, error) {
-		workspacePath, err := ctx.resolveWorkspacePath(args.Workspace)
-		if err != nil {
-			return nil, emptyResult{}, err
-		}
-		diffResult := ctx.srv.workspaceDiffService(workspacePath)
-		result, err := jsonResult(diffResult)
-		return result, emptyResult{}, err
 	})
 }
 
@@ -319,27 +338,6 @@ func registerWorkspaceTools(server *mcp.Server, ctx *externalMCPContext) {
 			return nil, emptyResult{}, err
 		}
 		result, err := jsonResult(pinResult)
-		return result, emptyResult{}, err
-	})
-
-	type updateDescriptionArgs struct {
-		Workspace   string `json:"workspace" jsonschema:"The workspace name"`
-		Description string `json:"description" jsonschema:"The new commit description"`
-	}
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "update_description",
-		Description: "Update the jj commit description for a workspace.",
-		InputSchema: mustSchema[updateDescriptionArgs](),
-	}, func(_ context.Context, _ *mcp.CallToolRequest, args updateDescriptionArgs) (*mcp.CallToolResult, emptyResult, error) {
-		workspacePath, err := ctx.resolveWorkspacePath(args.Workspace)
-		if err != nil {
-			return nil, emptyResult{}, err
-		}
-		descResult, err := ctx.srv.updateDescriptionService(workspacePath, args.Description)
-		if err != nil {
-			return textResult("error: " + err.Error()), emptyResult{}, nil
-		}
-		result, err := jsonResult(descResult)
 		return result, emptyResult{}, err
 	})
 

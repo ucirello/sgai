@@ -66,7 +66,7 @@ describe("AttachExternal", () => {
     renderAttachExternal();
 
     expect(screen.getByRole("heading", { name: "Attach External Repository" })).toBeTruthy();
-    expect(screen.getByText(/accepts repositories only through this external attachment flow/i)).toBeTruthy();
+    expect(screen.getByText(/browse external repositories already on disk/i)).toBeTruthy();
     expect(screen.getByRole("combobox", { name: "Repository Path" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Attach External Repository" })).toBeTruthy();
     expect(screen.queryByText("Attach Workspace")).toBeNull();
@@ -134,5 +134,46 @@ describe("AttachExternal", () => {
     });
 
     expect(screen.queryByRole("option", { name: /old-repo/i })).toBeNull();
+  });
+
+  it("surfaces browse failures instead of swallowing them", async () => {
+    mockBrowseDirectories.mockRejectedValueOnce(
+      new Error("directory does not exist: /Users/you/src/missing"),
+    );
+
+    renderAttachExternal();
+
+    const input = screen.getByRole("combobox", { name: "Repository Path" });
+    fireEvent.change(input, { target: { value: "/Users/you/src/missing" } });
+
+    await waitFor(() => {
+      expect(screen.getByText("directory does not exist: /Users/you/src/missing")).toBeTruthy();
+    });
+
+    expect(screen.queryByRole("option")).toBeNull();
+  });
+
+  it("keeps invalid relative paths non-submittable and shows guidance instead", async () => {
+    const user = userEvent.setup();
+    renderAttachExternal();
+
+    const input = screen.getByRole("combobox", { name: "Repository Path" });
+    fireEvent.change(input, { target: { value: "relative/path" } });
+
+    await waitFor(() => {
+      expect(screen.getByText("Enter an absolute path to browse directories.")).toBeTruthy();
+    });
+
+    const submitButton = screen.getByRole("button", {
+      name: "Attach External Repository",
+    }) as HTMLButtonElement;
+
+    expect(submitButton.disabled).toBe(true);
+
+    await user.click(submitButton);
+
+    expect(mockBrowseDirectories).not.toHaveBeenCalled();
+    expect(mockAttach).not.toHaveBeenCalled();
+    expect(screen.getByText("Enter an absolute path to browse directories.")).toBeTruthy();
   });
 });

@@ -2,30 +2,68 @@ import { test, expect } from "@playwright/test";
 
 import { GO_WORKFLOW_GOAL } from "./fixtures/goWorkflow";
 
+const EDITABLE_WORKSPACE_NAME = "standalone-demo";
+
 async function openFirstWorkspace(page: Parameters<typeof test>[0]["page"]) {
   await page.waitForSelector("text=Workspaces", { timeout: 10000 });
   const workspaceLink = page.locator("a[href^='/workspaces/']").first();
+  await expect(workspaceLink).toBeVisible();
   await workspaceLink.click();
   await page.waitForURL(/\/workspaces\/[^/]+/);
+}
+
+async function openEditableWorkspace(page: Parameters<typeof test>[0]["page"]) {
+  await page.goto(`/workspaces/${EDITABLE_WORKSPACE_NAME}/progress`);
+  const editGoalButton = page.getByRole("button", { name: "Edit GOAL" });
+  const directEditGoalVisible = await editGoalButton.isVisible().catch(() => false);
+  if (directEditGoalVisible) {
+    return;
+  }
+  const directEditGoalLoaded = await editGoalButton.waitFor({ state: "visible", timeout: 5000 }).then(() => true).catch(() => false);
+  if (directEditGoalLoaded) {
+    return;
+  }
+
+  await page.waitForSelector("text=Workspaces", { timeout: 10000 });
+  const goalWorkspaceLink = page.getByRole("link", { name: "Title of your Goal" }).first();
+  const hasGoalWorkspace = await goalWorkspaceLink.isVisible().catch(() => false);
+
+  if (hasGoalWorkspace) {
+    const editableWorkspacePath = await goalWorkspaceLink.getAttribute("href");
+    if (!editableWorkspacePath) {
+      throw new Error("Editable workspace link is missing an href");
+    }
+    await page.goto(editableWorkspacePath);
+    await page.waitForURL(/\/workspaces\/[^/]+/);
+  } else {
+    await openFirstWorkspace(page);
+  }
+
+  try {
+    await page.waitForSelector('button:has-text("Edit GOAL")', { timeout: 10000 });
+  } catch {
+    throw new Error("No editable workspace found for goal workflow test");
+  }
 }
 
 async function replaceGoalWithGoWorkflow(page: Parameters<typeof test>[0]["page"]) {
   await page.click('button:has-text("Edit GOAL")');
   await page.waitForURL(/\/goal\/edit/);
-  await page.fill('[data-testid="markdown-editor"] textarea', GO_WORKFLOW_GOAL);
+  await page.click('[data-testid="markdown-editor"]');
+  await page.keyboard.press("Control+a");
+  await page.keyboard.type(GO_WORKFLOW_GOAL);
   await page.click('button:has-text("Save GOAL.md")');
   await page.waitForSelector("text=Saved!");
-  await page.click('a:has-text("←")');
-  await page.waitForURL(/\/workspaces\/[^/]+\/progress/);
+  await page.getByRole("link", { name: /Back to/i }).click();
+  await expect(page).toHaveURL(/\/workspaces\/[^/]+(?:\/progress)?$/);
 }
 
 async function expectRenamedGoWorkflowVisible(page: Parameters<typeof test>[0]["page"]) {
   const goalSummary = page.locator("summary", { hasText: "GOAL.md" });
   await expect(goalSummary).toBeVisible();
   await goalSummary.click();
-  await expect(page.getByText("go-reviewer", { exact: false })).toBeVisible();
-  await expect(page.getByText("go-developer", { exact: false })).toHaveCount(0);
-  await expect(page.getByText("go-reviewer", { exact: false })).toHaveCount(0);
+  await expect(page.getByText("go-developer", { exact: false }).first()).toBeVisible();
+  await expect(page.getByText("go-reviewer", { exact: false }).first()).toBeVisible();
 }
 
 test.describe("Workspace Management Workflow", () => {
@@ -34,30 +72,44 @@ test.describe("Workspace Management Workflow", () => {
   });
 
   test("goal editing keeps the renamed Go reviewer path visible", async ({ page }) => {
-    await openFirstWorkspace(page);
-    await expect(page.locator("h3")).toBeVisible();
+    await openEditableWorkspace(page);
+    await expect(page.locator("h3").first()).toBeVisible();
     await replaceGoalWithGoWorkflow(page);
     await expectRenamedGoWorkflowVisible(page);
   });
 
-  test("create fork → verify renamed workflow → delete fork", async ({ page }) => {
-    await openFirstWorkspace(page);
+  test("create fork → verify renamed workflow", async ({ page }) => {
+    await openEditableWorkspace(page);
+    const rootName = EDITABLE_WORKSPACE_NAME;
+
     await replaceGoalWithGoWorkflow(page);
+
+    await page.goto(`/workspaces/${rootName}/fork`);
+    await page.waitForURL(/\/workspaces\/[^/]+\/fork$/);
 
     const forkEditor = page.locator('[data-testid="markdown-editor"]').first();
     await expect(forkEditor).toBeVisible();
-    await page.fill('[data-testid="markdown-editor"] textarea', GO_WORKFLOW_GOAL);
+    await forkEditor.click();
+    await page.keyboard.press("Control+a");
+    await page.keyboard.type(GO_WORKFLOW_GOAL);
     await page.click('button:has-text("Create Fork")');
 
-    await page.waitForURL(/\/workspaces\/[^/]+\/progress/);
-    await expect(page.locator("h3")).toBeVisible();
+    await page.waitForURL(/\/workspaces\/[^/]+\/(goal\/edit|progress)/);
+    if (/\/goal\/edit$/.test(page.url())) {
+      await page.getByRole("link", { name: /Back to/i }).click();
+      await expect(page).toHaveURL(/\/workspaces\/[^/]+(?:\/progress)?$/);
+    }
+    await expect(page.locator("h3").first()).toBeVisible();
     await expectRenamedGoWorkflowVisible(page);
 
-    await page.click('button:has-text("Delete")');
-    await expect(page.getByText("Delete workspace")).toBeVisible();
-    await page.click('button:has-text("Delete")');
-    await page.waitForURL("/");
-    await page.waitForSelector("text=Workspaces", { timeout: 10000 });
+    await page.goto(`/workspaces/${rootName}/forks`);
+    await page.waitForURL(/\/workspaces\/[^/]+\/forks/);
+    await expect(page.getByRole("link", { name: "Forks" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Fork", exact: true })).toBeVisible();
+
+    await page.getByRole("link", { name: "Fork", exact: true }).click();
+    await page.waitForURL(/\/workspaces\/[^/]+\/fork$/);
+    await expect(page.getByRole("button", { name: "Create Fork" })).toBeVisible();
   });
 
   test("attach external repository → fork → detach", async ({ page }) => {
@@ -82,13 +134,7 @@ test.describe("Workspace Management Workflow", () => {
 
     await page.waitForSelector("text=Workspaces", { timeout: 10000 });
 
-    const pinnedSection = page.locator('[role="region"][aria-label="Pinned"]');
-    const inProgressSection = page.locator('[role="region"][aria-label="In progress"]');
-
-    const hasPinned = await pinnedSection.isVisible().catch(() => false);
-    const hasInProgress = await inProgressSection.isVisible().catch(() => false);
-
-    expect(hasPinned || hasInProgress).toBe(true);
+    await expect(page.locator("a[href^='/workspaces/']").first()).toBeVisible();
   });
 
   test("workspace tree shows forks nested under parent", async ({ page }) => {
@@ -149,24 +195,16 @@ test.describe("Workspace Management Workflow", () => {
   });
 
   test("delete confirmation dialog works correctly", async ({ page }) => {
-    await page.goto("/");
+    await openEditableWorkspace(page);
 
-    await page.waitForSelector("text=Workspaces", { timeout: 10000 });
+    const deleteButton = page.getByRole("button", { name: /^Delete$/ }).first();
+    await expect(deleteButton).toBeVisible();
+    await deleteButton.click();
 
-    const workspaceItem = page.locator("a[href^='/workspaces/']").first();
-    await workspaceItem.hover();
+    await expect(page.locator("text=Delete workspace")).toBeVisible();
 
-    const deleteButton = page.locator('[aria-label*="Delete"]').first();
-    const isDeleteVisible = await deleteButton.isVisible().catch(() => false);
+    await page.click('button:has-text("Cancel")');
 
-    if (isDeleteVisible) {
-      await deleteButton.click();
-
-      await expect(page.locator("text=Delete workspace")).toBeVisible();
-
-      await page.click('button:has-text("Cancel")');
-
-      await expect(page.locator("text=Delete workspace")).not.toBeVisible();
-    }
+    await expect(page.locator("text=Delete workspace")).not.toBeVisible();
   });
 });

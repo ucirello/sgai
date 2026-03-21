@@ -12,4 +12,11 @@ describe("router", () => {
     expect(newWorkspaceRoute?.element?.props.to).toBe("/workspaces/attach");
     expect(newWorkspaceRoute?.element?.props.replace).toBe(true);
   });
+
+  it("keeps workspace detail on the catch-all workspace route", () => {
+    const rootRoute = router.routes[0];
+    const workspaceRoute = rootRoute.children?.find((route) => route.path === "workspaces/:name/*");
+
+    expect(workspaceRoute).toBeTruthy();
+  });
 });

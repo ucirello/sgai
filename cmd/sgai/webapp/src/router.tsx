@@ -64,9 +64,6 @@ const EditGoal = lazy(() =>
 const AdhocOutput = lazy(() =>
   import("./pages/AdhocOutput").then((m) => ({ default: m.AdhocOutput })),
 );
-const FullDiffPage = lazy(() =>
-  import("./pages/FullDiffPage").then((m) => ({ default: m.FullDiffPage })),
-);
 
 function PageSkeleton() {
   return (
@@ -165,10 +162,6 @@ export const router = createBrowserRouter([
       {
         path: "workspaces/:name/adhoc",
         element: withSuspense(AdhocOutput),
-      },
-      {
-        path: "workspace/:name/diff",
-        element: withSuspense(FullDiffPage),
       },
 
       {

@@ -430,6 +430,13 @@ func TestBrowseDirectoriesService(t *testing.T) {
 			},
 		},
 		{
+			name:        "browseRelativeDirectory",
+			path:        ".",
+			setupFunc:   func(_ *testing.T, _ string) {},
+			wantErr:     true,
+			errContains: "path must be absolute",
+		},
+		{
 			name:        "browseNonExistentDirectory",
 			path:        "/non/existent/directory",
 			setupFunc:   func(_ *testing.T, _ string) {},

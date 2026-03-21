@@ -303,16 +303,16 @@ func TestMCPToolGetWorkflowSVG(t *testing.T) {
 	})
 }
 
-func TestMCPToolGetWorkspaceDiff(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "diff-mcp")
+func TestRegisterWorkspaceToolsOmitsRemovedWorkspaceTools(t *testing.T) {
+	srv, _ := setupTestServer(t)
 	cs := connectMCPClient(t, srv)
-	result, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
-		Name:      "get_workspace_diff",
-		Arguments: map[string]any{"workspace": "diff-mcp"},
-	})
-	require.NoError(t, err)
-	require.NotNil(t, result)
+	result, errList := cs.ListTools(context.Background(), &mcp.ListToolsParams{})
+	require.NoError(t, errList)
+
+	for _, tool := range result.Tools {
+		assert.NotEqual(t, "get_workspace_diff", tool.Name)
+		assert.NotEqual(t, "update_description", tool.Name)
+	}
 }
 
 func TestMCPToolBrowseDirectories(t *testing.T) {
@@ -331,6 +331,20 @@ func TestMCPToolBrowseDirectories(t *testing.T) {
 	tc := result.Content[0].(*mcp.TextContent)
 	assert.Contains(t, tc.Text, "repo-a")
 	assert.Contains(t, tc.Text, "repo-b")
+}
+
+func TestMCPToolBrowseDirectoriesRejectsRelativePath(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	cs := connectMCPClient(t, srv)
+
+	result, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "browse_directories",
+		Arguments: map[string]any{"path": "."},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	tc := result.Content[0].(*mcp.TextContent)
+	assert.Contains(t, tc.Text, "error: path must be absolute")
 }
 
 func TestMCPToolAttachWorkspace(t *testing.T) {
@@ -415,18 +429,6 @@ func TestMCPToolTogglePin(t *testing.T) {
 	result, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
 		Name:      "toggle_pin",
 		Arguments: map[string]any{"workspace": "pin-mcp"},
-	})
-	require.NoError(t, err)
-	require.NotNil(t, result)
-}
-
-func TestMCPToolUpdateDescription(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "desc-mcp")
-	cs := connectMCPClient(t, srv)
-	result, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
-		Name:      "update_description",
-		Arguments: map[string]any{"workspace": "desc-mcp", "description": "test desc"},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -956,17 +958,6 @@ func TestMCPToolOpenEditorPMNotFound(t *testing.T) {
 	assert.True(t, result.IsError)
 }
 
-func TestMCPToolGetWorkspaceDiffNotFound(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	cs := connectMCPClient(t, srv)
-	result, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
-		Name:      "get_workspace_diff",
-		Arguments: map[string]any{"workspace": "nonexistent-diff-mcp"},
-	})
-	require.NoError(t, err)
-	assert.True(t, result.IsError)
-}
-
 func TestMCPToolDeleteMessageNotFound(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	cs := connectMCPClient(t, srv)
@@ -1159,18 +1150,6 @@ func TestMCPToolStopAdhocExists(t *testing.T) {
 	result, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
 		Name:      "stop_adhoc",
 		Arguments: map[string]any{"workspace": "adhoc-stop-mcp"},
-	})
-	require.NoError(t, err)
-	require.NotNil(t, result)
-}
-
-func TestMCPToolGetWorkspaceDiffExists(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "wsdiff-mcp")
-	cs := connectMCPClient(t, srv)
-	result, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
-		Name:      "get_workspace_diff",
-		Arguments: map[string]any{"workspace": "wsdiff-mcp"},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, result)

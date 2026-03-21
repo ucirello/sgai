@@ -224,11 +224,6 @@ func isEditorAvailable(command string) bool {
 	return err == nil
 }
 
-type jjChangesResult struct {
-	diffLines   []apiDiffLine
-	description string
-}
-
 // Server handles HTTP requests for the sgai serve command.
 type Server struct {
 	mu                sync.Mutex
@@ -256,18 +251,11 @@ type Server struct {
 	workspaceScanCache  *ttlCache[string, []workspaceGroup]
 	classifyFlight      singleflight[string, workspaceKind]
 	classifyCache       *ttlCache[string, workspaceKind]
-	bookmarkFlight      singleflight[string, string]
-	bookmarkCache       *ttlCache[string, string]
 	svgFlight           singleflight[string, string]
 	svgCache            *ttlCache[string, string]
-
-	jjChangesFlight    singleflight[string, jjChangesResult]
-	forkCommitsFlight  singleflight[string, int]
-	forkLogFlight      singleflight[string, []jjCommit]
-	workspaceLogFlight singleflight[string, []jjCommit]
-	stateFlight        singleflight[string, apiFactoryState]
-	stateCache         *ttlCache[string, apiFactoryState]
-	stateGeneration    uint64
+	stateFlight         singleflight[string, apiFactoryState]
+	stateCache          *ttlCache[string, apiFactoryState]
+	stateGeneration     uint64
 }
 
 // NewServer creates a new Server instance with the given root directory.
@@ -311,7 +299,6 @@ func NewServerWithConfig(rootDir, editorConfig string) *Server {
 		editor:             editor,
 		workspaceScanCache: newTTLCache[string, []workspaceGroup](3 * time.Second),
 		classifyCache:      newTTLCache[string, workspaceKind](5 * time.Second),
-		bookmarkCache:      newTTLCache[string, string](30 * time.Second),
 		svgCache:           newTTLCache[string, string](10 * time.Second),
 		stateCache:         newTTLCache[string, apiFactoryState](30 * time.Second),
 	}
@@ -1082,251 +1069,6 @@ func getRootWorkspacePath(forkDir string) string {
 	return rootDir
 }
 
-type jjCommit struct {
-	ChangeID      string
-	CommitID      string
-	Workspaces    []string
-	Timestamp     string
-	Bookmarks     []string
-	Description   string
-	GraphChar     string
-	HasLine       bool
-	GraphLines    []string
-	TrailingGraph []string
-}
-
-const jjLogTemplate = `change_id.short(8) ++ " " ++ commit_id.short(8) ++ " " ++ if(working_copies, working_copies.map(|wc| wc.name()).join(" ") ++ " ", "") ++ author.timestamp().ago() ++ if(bookmarks, " " ++ bookmarks.join(" "), "") ++ "\n  " ++ coalesce(description.first_line(), "(no description)") ++ "\n"`
-
-var timestampUnits = []string{"second", "seconds", "minute", "minutes", "hour", "hours", "day", "days", "week", "weeks", "month", "months", "year", "years", "ago"}
-
-func resolveBaseBookmark(rootDir string) string {
-	for _, candidate := range []string{"main", "trunk"} {
-		cmd := exec.Command("jj", "log", "-r", candidate, "--no-graph", "-T", "change_id")
-		cmd.Dir = rootDir
-		if errRun := cmd.Run(); errRun == nil {
-			return candidate
-		}
-	}
-	return "main"
-}
-
-func (s *Server) resolveBaseBookmarkCached(rootDir string) string {
-	if bookmark, ok := s.bookmarkCache.get(rootDir); ok {
-		return bookmark
-	}
-	bookmark, _ := s.bookmarkFlight.do(rootDir, func() (string, error) {
-		if bookmark, ok := s.bookmarkCache.get(rootDir); ok {
-			return bookmark, nil
-		}
-		bookmark := resolveBaseBookmark(rootDir)
-		s.bookmarkCache.set(rootDir, bookmark)
-		return bookmark, nil
-	})
-	return bookmark
-}
-
-func runJJLogForFork(bookmark, forkDir string) []jjCommit {
-	revset := fmt.Sprintf("%s..@", bookmark)
-	cmd := exec.Command("jj", "log", "-r", revset, "-T", jjLogTemplate)
-	cmd.Dir = forkDir
-	output, errCmd := cmd.Output()
-	if errCmd != nil {
-		return nil
-	}
-	return parseJJLogOutput(string(output))
-}
-
-func (s *Server) runJJLogForForkCached(bookmark, forkDir string) []jjCommit {
-	key := bookmark + "|" + forkDir
-	commits, _ := s.forkLogFlight.do(key, func() ([]jjCommit, error) {
-		return runJJLogForFork(bookmark, forkDir), nil
-	})
-	return commits
-}
-
-func countForkCommitsAhead(bookmark, forkDir string) int {
-	revset := fmt.Sprintf("ancestors(@, 2) ~ ancestors(%s@, 2)", bookmark)
-	cmd := exec.Command("jj", "log", "-r", revset, "--no-graph", "-T", "change_id ++ \"\\n\"")
-	cmd.Dir = forkDir
-	output, errCmd := cmd.Output()
-	if errCmd != nil {
-		return 0
-	}
-	trimmed := strings.TrimSpace(string(output))
-	if trimmed == "" {
-		return 0
-	}
-	return len(strings.Split(trimmed, "\n"))
-}
-
-func (s *Server) countForkCommitsAheadCached(bookmark, forkDir string) int {
-	key := bookmark + "|" + forkDir
-	count, _ := s.forkCommitsFlight.do(key, func() (int, error) {
-		return countForkCommitsAhead(bookmark, forkDir), nil
-	})
-	return count
-}
-
-func parseJJLogOutput(output string) []jjCommit {
-	var commits []jjCommit
-	lines := linesWithTrailingEmpty(output)
-
-	var currentCommit *jjCommit
-	for i, line := range lines {
-		if line == "" {
-			continue
-		}
-
-		if isCommitHeaderLine(line) {
-			if currentCommit != nil {
-				commits = append(commits, *currentCommit)
-			}
-			currentCommit = parseCommitHeader(line)
-			currentCommit.HasLine = hasNextCommit(lines, i)
-			currentCommit.GraphLines = []string{extractGraphPrefix(line)}
-		} else if currentCommit != nil {
-			strippedContent := stripGraphPrefix(line)
-			graphPrefix := extractGraphPrefix(line)
-
-			if currentCommit.Description == "" && strippedContent != "" {
-				currentCommit.Description = strings.TrimSpace(strippedContent)
-			}
-
-			if graphPrefix != "" {
-				currentCommit.TrailingGraph = append(currentCommit.TrailingGraph, graphPrefix)
-			}
-		}
-	}
-
-	if currentCommit != nil {
-		commits = append(commits, *currentCommit)
-	}
-
-	return commits
-}
-
-func isCommitMarker(r rune) bool {
-	return r == '○' || r == '×' || r == '@' || r == '◆' || r == '~'
-}
-
-func isCommitHeaderLine(line string) bool {
-	if len(line) < 3 {
-		return false
-	}
-	for _, r := range line {
-		if isCommitMarker(r) {
-			return true
-		}
-		if !isGraphChar(r) {
-			return false
-		}
-	}
-	return false
-}
-
-func isGraphChar(r rune) bool {
-	return r == '│' || r == '├' || r == '─' || r == '┘' || r == ' '
-}
-
-func stripGraphPrefix(line string) string {
-	runes := []rune(line)
-	for i, r := range runes {
-		if !isGraphChar(r) {
-			return string(runes[i:])
-		}
-	}
-	return ""
-}
-
-func extractGraphPrefix(line string) string {
-	runes := []rune(line)
-	for i, r := range runes {
-		if !isGraphChar(r) && !isCommitMarker(r) {
-			return strings.TrimRight(string(runes[:i]), " ")
-		}
-	}
-	return strings.TrimRight(line, " ")
-}
-
-func hasNextCommit(lines []string, currentIdx int) bool {
-	return slices.ContainsFunc(lines[currentIdx+1:], isCommitHeaderLine)
-}
-
-func findCommitMarker(line string) (marker rune, restOfLine string) {
-	runes := []rune(line)
-	for i, r := range runes {
-		if isCommitMarker(r) {
-			return r, strings.TrimSpace(string(runes[i+1:]))
-		}
-	}
-	return 0, line
-}
-
-func parseCommitHeader(line string) *jjCommit {
-	commit := &jjCommit{}
-
-	marker, rest := findCommitMarker(line)
-	if marker == 0 {
-		return commit
-	}
-	commit.GraphChar = string(marker)
-
-	parts := strings.Fields(rest)
-	if len(parts) < 2 {
-		return commit
-	}
-
-	commit.ChangeID = parts[0]
-	commit.CommitID = parts[1]
-
-	remaining := parts[2:]
-
-	for i := 0; i < len(remaining); i++ {
-		part := remaining[i]
-
-		if isTimestamp(part) {
-			commit.Timestamp = part
-			for i+1 < len(remaining) && isTimestampUnit(remaining[i+1]) {
-				commit.Timestamp += " " + remaining[i+1]
-				i++
-			}
-			continue
-		}
-
-		if strings.HasSuffix(part, "*") || isBookmark(part) {
-			commit.Bookmarks = append(commit.Bookmarks, part)
-			continue
-		}
-
-		if !isTimestamp(part) && !isTimestampUnit(part) && len(commit.Workspaces) == 0 {
-			commit.Workspaces = append(commit.Workspaces, part)
-		}
-	}
-
-	return commit
-}
-
-func isTimestamp(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
-	first := s[0]
-	return first >= '0' && first <= '9'
-}
-
-func isTimestampUnit(s string) bool {
-	for _, u := range timestampUnits {
-		if strings.HasPrefix(s, u) {
-			return true
-		}
-	}
-	return false
-}
-
-func isBookmark(s string) bool {
-	return strings.Contains(s, "@") || strings.Contains(s, "/")
-}
-
 func (s *Server) workspaceCoordinator(workspacePath string) *state.Coordinator {
 	s.mu.Lock()
 	sess := s.sessions[workspacePath]
@@ -1414,6 +1156,7 @@ func resolveSymlinks(path string) string {
 }
 
 func (s *Server) loadPinnedProjects() error {
+	log.Println("pinned repositories file path:", s.pinnedFilePath())
 	data, errRead := os.ReadFile(s.pinnedFilePath())
 	if errRead != nil {
 		if os.IsNotExist(errRead) {

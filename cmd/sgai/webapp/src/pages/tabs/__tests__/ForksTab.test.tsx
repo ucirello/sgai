@@ -43,8 +43,6 @@ const createMockWorkspace = (overrides: Record<string, unknown> = {}) => ({
   messages: [],
   projectTodos: [],
   agentTodos: [],
-  changes: { description: "", diffLines: [] },
-  commits: [],
   forks: [],
   log: [],
   actions: [],
@@ -99,6 +97,36 @@ describe("ForksTab", () => {
     mockNavigate.mockClear();
     factoryState.workspaces = [createMockWorkspace()];
     factoryState.fetchStatus = "idle";
+  });
+
+  it("does not render commit preview controls for fork rows", () => {
+    factoryState.workspaces = [
+      createMockWorkspace({
+        forks: [
+          {
+            name: "workspace-1-fork-1",
+            dir: "/path/to/workspace-1-fork-1",
+            running: false,
+            needsInput: false,
+            inProgress: false,
+            pinned: false,
+            description: "Fork 1",
+          },
+        ],
+      }),
+    ];
+
+    render(
+      <MemoryRouter>
+        <TooltipProvider>
+          <ForksTab workspaceName="workspace-1" />
+        </TooltipProvider>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("Fork 1")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /expand commits/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /collapse commits/i })).toBeNull();
   });
 
   it("offers a create fork action from the empty state", async () => {

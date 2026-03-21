@@ -2,13 +2,19 @@ import { test, expect } from "@playwright/test";
 
 import { GO_WORKFLOW_GOAL } from "./fixtures/goWorkflow";
 
+const GOAL_WORKSPACE_NAME = "standalone-demo";
+
+async function openGoalWorkspace(page: Parameters<typeof test>[0]["page"]) {
+  await page.goto(`/workspaces/${GOAL_WORKSPACE_NAME}/progress`);
+  await expect(page).toHaveURL(/\/workspaces\/[^/]+(?:\/progress)?$/);
+}
+
 async function expectRenamedGoWorkflowVisible(page: Parameters<typeof test>[0]["page"]) {
   const goalSummary = page.locator("summary", { hasText: "GOAL.md" });
   await expect(goalSummary).toBeVisible();
   await goalSummary.click();
-  await expect(page.getByText("go-reviewer", { exact: false })).toBeVisible();
-  await expect(page.getByText("go-developer", { exact: false })).toHaveCount(0);
-  await expect(page.getByText("go-reviewer", { exact: false })).toHaveCount(0);
+  await expect(page.getByText("go-developer", { exact: false }).first()).toBeVisible();
+  await expect(page.getByText("go-reviewer", { exact: false }).first()).toBeVisible();
 }
 
 test.describe("Goal Management Workflow", () => {
@@ -17,12 +23,7 @@ test.describe("Goal Management Workflow", () => {
   });
 
   test("create goal → edit → run agents → view results", async ({ page }) => {
-    await page.waitForSelector("text=Workspaces", { timeout: 10000 });
-
-    const workspaceLink = page.locator("a[href^='/workspaces/']").first();
-    await workspaceLink.click();
-
-    await page.waitForURL(/\/workspaces\/[^/]+/);
+    await openGoalWorkspace(page);
 
     const editGoalButton = page.locator('button:has-text("Edit GOAL")');
     const hasEditGoal = await editGoalButton.isVisible().catch(() => false);
@@ -80,12 +81,7 @@ test.describe("Goal Management Workflow", () => {
   });
 
   test("goal editor shows workspace description", async ({ page }) => {
-    await page.waitForSelector("text=Workspaces", { timeout: 10000 });
-
-    const workspaceLink = page.locator("a[href^='/workspaces/']").first();
-    await workspaceLink.click();
-
-    await page.waitForURL(/\/workspaces\/[^/]+/);
+    await openGoalWorkspace(page);
 
     const editGoalButton = page.locator('button:has-text("Edit GOAL")');
     const hasEditGoal = await editGoalButton.isVisible().catch(() => false);
@@ -105,12 +101,7 @@ test.describe("Goal Management Workflow", () => {
   });
 
   test("goal editor keyboard shortcut saves", async ({ page }) => {
-    await page.waitForSelector("text=Workspaces", { timeout: 10000 });
-
-    const workspaceLink = page.locator("a[href^='/workspaces/']").first();
-    await workspaceLink.click();
-
-    await page.waitForURL(/\/workspaces\/[^/]+/);
+    await openGoalWorkspace(page);
 
     const editGoalButton = page.locator('button:has-text("Edit GOAL")');
     const hasEditGoal = await editGoalButton.isVisible().catch(() => false);
@@ -127,12 +118,7 @@ test.describe("Goal Management Workflow", () => {
   });
 
   test("goal editor shows loading state", async ({ page }) => {
-    await page.waitForSelector("text=Workspaces", { timeout: 10000 });
-
-    const workspaceLink = page.locator("a[href^='/workspaces/']").first();
-    await workspaceLink.click();
-
-    await page.waitForURL(/\/workspaces\/[^/]+/);
+    await openGoalWorkspace(page);
 
     const editGoalButton = page.locator('button:has-text("Edit GOAL")');
     const hasEditGoal = await editGoalButton.isVisible().catch(() => false);
@@ -145,12 +131,7 @@ test.describe("Goal Management Workflow", () => {
   });
 
   test("goal editor autocomplete for agents", async ({ page }) => {
-    await page.waitForSelector("text=Workspaces", { timeout: 10000 });
-
-    const workspaceLink = page.locator("a[href^='/workspaces/']").first();
-    await workspaceLink.click();
-
-    await page.waitForURL(/\/workspaces\/[^/]+/);
+    await openGoalWorkspace(page);
 
     const editGoalButton = page.locator('button:has-text("Edit GOAL")');
     const hasEditGoal = await editGoalButton.isVisible().catch(() => false);
@@ -176,12 +157,7 @@ test.describe("Goal Management Workflow", () => {
   });
 
   test("goal editor preview mode", async ({ page }) => {
-    await page.waitForSelector("text=Workspaces", { timeout: 10000 });
-
-    const workspaceLink = page.locator("a[href^='/workspaces/']").first();
-    await workspaceLink.click();
-
-    await page.waitForURL(/\/workspaces\/[^/]+/);
+    await openGoalWorkspace(page);
 
     const editGoalButton = page.locator('button:has-text("Edit GOAL")');
     const hasEditGoal = await editGoalButton.isVisible().catch(() => false);
@@ -208,12 +184,7 @@ test.describe("Goal Management Workflow", () => {
   });
 
   test("goal editor write mode", async ({ page }) => {
-    await page.waitForSelector("text=Workspaces", { timeout: 10000 });
-
-    const workspaceLink = page.locator("a[href^='/workspaces/']").first();
-    await workspaceLink.click();
-
-    await page.waitForURL(/\/workspaces\/[^/]+/);
+    await openGoalWorkspace(page);
 
     const editGoalButton = page.locator('button:has-text("Edit GOAL")');
     const hasEditGoal = await editGoalButton.isVisible().catch(() => false);
@@ -233,12 +204,7 @@ test.describe("Goal Management Workflow", () => {
   });
 
   test("goal editor toolbar actions", async ({ page }) => {
-    await page.waitForSelector("text=Workspaces", { timeout: 10000 });
-
-    const workspaceLink = page.locator("a[href^='/workspaces/']").first();
-    await workspaceLink.click();
-
-    await page.waitForURL(/\/workspaces\/[^/]+/);
+    await openGoalWorkspace(page);
 
     const editGoalButton = page.locator('button:has-text("Edit GOAL")');
     const hasEditGoal = await editGoalButton.isVisible().catch(() => false);
@@ -263,12 +229,7 @@ test.describe("Goal Management Workflow", () => {
   });
 
   test("compose goal from scratch", async ({ page }) => {
-    await page.waitForSelector("text=Workspaces", { timeout: 10000 });
-
-    const workspaceLink = page.locator("a[href^='/workspaces/']").first();
-    await workspaceLink.click();
-
-    await page.waitForURL(/\/workspaces\/[^/]+/);
+    await openGoalWorkspace(page);
 
     const composeButton = page.locator('button:has-text("Compose GOAL")');
     const hasCompose = await composeButton.isVisible().catch(() => false);
@@ -283,12 +244,7 @@ test.describe("Goal Management Workflow", () => {
   });
 
   test("goal content displays in progress tab", async ({ page }) => {
-    await page.waitForSelector("text=Workspaces", { timeout: 10000 });
-
-    const workspaceLink = page.locator("a[href^='/workspaces/']").first();
-    await workspaceLink.click();
-
-    await page.waitForURL(/\/workspaces\/[^/]+/);
+    await openGoalWorkspace(page);
 
     const progressTab = page.locator('a[href$="/progress"]');
     const hasProgressTab = await progressTab.isVisible().catch(() => false);
@@ -301,12 +257,7 @@ test.describe("Goal Management Workflow", () => {
   });
 
   test("goal validation prevents empty save", async ({ page }) => {
-    await page.waitForSelector("text=Workspaces", { timeout: 10000 });
-
-    const workspaceLink = page.locator("a[href^='/workspaces/']").first();
-    await workspaceLink.click();
-
-    await page.waitForURL(/\/workspaces\/[^/]+/);
+    await openGoalWorkspace(page);
 
     const editGoalButton = page.locator('button:has-text("Edit GOAL")');
     const hasEditGoal = await editGoalButton.isVisible().catch(() => false);
