@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"os"
 	"os/exec"
@@ -24,6 +25,7 @@ func (s *Server) externalFilePath() string {
 }
 
 func (s *Server) loadExternalDirs() error {
+	log.Println("attached directories path", s.externalFilePath())
 	data, errRead := os.ReadFile(s.externalFilePath())
 	if errRead != nil {
 		if os.IsNotExist(errRead) {
@@ -227,6 +229,10 @@ type directoryEntry struct {
 }
 
 func browseDirectoriesService(path string) ([]directoryEntry, error) {
+	if path != "" && !filepath.IsAbs(path) {
+		return nil, errPathNotAbsolute
+	}
+
 	if path == "" {
 		home, errHome := os.UserHomeDir()
 		if errHome != nil {

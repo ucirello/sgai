@@ -100,7 +100,6 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/workspaces/{name}/open-editor", s.handleAPIOpenEditor)
 	mux.HandleFunc("POST /api/v1/workspaces/{name}/open-editor/goal", s.handleAPIOpenEditorGoal)
 	mux.HandleFunc("POST /api/v1/workspaces/{name}/open-editor/project-management", s.handleAPIOpenEditorProjectManagement)
-	mux.HandleFunc("GET /api/v1/workspaces/{name}/diff", s.handleAPIWorkspaceDiff)
 	mux.HandleFunc("GET /api/v1/models", s.handleAPIListModels)
 	mux.HandleFunc("GET /api/v1/compose", s.handleAPIComposeState)
 	mux.HandleFunc("POST /api/v1/compose", s.handleAPIComposeSave)
@@ -187,8 +186,6 @@ type apiWorkspaceFullState struct {
 	Messages        []apiMessageEntry           `json:"messages"`
 	ProjectTodos    []apiTodoEntry              `json:"projectTodos"`
 	AgentTodos      []apiTodoEntry              `json:"agentTodos"`
-	Changes         apiChangesResponse          `json:"changes"`
-	Commits         []apiCommitEntry            `json:"commits"`
 	Forks           []apiForkEntry              `json:"forks,omitempty"`
 	Log             []apiLogEntry               `json:"log"`
 	PendingQuestion *apiPendingQuestionResponse `json:"pendingQuestion,omitempty"`
@@ -319,20 +316,6 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 		}
 	}
 
-	var changesResult jjChangesResult
-	if hasJJRepo(ws.Directory) {
-		changesResult = s.collectJJChangesCached(ws.Directory)
-	}
-	changes := apiChangesResponse{
-		Description: changesResult.description,
-		DiffLines:   changesResult.diffLines,
-	}
-
-	var commits []apiCommitEntry
-	if hasJJRepo(ws.Directory) {
-		commits = buildCommitEntries(s.filteredCommitsForWorkspace(ws.Directory))
-	}
-
 	var pendingQuestion *apiPendingQuestionResponse
 	if wfState.NeedsHumanInput() {
 		agentName := currentAgent
@@ -399,8 +382,6 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 		Messages:        messages,
 		ProjectTodos:    convertTodosForAPI(wfState.ProjectTodos),
 		AgentTodos:      convertTodosForAPI(wfState.Todos),
-		Changes:         changes,
-		Commits:         commits,
 		Log:             logLines,
 		PendingQuestion: pendingQuestion,
 		Actions:         loadActionsForAPI(ws.Directory),
@@ -412,34 +393,15 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 
 	return full
 }
-
-func buildCommitEntries(commits []jjCommit) []apiCommitEntry {
-	entries := make([]apiCommitEntry, 0, len(commits))
-	for _, c := range commits {
-		entries = append(entries, apiCommitEntry{
-			ChangeID:    c.ChangeID,
-			CommitID:    c.CommitID,
-			Workspaces:  c.Workspaces,
-			Timestamp:   c.Timestamp,
-			Bookmarks:   c.Bookmarks,
-			Description: c.Description,
-			GraphChar:   c.GraphChar,
-		})
-	}
-	return entries
-}
-
 func (s *Server) collectForksForAPIFromGroups(rootDir string, groups []workspaceGroup) []apiForkEntry {
 	for _, grp := range groups {
 		if grp.Root.Directory != rootDir {
 			continue
 		}
-		bookmark := s.resolveBaseBookmarkCached(rootDir)
 		forks := make([]apiForkEntry, len(grp.Forks))
 		var wg sync.WaitGroup
 		for i, fork := range grp.Forks {
 			wg.Go(func() {
-				commits := convertJJCommitsForAPI(s.runJJLogForForkCached(bookmark, fork.Directory))
 				wfState := s.loadWorkspaceState(fork.Directory)
 				description := fork.DirName
 				if goalData, errGoal := os.ReadFile(filepath.Join(fork.Directory, "GOAL.md")); errGoal == nil {
@@ -454,8 +416,6 @@ func (s *Server) collectForksForAPIFromGroups(rootDir string, groups []workspace
 					NeedsInput:  wfState.NeedsHumanInput(),
 					InProgress:  fork.InProgress,
 					Pinned:      fork.Pinned,
-					CommitAhead: s.countForkCommitsAheadCached(bookmark, fork.Directory),
-					Commits:     commits,
 					Description: description,
 				}
 			})
@@ -1009,84 +969,6 @@ type apiLogEntry struct {
 	Text   string `json:"text"`
 }
 
-type apiChangesResponse struct {
-	Description string        `json:"description"`
-	DiffLines   []apiDiffLine `json:"diffLines"`
-}
-
-type apiDiffLine struct {
-	LineNumber int    `json:"lineNumber"`
-	Text       string `json:"text"`
-	Class      string `json:"class"`
-}
-
-func (s *Server) collectJJChangesCached(dir string) jjChangesResult {
-	result, _ := s.jjChangesFlight.do(dir, func() (jjChangesResult, error) {
-		diffLines, description := collectJJChanges(dir)
-		return jjChangesResult{diffLines: diffLines, description: description}, nil
-	})
-	return result
-}
-
-func collectJJChanges(dir string) ([]apiDiffLine, string) {
-	statCmd := exec.Command("jj", "diff", "--from", "default@", "--stat")
-	statCmd.Dir = dir
-	rawStat, errStat := statCmd.Output()
-	if errStat != nil {
-		return nil, ""
-	}
-
-	descCmd := exec.Command("jj", "log", "--no-graph", "-T", "description", "-r", "@")
-	descCmd.Dir = dir
-	rawDesc, errDesc := descCmd.Output()
-	if errDesc != nil {
-		rawDesc = nil
-	}
-
-	var diffLines []apiDiffLine
-	for line := range strings.SplitSeq(string(rawStat), "\n") {
-		if line == "" && len(diffLines) == 0 {
-			continue
-		}
-		diffLines = append(diffLines, apiDiffLine{
-			LineNumber: len(diffLines) + 1,
-			Text:       line,
-			Class:      "diff-stat-line",
-		})
-	}
-
-	return diffLines, strings.TrimSpace(string(rawDesc))
-}
-
-func collectJJFullDiff(dir string) string {
-	diffCmd := exec.Command("jj", "diff", "--from", "default@", "--git")
-	diffCmd.Dir = dir
-	rawDiff, errDiff := diffCmd.Output()
-	if errDiff != nil {
-		return ""
-	}
-	return string(rawDiff)
-}
-
-type apiFullDiffResponse struct {
-	Diff string `json:"diff"`
-}
-
-func (s *Server) handleAPIWorkspaceDiff(w http.ResponseWriter, r *http.Request) {
-	workspacePath, ok := s.resolveWorkspaceFromPath(w, r)
-	if !ok {
-		return
-	}
-
-	if !hasJJRepo(workspacePath) {
-		writeJSON(w, apiFullDiffResponse{})
-		return
-	}
-
-	diff := collectJJFullDiff(workspacePath)
-	writeJSON(w, apiFullDiffResponse{Diff: diff})
-}
-
 type apiEventEntry struct {
 	Timestamp       string `json:"timestamp"`
 	FormattedTime   string `json:"formattedTime"`
@@ -1109,38 +991,14 @@ func convertEventsForAPI(displays []eventsProgressDisplay) []apiEventEntry {
 	return result
 }
 
-type apiForkCommit struct {
-	ChangeID    string   `json:"changeId"`
-	CommitID    string   `json:"commitId"`
-	Timestamp   string   `json:"timestamp"`
-	Bookmarks   []string `json:"bookmarks,omitempty"`
-	Description string   `json:"description"`
-}
-
 type apiForkEntry struct {
-	Name        string          `json:"name"`
-	Dir         string          `json:"dir"`
-	Running     bool            `json:"running"`
-	NeedsInput  bool            `json:"needsInput"`
-	InProgress  bool            `json:"inProgress"`
-	Pinned      bool            `json:"pinned"`
-	CommitAhead int             `json:"commitAhead"`
-	Commits     []apiForkCommit `json:"commits"`
-	Description string          `json:"description"`
-}
-
-func convertJJCommitsForAPI(commits []jjCommit) []apiForkCommit {
-	result := make([]apiForkCommit, 0, len(commits))
-	for _, c := range commits {
-		result = append(result, apiForkCommit{
-			ChangeID:    c.ChangeID,
-			CommitID:    c.CommitID,
-			Timestamp:   c.Timestamp,
-			Bookmarks:   c.Bookmarks,
-			Description: c.Description,
-		})
-	}
-	return result
+	Name        string `json:"name"`
+	Dir         string `json:"dir"`
+	Running     bool   `json:"running"`
+	NeedsInput  bool   `json:"needsInput"`
+	InProgress  bool   `json:"inProgress"`
+	Pinned      bool   `json:"pinned"`
+	Description string `json:"description"`
 }
 
 func generateQuestionID(wfState state.Workflow) string {
@@ -2139,75 +1997,6 @@ func (s *Server) handleAPIWorkflowSVG(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	if _, errWrite := w.Write([]byte(svg)); errWrite != nil {
 		log.Println("failed to write workflow SVG:", errWrite)
-	}
-}
-
-type apiCommitEntry struct {
-	ChangeID    string   `json:"changeId"`
-	CommitID    string   `json:"commitId"`
-	Workspaces  []string `json:"workspaces,omitempty"`
-	Timestamp   string   `json:"timestamp"`
-	Bookmarks   []string `json:"bookmarks,omitempty"`
-	Description string   `json:"description"`
-	GraphChar   string   `json:"graphChar"`
-}
-
-func runJJLogForWorkspace(dir string) []jjCommit {
-	cmd := exec.Command("jj", "log", "-n", "50", "-T", jjLogTemplate)
-	cmd.Dir = dir
-	output, errCmd := cmd.Output()
-	if errCmd != nil {
-		return nil
-	}
-	return parseJJLogOutput(string(output))
-}
-
-func (s *Server) runJJLogForWorkspaceCached(dir string) []jjCommit {
-	commits, _ := s.workspaceLogFlight.do(dir, func() ([]jjCommit, error) {
-		return runJJLogForWorkspace(dir), nil
-	})
-	return commits
-}
-
-func runJJLogForStandalone(dir string) []jjCommit {
-	cmd := exec.Command("jj", "log", "-r", "remote_bookmarks()..@", "-T", jjLogTemplate)
-	cmd.Dir = dir
-	output, errCmd := cmd.Output()
-	if errCmd != nil {
-		return nil
-	}
-	return parseJJLogOutput(string(output))
-}
-
-func (s *Server) runJJLogForStandaloneCached(dir string) []jjCommit {
-	key := "standalone|" + dir
-	commits, _ := s.workspaceLogFlight.do(key, func() ([]jjCommit, error) {
-		return runJJLogForStandalone(dir), nil
-	})
-	return commits
-}
-
-func (s *Server) filteredCommitsForWorkspace(workspacePath string) []jjCommit {
-	switch s.classifyWorkspaceCached(workspacePath) {
-	case workspaceStandalone:
-		commits := s.runJJLogForStandaloneCached(workspacePath)
-		if len(commits) > 0 {
-			return commits
-		}
-		return s.runJJLogForWorkspaceCached(workspacePath)
-	case workspaceFork:
-		rootDir := resolveSymlinks(getRootWorkspacePath(workspacePath))
-		if rootDir == "" {
-			return s.runJJLogForWorkspaceCached(workspacePath)
-		}
-		bookmark := s.resolveBaseBookmarkCached(rootDir)
-		commits := s.runJJLogForForkCached(bookmark, workspacePath)
-		if len(commits) > 0 {
-			return commits
-		}
-		return s.runJJLogForWorkspaceCached(workspacePath)
-	default:
-		return s.runJJLogForWorkspaceCached(workspacePath)
 	}
 }
 

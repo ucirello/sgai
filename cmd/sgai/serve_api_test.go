@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -386,142 +387,6 @@ func TestBuildAPIResponseText(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
-}
-
-func TestBuildCommitEntries(t *testing.T) {
-	tests := []struct {
-		name     string
-		commits  []jjCommit
-		expected []apiCommitEntry
-	}{
-		{
-			name:     "emptyCommits",
-			commits:  []jjCommit{},
-			expected: []apiCommitEntry{},
-		},
-		{
-			name: "singleCommit",
-			commits: []jjCommit{
-				{
-					ChangeID:    "abc123",
-					CommitID:    "def456",
-					Workspaces:  []string{"ws1"},
-					Timestamp:   "2 hours ago",
-					Bookmarks:   []string{"main"},
-					Description: "Test commit",
-					GraphChar:   "@",
-				},
-			},
-			expected: []apiCommitEntry{
-				{
-					ChangeID:    "abc123",
-					CommitID:    "def456",
-					Workspaces:  []string{"ws1"},
-					Timestamp:   "2 hours ago",
-					Bookmarks:   []string{"main"},
-					Description: "Test commit",
-					GraphChar:   "@",
-				},
-			},
-		},
-		{
-			name: "multipleCommits",
-			commits: []jjCommit{
-				{
-					ChangeID:    "abc123",
-					CommitID:    "def456",
-					Workspaces:  []string{"ws1"},
-					Timestamp:   "2 hours ago",
-					Bookmarks:   []string{"main"},
-					Description: "First commit",
-					GraphChar:   "@",
-				},
-				{
-					ChangeID:    "xyz789",
-					CommitID:    "uvw012",
-					Workspaces:  []string{"ws2"},
-					Timestamp:   "1 day ago",
-					Bookmarks:   []string{"feature"},
-					Description: "Second commit",
-					GraphChar:   "o",
-				},
-			},
-			expected: []apiCommitEntry{
-				{
-					ChangeID:    "abc123",
-					CommitID:    "def456",
-					Workspaces:  []string{"ws1"},
-					Timestamp:   "2 hours ago",
-					Bookmarks:   []string{"main"},
-					Description: "First commit",
-					GraphChar:   "@",
-				},
-				{
-					ChangeID:    "xyz789",
-					CommitID:    "uvw012",
-					Workspaces:  []string{"ws2"},
-					Timestamp:   "1 day ago",
-					Bookmarks:   []string{"feature"},
-					Description: "Second commit",
-					GraphChar:   "o",
-				},
-			},
-		},
-		{
-			name: "commitWithEmptyFields",
-			commits: []jjCommit{
-				{
-					ChangeID:    "abc123",
-					CommitID:    "def456",
-					Workspaces:  []string{},
-					Timestamp:   "1 hour ago",
-					Bookmarks:   []string{},
-					Description: "",
-					GraphChar:   "@",
-				},
-			},
-			expected: []apiCommitEntry{
-				{
-					ChangeID:    "abc123",
-					CommitID:    "def456",
-					Workspaces:  []string{},
-					Timestamp:   "1 hour ago",
-					Bookmarks:   []string{},
-					Description: "",
-					GraphChar:   "@",
-				},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := buildCommitEntries(tt.commits)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
-func TestConvertJJCommitsForAPI(t *testing.T) {
-	t.Run("empty", func(t *testing.T) {
-		result := convertJJCommitsForAPI(nil)
-		assert.Empty(t, result)
-	})
-
-	t.Run("withCommits", func(t *testing.T) {
-		commits := []jjCommit{
-			{ChangeID: "abc123", CommitID: "def456", Timestamp: "2025-01-01", Bookmarks: []string{"main"}, Description: "initial"},
-			{ChangeID: "xyz789", CommitID: "qrs012", Timestamp: "2025-01-02", Description: "update"},
-		}
-
-		result := convertJJCommitsForAPI(commits)
-		assert.Len(t, result, 2)
-		assert.Equal(t, "abc123", result[0].ChangeID)
-		assert.Equal(t, "def456", result[0].CommitID)
-		assert.Equal(t, []string{"main"}, result[0].Bookmarks)
-		assert.Equal(t, "initial", result[0].Description)
-		assert.Equal(t, "xyz789", result[1].ChangeID)
-	})
 }
 
 func TestConvertEventsForAPIBoost(t *testing.T) {
@@ -1071,26 +936,6 @@ func TestReadNewestForkGoalAllEmptyContent(t *testing.T) {
 	}
 	result := readNewestForkGoal(forks)
 	assert.Empty(t, result)
-}
-
-func TestCollectJJChangesNoJJInstalled(t *testing.T) {
-	dir := t.TempDir()
-	lines, desc := collectJJChanges(dir)
-	assert.Nil(t, lines)
-	assert.Empty(t, desc)
-}
-
-func TestCollectJJFullDiffNoJJInstalled(t *testing.T) {
-	dir := t.TempDir()
-	result := collectJJFullDiff(dir)
-	assert.Empty(t, result)
-}
-
-func TestCollectJJChangesCachedResult(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "changes-ws")
-	result := srv.collectJJChangesCached(wsDir)
-	_ = result
 }
 
 func TestResolveForkDirExplicitPath(t *testing.T) {
@@ -1793,16 +1638,6 @@ func TestHandleAPIWorkflowSVG(t *testing.T) {
 	})
 }
 
-func TestHandleAPIWorkspaceDiff(t *testing.T) {
-	t.Run("noJJRepo", func(t *testing.T) {
-		server, rootDir := setupTestServer(t)
-		setupTestWorkspace(t, rootDir, "test-ws")
-
-		w := serveHTTP(server, "GET", "/api/v1/workspaces/test-ws/diff", "")
-		assert.Equal(t, http.StatusOK, w.Code)
-	})
-}
-
 func TestHandleAPIForkTemplate(t *testing.T) {
 	t.Run("missingWorkspace", func(t *testing.T) {
 		server, _ := setupTestServer(t)
@@ -2148,12 +1983,6 @@ func TestHandleAPISteerMissingWorkspace(t *testing.T) {
 func TestHandleAPITogglePinMissingWorkspace(t *testing.T) {
 	server, _ := setupTestServer(t)
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/nonexistent/pin", "")
-	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
-func TestHandleAPIWorkspaceDiffMissingWorkspace(t *testing.T) {
-	server, _ := setupTestServer(t)
-	w := serveHTTP(server, "GET", "/api/v1/workspaces/nonexistent/diff", "")
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
@@ -2506,14 +2335,6 @@ func TestHandleAPIUpdateGoalValid(t *testing.T) {
 	assert.Equal(t, 200, w.Code)
 }
 
-func TestHandleAPIWorkspaceDiffValid(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws-diff")
-
-	w := serveHTTP(server, "GET", "/api/v1/workspaces/test-ws-diff/diff", "")
-	assert.Equal(t, 200, w.Code)
-}
-
 func TestHandleAPIOpenEditorGoalViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "editgoal-ws")
@@ -2835,13 +2656,6 @@ func TestHandleAPIDiffWorkspaceNotFound(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	w := serveHTTP(srv, "GET", "/api/v1/workspaces/nonexistent-diff/diff", "")
 	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
-func TestHandleAPIDiffNoJJRepo(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "diff-nojj")
-	w := serveHTTP(srv, "GET", "/api/v1/workspaces/diff-nojj/diff", "")
-	assert.NotEqual(t, http.StatusNotFound, w.Code)
 }
 
 func TestHandleAPIForkTemplateStandaloneViaHTTP(t *testing.T) {
@@ -4019,13 +3833,6 @@ func TestHandleAPIWorkflowSVGNotAvailableError(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
-func TestHandleAPIWorkspaceDiffFound(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "diff-found")
-	w := serveHTTP(srv, "GET", "/api/v1/workspaces/diff-found/diff", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
 func TestResolveCurrentModel(t *testing.T) {
 	t.Run("fromState", func(t *testing.T) {
 		wfState := state.Workflow{CurrentModel: "claude-opus-4"}
@@ -4609,11 +4416,6 @@ func TestLockedWriterPlainText(t *testing.T) {
 	assert.Equal(t, "plain text", output)
 }
 
-func TestCollectJJFullDiff(t *testing.T) {
-	result := collectJJFullDiff("/nonexistent/path/12345")
-	assert.Empty(t, result)
-}
-
 func TestGoalDescription(t *testing.T) {
 	t.Run("emptyDirectory", func(t *testing.T) {
 		got := goalDescription("", "fallback")
@@ -4659,11 +4461,6 @@ func TestResolveForkTemplateContent(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	content := srv.resolveForkTemplateContent("/nonexistent/root")
 	assert.Equal(t, goalExampleContent, content)
-}
-
-func TestCountForkCommitsAhead(t *testing.T) {
-	got := countForkCommitsAhead("main", "/nonexistent/12345")
-	assert.Equal(t, 0, got)
 }
 
 var _ fs.FS = fstest.MapFS{}
@@ -4777,16 +4574,12 @@ func TestListModelsServiceFallback(t *testing.T) {
 	assert.NotNil(t, result.Models)
 }
 
-func TestHandleAPIWorkspaceDiffNoJJ(t *testing.T) {
+func TestHandleAPIWorkspaceDiffRouteRemoved(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "no-jj-ws")
+	setupTestWorkspace(t, rootDir, "no-jj-ws")
 
 	w := serveHTTP(srv, "GET", "/api/v1/workspaces/no-jj-ws/diff", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-	var resp apiFullDiffResponse
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	_ = wsDir
-	assert.Empty(t, resp.Diff)
+	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
 func TestHandleAPISteerViaHTTP(t *testing.T) {
@@ -5191,13 +4984,6 @@ func TestHandleAPIDeleteMessageNumericNotFound(t *testing.T) {
 	assert.Contains(t, []int{http.StatusOK, http.StatusNotFound, http.StatusInternalServerError}, w.Code)
 }
 
-func TestCollectJJChangesNonRepo(t *testing.T) {
-	dir := t.TempDir()
-	lines, summary := collectJJChanges(dir)
-	assert.Nil(t, lines)
-	assert.Empty(t, summary)
-}
-
 func TestResolveWorkspaceFromPathNotFound(t *testing.T) {
 	server, _ := setupTestServer(t)
 	w := serveHTTP(server, "GET", "/api/v1/workspaces/nonexistent-ws/goal", "")
@@ -5222,13 +5008,6 @@ func TestSpaMiddleware(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	assert.Contains(t, []int{http.StatusOK, http.StatusNotFound}, w.Code)
-}
-
-func TestFilteredCommitsForWorkspaceNonRepo(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
-	result := server.filteredCommitsForWorkspace(wsDir)
-	assert.Empty(t, result)
 }
 
 func TestResolveRootForDeleteFork(t *testing.T) {
@@ -5595,30 +5374,72 @@ func TestHandleAPIListModelsNoWorkspace(t *testing.T) {
 	assert.Contains(t, []int{http.StatusOK, http.StatusNotFound}, w.Code)
 }
 
-func TestCollectForksForAPIFromGroupsWithMatchingRootNew(t *testing.T) {
+func TestHandleAPIStateOmitsForkCommitFields(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-
 	rootWSDir := filepath.Join(rootDir, "root-ws")
-	require.NoError(t, os.MkdirAll(filepath.Join(rootWSDir, ".jj", "repo"), 0755))
-	require.NoError(t, os.MkdirAll(filepath.Join(rootWSDir, ".sgai"), 0755))
-
 	forkDir := filepath.Join(rootDir, "fork-ws")
-	require.NoError(t, os.MkdirAll(filepath.Join(forkDir, ".jj"), 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(forkDir, ".jj", "repo"), []byte(filepath.Join(rootWSDir, ".jj", "repo")), 0644))
-	require.NoError(t, os.MkdirAll(filepath.Join(forkDir, ".sgai"), 0755))
 
-	groups := []workspaceGroup{
-		{
-			Root: workspaceInfo{Directory: rootWSDir, DirName: "root-ws"},
-			Forks: []workspaceInfo{
-				{Directory: forkDir, DirName: "fork-ws"},
-			},
-		},
+	require.NoError(t, os.MkdirAll(rootWSDir, 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(rootWSDir, ".sgai"), 0o755))
+
+	runJJ := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("jj", args...)
+		cmd.Dir = dir
+		output, errCmd := cmd.CombinedOutput()
+		require.NoErrorf(t, errCmd, "jj %s: %s", strings.Join(args, " "), output)
 	}
 
-	forks := server.collectForksForAPIFromGroups(rootWSDir, groups)
-	assert.Len(t, forks, 1)
-	assert.Equal(t, "fork-ws", forks[0].Name)
+	runJJ(rootWSDir, "git", "init", ".")
+	require.NoError(t, os.WriteFile(filepath.Join(rootWSDir, "README.md"), []byte("root\n"), 0o644))
+	runJJ(rootWSDir, "commit", "-m", "initial")
+	runJJ(rootWSDir, "bookmark", "create", "main", "-r", "@-")
+	runJJ(rootWSDir, "workspace", "add", forkDir)
+	require.NoError(t, os.MkdirAll(filepath.Join(forkDir, ".sgai"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(forkDir, "README.md"), []byte("root\nfork\n"), 0o644))
+	runJJ(forkDir, "commit", "-m", "fork change")
+
+	rootCanonical := resolveSymlinks(rootWSDir)
+	forkCanonical := resolveSymlinks(forkDir)
+	server.mu.Lock()
+	server.externalDirs[rootCanonical] = true
+	server.externalDirs[forkCanonical] = true
+	server.mu.Unlock()
+	server.invalidateWorkspaceScanCache()
+
+	w := serveHTTP(server, "GET", "/api/v1/state", "")
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+
+	workspaces, ok := resp["workspaces"].([]any)
+	require.True(t, ok)
+
+	var rootWorkspace map[string]any
+	for _, entry := range workspaces {
+		workspace, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		if workspace["name"] == "root-ws" {
+			rootWorkspace = workspace
+			break
+		}
+	}
+	require.NotNil(t, rootWorkspace)
+
+	forks, ok := rootWorkspace["forks"].([]any)
+	require.True(t, ok)
+	require.Len(t, forks, 1)
+
+	fork, ok := forks[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "fork-ws", fork["name"])
+	_, hasCommitAhead := fork["commitAhead"]
+	_, hasCommits := fork["commits"]
+	assert.False(t, hasCommitAhead)
+	assert.False(t, hasCommits)
 }
 
 func TestHandleAPIOpenEditorNoEditorNew(t *testing.T) {
@@ -5671,23 +5492,17 @@ func TestResolveForkTemplateContentNoForks(t *testing.T) {
 	assert.NotEmpty(t, content)
 }
 
-func TestCollectJJChangesNoJJRepo(t *testing.T) {
-	dir := t.TempDir()
-	lines, desc := collectJJChanges(dir)
-	assert.Nil(t, lines)
-	assert.Empty(t, desc)
-}
-
-func TestCollectJJFullDiffNoJJRepo(t *testing.T) {
-	dir := t.TempDir()
-	diff := collectJJFullDiff(dir)
-	assert.Empty(t, diff)
-}
-
 func TestHandleAPIBrowseDirectoriesNonexistentPath(t *testing.T) {
 	server, _ := setupTestServer(t)
 	w := serveHTTP(server, "GET", "/api/v1/browse-directories?path=/nonexistent/path", "")
 	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleAPIBrowseDirectoriesRelativePath(t *testing.T) {
+	server, _ := setupTestServer(t)
+	w := serveHTTP(server, "GET", "/api/v1/browse-directories?path=.", "")
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "path must be absolute")
 }
 
 func TestHandleAPIAdhocStatusState(t *testing.T) {
@@ -6281,13 +6096,6 @@ func TestHandleAPIStopSessionRunning(t *testing.T) {
 	server.sessions[wsDir] = &session{running: true}
 	server.mu.Unlock()
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/stop-session-ws/stop", `{}`)
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestHandleAPIWorkspaceDiffForWorkspace(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "diff-ws")
-	w := serveHTTP(server, "GET", "/api/v1/workspaces/diff-ws/diff", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 

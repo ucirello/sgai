@@ -12,12 +12,44 @@ import { cn } from "@/lib/utils";
 import type { ApiBrowseDirectoryEntry } from "@/types";
 
 const DEBOUNCE_MS = 300;
+const ABSOLUTE_BROWSE_PATH_MESSAGE = "Enter an absolute path to browse directories.";
+
+function isObviouslyAbsolutePath(path: string) {
+  return path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\");
+}
+
+function getPathValidationState(path: string) {
+  const trimmedPath = path.trim();
+  if (!trimmedPath) {
+    return { trimmedPath, validationMessage: null };
+  }
+
+  if (isObviouslyAbsolutePath(trimmedPath)) {
+    return { trimmedPath, validationMessage: null };
+  }
+
+  return {
+    trimmedPath,
+    validationMessage: ABSOLUTE_BROWSE_PATH_MESSAGE,
+  };
+}
+
+function getBrowseErrorMessage(error: unknown) {
+  if (error instanceof ApiError) {
+    return error.message;
+  }
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+  return "Failed to browse directories";
+}
 
 export function AttachExternal() {
   const navigate = useNavigate();
   const [path, setPath] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [browseError, setBrowseError] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<ApiBrowseDirectoryEntry[]>([]);
   const [isFetchingSuggestions, setIsFetchingSuggestions] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -26,36 +58,53 @@ export function AttachExternal() {
   const latestSuggestionsRequestRef = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const suggestionsRef = useRef<HTMLDivElement>(null);
+  const pathValidation = getPathValidationState(path);
+  const displayedBrowseError = pathValidation.validationMessage ?? browseError;
+  const canSubmit =
+    !isSubmitting && Boolean(pathValidation.trimmedPath) && !pathValidation.validationMessage;
 
   const fetchSuggestions = useCallback(async (currentPath: string) => {
-    const trimmedPath = currentPath.trim();
+    const validation = getPathValidationState(currentPath);
     latestSuggestionsRequestRef.current += 1;
     const requestId = latestSuggestionsRequestRef.current;
 
-    if (!trimmedPath) {
+    if (!validation.trimmedPath) {
       setSuggestions([]);
       setShowSuggestions(false);
       setActiveIndex(-1);
+      setBrowseError(null);
+      setIsFetchingSuggestions(false);
+      return;
+    }
+
+    if (validation.validationMessage) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      setActiveIndex(-1);
+      setBrowseError(null);
       setIsFetchingSuggestions(false);
       return;
     }
 
     setIsFetchingSuggestions(true);
+    setBrowseError(null);
     try {
-      const result = await api.browse.directories(trimmedPath);
+      const result = await api.browse.directories(validation.trimmedPath);
       if (requestId !== latestSuggestionsRequestRef.current) {
         return;
       }
       setSuggestions(result.entries ?? []);
       setShowSuggestions((result.entries ?? []).length > 0);
       setActiveIndex(-1);
-    } catch {
+      setBrowseError(null);
+    } catch (err) {
       if (requestId !== latestSuggestionsRequestRef.current) {
         return;
       }
       setSuggestions([]);
       setShowSuggestions(false);
       setActiveIndex(-1);
+      setBrowseError(getBrowseErrorMessage(err));
     } finally {
       if (requestId === latestSuggestionsRequestRef.current) {
         setIsFetchingSuggestions(false);
@@ -83,7 +132,13 @@ export function AttachExternal() {
     setSuggestions([]);
     setShowSuggestions(false);
     setActiveIndex(-1);
+    setBrowseError(null);
     inputRef.current?.focus();
+  }, []);
+
+  const handlePathChange = useCallback((nextPath: string) => {
+    setPath(nextPath);
+    setBrowseError(null);
   }, []);
 
   const handleKeyDown = useCallback(
@@ -110,16 +165,17 @@ export function AttachExternal() {
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
-      const trimmed = path.trim();
-      if (!trimmed || isSubmitting) return;
+      const validation = getPathValidationState(path);
+      if (!validation.trimmedPath || validation.validationMessage || isSubmitting) return;
 
       setIsSubmitting(true);
       setError(null);
+      setBrowseError(null);
       setSuggestions([]);
       setShowSuggestions(false);
 
       try {
-        const result = await api.workspaces.attach(trimmed);
+        const result = await api.workspaces.attach(validation.trimmedPath);
         triggerFactoryRefresh();
         if (result.hasGoal) {
           navigate(`/workspaces/${encodeURIComponent(result.name)}/goal/edit`);
@@ -152,6 +208,10 @@ export function AttachExternal() {
     }
   }, [suggestions.length]);
 
+  const inputDescribedBy = displayedBrowseError
+    ? "workspace-path-help workspace-path-browse-error"
+    : "workspace-path-help";
+
   return (
     <div className="max-w-lg mx-auto py-8">
       <Link
@@ -163,15 +223,6 @@ export function AttachExternal() {
       </Link>
 
       <h1 className="text-2xl font-semibold mb-2">Attach External Repository</h1>
-      <p className="text-sm text-muted-foreground mb-4">
-        SGAI now accepts repositories only through this external attachment flow.
-      </p>
-
-      <Alert className="mb-6">
-        <AlertDescription>
-          Paste an absolute path to an existing checkout on disk. Local repository discovery and in-app workspace creation are no longer part of this flow.
-        </AlertDescription>
-      </Alert>
 
       {error ? (
         <Alert className="mb-4 border-destructive/50 text-destructive">
@@ -187,20 +238,22 @@ export function AttachExternal() {
               id="workspace-path"
               ref={inputRef}
               value={path}
-              onChange={(e) => setPath(e.target.value)}
+              onChange={(e) => handlePathChange(e.target.value)}
               onFocus={handleFocus}
               onBlur={handleBlur}
               onKeyDown={handleKeyDown}
-               placeholder="/Users/you/src/my-repository"
+              placeholder="/Users/you/src/my-repository"
               autoFocus
               disabled={isSubmitting}
               autoComplete="off"
               role="combobox"
               aria-expanded={showSuggestions}
-              aria-autocomplete="list"
-              aria-controls="workspace-path-suggestions"
-              aria-activedescendant={activeIndex >= 0 ? `suggestion-${activeIndex}` : undefined}
-            />
+               aria-autocomplete="list"
+               aria-controls="workspace-path-suggestions"
+               aria-describedby={inputDescribedBy}
+               aria-activedescendant={activeIndex >= 0 ? `suggestion-${activeIndex}` : undefined}
+               aria-invalid={displayedBrowseError ? true : undefined}
+             />
             {isFetchingSuggestions && (
               <div className="absolute right-3 top-1/2 -translate-y-1/2">
                 <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
@@ -237,14 +290,22 @@ export function AttachExternal() {
               </div>
             )}
           </div>
-          <p className="text-xs text-muted-foreground">
+          <p id="workspace-path-help" className="text-xs text-muted-foreground">
             Enter an absolute path or start typing to browse external repositories already on disk.
           </p>
+          {displayedBrowseError ? (
+            <Alert
+              id="workspace-path-browse-error"
+              className="border-destructive/50 py-2 text-destructive"
+            >
+              <AlertDescription>{displayedBrowseError}</AlertDescription>
+            </Alert>
+          ) : null}
         </div>
 
         <Button
           type="submit"
-          disabled={isSubmitting || !path.trim()}
+          disabled={!canSubmit}
           className="w-full"
         >
           {isSubmitting ? (
@@ -255,9 +316,9 @@ export function AttachExternal() {
           ) : (
             <>
               <FolderInput className="mr-2 h-4 w-4" />
-               Attach External Repository
-             </>
-           )}
+              Attach External Repository
+            </>
+          )}
         </Button>
       </form>
     </div>

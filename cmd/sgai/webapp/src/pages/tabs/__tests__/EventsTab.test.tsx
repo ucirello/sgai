@@ -44,8 +44,6 @@ const createMockWorkspace = (overrides = {}) => ({
   messages: [],
   projectTodos: [],
   agentTodos: [],
-  changes: { description: "", diffLines: [] },
-  commits: [],
   log: [],
   external: false,
   ...overrides,
