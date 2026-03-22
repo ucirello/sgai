@@ -11,3 +11,4 @@ verification*/
 vendor/
 cover*.out
 /*.png
+opencode-src/

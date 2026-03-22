@@ -384,7 +384,7 @@ func registerSessionTools(server *mcp.Server, ctx *externalMCPContext) {
 
 	type respondToQuestionArgs struct {
 		Workspace       string   `json:"workspace" jsonschema:"The workspace name"`
-		QuestionID      string   `json:"questionId" jsonschema:"The question ID from the pending question"`
+		PromptToken     string   `json:"promptToken,omitempty" jsonschema:"Optional prompt token from the pending question"`
 		Answer          string   `json:"answer,omitempty" jsonschema:"Free text answer"`
 		SelectedChoices []string `json:"selectedChoices,omitempty" jsonschema:"Selected choices for multi-choice questions"`
 	}
@@ -397,7 +397,7 @@ func registerSessionTools(server *mcp.Server, ctx *externalMCPContext) {
 		if err != nil {
 			return nil, emptyResult{}, err
 		}
-		respondResult, err := ctx.srv.respondService(workspacePath, args.QuestionID, args.Answer, args.SelectedChoices)
+		respondResult, err := ctx.srv.respondService(workspacePath, args.PromptToken, args.Answer, args.SelectedChoices)
 		if err != nil {
 			return textResult("error: " + err.Error()), emptyResult{}, nil
 		}
@@ -784,7 +784,7 @@ func registerElicitationTool(server *mcp.Server, ctx *externalMCPContext) {
 			return nil, emptyResult{}, err
 		}
 
-		questionID, answer, err := elicitPendingQuestion(toolCtx, req.Session, ctx.srv, workspacePath)
+		promptToken, answer, err := elicitPendingQuestion(toolCtx, req.Session, ctx.srv, workspacePath)
 		if err != nil {
 			return textResult("elicitation error: " + err.Error()), emptyResult{}, nil
 		}
@@ -792,7 +792,7 @@ func registerElicitationTool(server *mcp.Server, ctx *externalMCPContext) {
 			return textResult("no response provided"), emptyResult{}, nil
 		}
 
-		respondResult, errRespond := ctx.srv.respondService(workspacePath, questionID, answer, nil)
+		respondResult, errRespond := ctx.srv.respondService(workspacePath, promptToken, answer, nil)
 		if errRespond != nil {
 			return textResult("respond error: " + errRespond.Error()), emptyResult{}, nil
 		}
@@ -802,7 +802,7 @@ func registerElicitationTool(server *mcp.Server, ctx *externalMCPContext) {
 	})
 }
 
-func elicitPendingQuestion(ctx context.Context, session *mcp.ServerSession, srv *Server, workspacePath string) (questionID, answer string, err error) {
+func elicitPendingQuestion(ctx context.Context, session *mcp.ServerSession, srv *Server, workspacePath string) (promptToken, answer string, err error) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -811,12 +811,16 @@ func elicitPendingQuestion(ctx context.Context, session *mcp.ServerSession, srv 
 		case <-ctx.Done():
 			return "", "", ctx.Err()
 		case <-ticker.C:
-			wfState := srv.workspaceCoordinator(workspacePath).State()
+			coord := srv.workspaceCoordinator(workspacePath)
+			wfState := coord.State()
 			if !wfState.NeedsHumanInput() {
 				continue
 			}
 
-			qID := generateQuestionID(wfState)
+			promptToken := coord.CurrentPromptToken()
+			if promptToken == "" {
+				continue
+			}
 			message := wfState.HumanMessage
 			if message == "" {
 				message = "A workspace agent is waiting for your input."
@@ -833,7 +837,7 @@ func elicitPendingQuestion(ctx context.Context, session *mcp.ServerSession, srv 
 			}
 
 			if elicitResult.Action != "accept" {
-				return qID, "", nil
+				return promptToken, "", nil
 			}
 
 			ans := ""
@@ -850,7 +854,7 @@ func elicitPendingQuestion(ctx context.Context, session *mcp.ServerSession, srv 
 				}
 			}
 
-			return qID, ans, nil
+			return promptToken, ans, nil
 		}
 	}
 }

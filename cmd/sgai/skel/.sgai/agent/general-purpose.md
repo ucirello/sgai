@@ -96,7 +96,7 @@ You approach problems systematically:
 2. Check recent changes that might have caused it
 3. Search for similar errors in docs/Stack Overflow
 4. Try simplest solution first
-5. If truly blocked, ask human for clarification using `human_intervention_required`
+5. If truly blocked, send a `QUESTION:` message to the coordinator so the coordinator can relay it to the human partner
 
 ### 5. Project Management
 

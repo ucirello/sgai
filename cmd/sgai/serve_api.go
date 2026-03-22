@@ -318,6 +318,7 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 
 	var pendingQuestion *apiPendingQuestionResponse
 	if wfState.NeedsHumanInput() {
+		coord := s.sessionCoordinator(ws.Directory)
 		agentName := currentAgent
 		var questions []apiQuestionItem
 		if wfState.MultiChoiceQuestion != nil {
@@ -331,11 +332,11 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 			}
 		}
 		pendingQuestion = &apiPendingQuestionResponse{
-			QuestionID: generateQuestionID(wfState),
-			Type:       questionType(wfState),
-			AgentName:  agentName,
-			Message:    wfState.HumanMessage,
-			Questions:  questions,
+			PromptToken: promptTokenForState(coord, wfState),
+			Type:        questionType(wfState),
+			AgentName:   agentName,
+			Message:     wfState.HumanMessage,
+			Questions:   questions,
 		}
 	}
 
@@ -1001,17 +1002,11 @@ type apiForkEntry struct {
 	Description string `json:"description"`
 }
 
-func generateQuestionID(wfState state.Workflow) string {
-	if !wfState.NeedsHumanInput() {
+func promptTokenForState(coord *state.Coordinator, wfState state.Workflow) string {
+	if coord == nil || !wfState.NeedsHumanInput() {
 		return ""
 	}
-	h := sha256.New()
-	h.Write([]byte(wfState.HumanMessage))
-	if wfState.MultiChoiceQuestion != nil {
-		data, _ := json.Marshal(wfState.MultiChoiceQuestion)
-		h.Write(data)
-	}
-	return hex.EncodeToString(h.Sum(nil))[:16]
+	return coord.CurrentPromptToken()
 }
 
 func questionType(wfState state.Workflow) string {
@@ -1034,15 +1029,15 @@ type apiQuestionItem struct {
 }
 
 type apiPendingQuestionResponse struct {
-	QuestionID string            `json:"questionId"`
-	Type       string            `json:"type"`
-	AgentName  string            `json:"agentName"`
-	Message    string            `json:"message"`
-	Questions  []apiQuestionItem `json:"questions,omitempty"`
+	PromptToken string            `json:"promptToken,omitempty"`
+	Type        string            `json:"type"`
+	AgentName   string            `json:"agentName"`
+	Message     string            `json:"message"`
+	Questions   []apiQuestionItem `json:"questions,omitempty"`
 }
 
 type apiRespondRequest struct {
-	QuestionID      string   `json:"questionId"`
+	PromptToken     string   `json:"promptToken,omitempty"`
 	Answer          string   `json:"answer"`
 	SelectedChoices []string `json:"selectedChoices"`
 }
@@ -1065,12 +1060,12 @@ func (s *Server) handleAPIRespond(w http.ResponseWriter, r *http.Request) {
 	}
 
 	coord := s.sessionCoordinator(workspacePath)
-	if coord != nil {
-		s.handleRespondViaCoordinator(w, coord, req)
+	if coord == nil {
+		http.Error(w, "no pending question", http.StatusConflict)
 		return
 	}
 
-	s.handleRespondLegacy(w, workspacePath, req)
+	s.handleRespondViaCoordinator(w, coord, req)
 }
 
 func (s *Server) sessionCoordinator(workspacePath string) *state.Coordinator {
@@ -1093,15 +1088,14 @@ func (s *Server) handleRespondViaCoordinator(w http.ResponseWriter, coord *state
 		return
 	}
 
-	currentID := generateQuestionID(wfState)
-	if req.QuestionID != currentID {
-		http.Error(w, "question expired", http.StatusConflict)
-		return
-	}
-
 	responseText := buildAPIResponseText(req)
 	if responseText == "" {
 		http.Error(w, "response cannot be empty", http.StatusBadRequest)
+		return
+	}
+
+	if !coord.RespondIfCurrent(req.PromptToken, responseText) {
+		http.Error(w, "question not available", http.StatusConflict)
 		return
 	}
 
@@ -1117,44 +1111,6 @@ func (s *Server) handleRespondViaCoordinator(w http.ResponseWriter, coord *state
 				return
 			}
 		}
-	}
-
-	coord.Respond(responseText)
-
-	s.notifyStateChange()
-
-	writeJSON(w, apiRespondResponse{Success: true, Message: "response submitted"})
-}
-
-func (s *Server) handleRespondLegacy(w http.ResponseWriter, workspacePath string, req apiRespondRequest) {
-	coord := s.workspaceCoordinator(workspacePath)
-	wfState := coord.State()
-
-	if !wfState.NeedsHumanInput() {
-		http.Error(w, "no pending question in legacy path", http.StatusConflict)
-		return
-	}
-
-	currentID := generateQuestionID(wfState)
-	if req.QuestionID != currentID {
-		http.Error(w, "question expired", http.StatusConflict)
-		return
-	}
-
-	responseText := buildAPIResponseText(req)
-	if responseText == "" {
-		http.Error(w, "response cannot be empty", http.StatusBadRequest)
-		return
-	}
-
-	if errUpdate := coord.UpdateState(func(wf *state.Workflow) {
-		wf.Status = state.StatusWorking
-		wf.HumanMessage = ""
-		wf.MultiChoiceQuestion = nil
-		wf.Task = ""
-	}); errUpdate != nil {
-		http.Error(w, "failed to save state", http.StatusInternalServerError)
-		return
 	}
 
 	s.notifyStateChange()
@@ -1901,7 +1857,7 @@ func (s *Server) handleAPIAdhoc(w http.ResponseWriter, r *http.Request) {
 	cmd := exec.Command("opencode", args...)
 	cmd.Dir = workspacePath
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = append(os.Environ(), "OPENCODE_CONFIG_DIR="+filepath.Join(workspacePath, ".sgai"))
+	cmd.Env = opencodeEnv("OPENCODE_CONFIG_DIR=" + filepath.Join(workspacePath, ".sgai"))
 	cmd.Stdin = strings.NewReader(st.promptText)
 	writer := &lockedWriter{mu: &st.mu, buf: &st.output}
 	prefix := fmt.Sprintf("[%s][adhoc:0000]", filepath.Base(workspacePath))

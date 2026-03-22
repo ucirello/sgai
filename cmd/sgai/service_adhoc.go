@@ -56,7 +56,7 @@ func (s *Server) adhocStartService(workspacePath, prompt, model string) adhocSta
 	cmd := exec.Command("opencode", args...)
 	cmd.Dir = workspacePath
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = append(os.Environ(), "OPENCODE_CONFIG_DIR="+filepath.Join(workspacePath, ".sgai"))
+	cmd.Env = opencodeEnv("OPENCODE_CONFIG_DIR=" + filepath.Join(workspacePath, ".sgai"))
 	cmd.Stdin = strings.NewReader(st.promptText)
 	writer := &lockedWriter{mu: &st.mu, buf: &st.output}
 	prefix := fmt.Sprintf("[%s][adhoc:0000]", filepath.Base(workspacePath))

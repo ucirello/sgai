@@ -970,7 +970,7 @@ func TestBadgeStatusVariants(t *testing.T) {
 
 	t.Run("needsInput", func(t *testing.T) {
 		wf := state.Workflow{
-			Status:       state.StatusWaitingForHuman,
+			Status:       state.StatusWorking,
 			HumanMessage: "question",
 		}
 		class, text := badgeStatus(wf, true)
@@ -1340,7 +1340,7 @@ func TestResetHumanCommunicationWithCoordinator(t *testing.T) {
 	wsDir := setupTestWorkspace(t, rootDir, "reset-human")
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
 	coord, errCoord := state.NewCoordinatorWith(sp, state.Workflow{
-		Status:       state.StatusWaitingForHuman,
+		Status:       state.StatusWorking,
 		HumanMessage: "old message",
 		MultiChoiceQuestion: &state.MultiChoiceQuestion{
 			Questions: []state.QuestionItem{
@@ -1442,7 +1442,7 @@ func TestStopSessionWithRunningSessionMarksNotRunning(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
 	coord, errCoord := state.NewCoordinatorWith(filepath.Join(wsDir, ".sgai", "state.json"), state.Workflow{
-		Status:       state.StatusWaitingForHuman,
+		Status:       state.StatusWorking,
 		HumanMessage: "question?",
 	})
 	require.NoError(t, errCoord)
@@ -2207,7 +2207,7 @@ func TestBadgeStatus(t *testing.T) {
 		{
 			name: "needsHumanInput",
 			wfState: state.Workflow{
-				Status:       state.StatusWaitingForHuman,
+				Status:       state.StatusWorking,
 				HumanMessage: "Please provide input",
 			},
 			running:     false,
@@ -2262,7 +2262,7 @@ func TestBadgeStatus(t *testing.T) {
 		{
 			name: "multiChoiceQuestion",
 			wfState: state.Workflow{
-				Status: state.StatusWaitingForHuman,
+				Status: state.StatusWorking,
 				MultiChoiceQuestion: &state.MultiChoiceQuestion{
 					Questions: []state.QuestionItem{
 						{Question: "Choose an option"},

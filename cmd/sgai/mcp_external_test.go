@@ -478,11 +478,65 @@ func TestMCPToolRespondToQuestion(t *testing.T) {
 	cs := connectMCPClient(t, srv)
 	result, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
 		Name:      "respond_to_question",
-		Arguments: map[string]any{"workspace": "respond-mcp", "questionId": "q1", "answer": "yes"},
+		Arguments: map[string]any{"workspace": "respond-mcp", "promptToken": "q1", "answer": "yes"},
 	})
 	require.NoError(t, err)
 	tc := result.Content[0].(*mcp.TextContent)
 	assert.Contains(t, tc.Text, "error:")
+}
+
+func TestMCPToolRespondToQuestionWithoutPromptToken(t *testing.T) {
+	srv, rootDir := setupTestServer(t)
+	setupTestWorkspace(t, rootDir, "respond-no-id-mcp")
+	cs := connectMCPClient(t, srv)
+	result, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "respond_to_question",
+		Arguments: map[string]any{"workspace": "respond-no-id-mcp", "answer": "yes"},
+	})
+	require.NoError(t, err)
+	tc := result.Content[0].(*mcp.TextContent)
+	assert.Contains(t, tc.Text, "error:")
+}
+
+func TestMCPToolRespondToQuestionRejectsStalePromptToken(t *testing.T) {
+	srv, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, rootDir, "stale-resp-mcp")
+	coord := state.NewCoordinatorEmpty(filepath.Join(wsDir, ".sgai", "state.json"))
+	firstErrCh, cancelFirst := startCoordinatorQuestion(t, coord, &state.MultiChoiceQuestion{
+		Questions: []state.QuestionItem{{Question: "Pick one", Choices: []string{"A", "B"}}},
+	}, "Pick one")
+	firstToken := waitForSessionPromptToken(t, coord)
+	cancelFirst()
+	require.ErrorIs(t, <-firstErrCh, context.Canceled)
+
+	secondErrCh, cancelSecond := startCoordinatorQuestion(t, coord, &state.MultiChoiceQuestion{
+		Questions: []state.QuestionItem{{Question: "Pick one", Choices: []string{"A", "B"}}},
+	}, "Pick one")
+	defer cancelSecond()
+	secondToken := waitForSessionPromptToken(t, coord)
+	require.NotEqual(t, firstToken, secondToken)
+
+	srv.mu.Lock()
+	srv.sessions[wsDir] = &session{coord: coord}
+	srv.mu.Unlock()
+
+	cs := connectMCPClient(t, srv)
+	result, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "respond_to_question",
+		Arguments: map[string]any{"workspace": "stale-resp-mcp", "promptToken": firstToken, "answer": "stale"},
+	})
+	require.NoError(t, err)
+	tc := result.Content[0].(*mcp.TextContent)
+	assert.Contains(t, tc.Text, "question not available")
+
+	result, err = cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "respond_to_question",
+		Arguments: map[string]any{"workspace": "stale-resp-mcp", "promptToken": secondToken, "answer": "current"},
+	})
+	require.NoError(t, err)
+	tc = result.Content[0].(*mcp.TextContent)
+	assert.Contains(t, tc.Text, "response submitted")
+	require.NoError(t, <-secondErrCh)
 }
 
 func TestMCPToolSteerAgent(t *testing.T) {
@@ -897,7 +951,7 @@ func TestMCPToolRespondToQuestionInvalid(t *testing.T) {
 	cs := connectMCPClient(t, srv)
 	result, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
 		Name:      "respond_to_question",
-		Arguments: map[string]any{"workspace": "nonexistent-resp-mcp", "questionId": "q1", "answer": "yes"},
+		Arguments: map[string]any{"workspace": "nonexistent-resp-mcp", "promptToken": "q1", "answer": "yes"},
 	})
 	require.NoError(t, err)
 	assert.True(t, result.IsError)

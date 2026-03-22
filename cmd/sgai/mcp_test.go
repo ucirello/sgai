@@ -107,8 +107,7 @@ func TestAskUserQuestionToolsNotAllowed(t *testing.T) {
 		Questions: []questionItem{{Question: "test?", Choices: []string{"yes"}}},
 	})
 	require.NoError(t, errQ)
-	assert.Contains(t, result, "Error")
-	assert.Contains(t, result, "not allowed")
+	assert.Equal(t, autoProceedAnswer, result)
 }
 
 func TestAskUserWorkGateToolsNotAllowed(t *testing.T) {
@@ -122,8 +121,7 @@ func TestAskUserWorkGateToolsNotAllowed(t *testing.T) {
 
 	result, errQ := askUserWorkGate(t.Context(), coord, "summary of work")
 	require.NoError(t, errQ)
-	assert.Contains(t, result, "Error")
-	assert.Contains(t, result, "not allowed")
+	assert.Equal(t, autoRecordQuestionsAnswer, result)
 }
 
 func TestMCPHandlerErrorPaths(t *testing.T) {
@@ -907,14 +905,15 @@ func TestUpdateWorkflowState(t *testing.T) {
 			wantContains: "State updated successfully.",
 		},
 		{
-			name: "preserveHumanPendingStatus",
+			name: "pendingHumanInputStillUpdatesState",
 			initialState: state.Workflow{
-				Status:   state.StatusWaitingForHuman,
-				Progress: []state.ProgressEntry{},
+				Status:       state.StatusWorking,
+				HumanMessage: "waiting",
+				Progress:     []state.ProgressEntry{},
 			},
 			callerAgent:  "test-agent",
 			args:         updateWorkflowStateArgs{Status: "working", Task: "my task", AddProgress: "progress note"},
-			wantContains: "Waiting for human response",
+			wantContains: "State updated successfully.",
 		},
 		{
 			name: "addProgressNote",
@@ -1524,13 +1523,13 @@ func TestBuildMCPHTTPHandler(t *testing.T) {
 	stateFile := filepath.Join(t.TempDir(), "state.json")
 	coord, errCoord := state.NewCoordinatorWith(stateFile, state.Workflow{})
 	require.NoError(t, errCoord)
-	handler := buildMCPHTTPHandler(t.TempDir(), coord, []string{"builder"})
+	handler := buildMCPHTTPHandler(t.TempDir(), coord, []string{"builder"}, humanToolCallbacks{})
 	assert.NotNil(t, handler)
 }
 
 func connectInternalMCPClient(t *testing.T, r *http.Request, coord *state.Coordinator, dagAgents []string) *mcp.ClientSession {
 	t.Helper()
-	mcpServer := buildMCPServer(t.TempDir(), r, coord, dagAgents)
+	mcpServer := buildMCPServer(t.TempDir(), r, coord, dagAgents, humanToolCallbacks{})
 	ct, st := mcp.NewInMemoryTransports()
 	_, errConnect := mcpServer.Connect(context.Background(), st, nil)
 	require.NoError(t, errConnect)
@@ -1557,6 +1556,8 @@ func TestBuildMCPServerOmitsCoordinatorOnlyToolsWithoutAgentHeader(t *testing.T)
 	cs := connectInternalMCPClient(t, r, coord, []string{"builder"})
 	result, errList := cs.ListTools(context.Background(), &mcp.ListToolsParams{})
 	require.NoError(t, errList)
+	assert.True(t, slices.Contains(mcpToolNames(result.Tools), "ask_user_question"))
+	assert.True(t, slices.Contains(mcpToolNames(result.Tools), "ask_user_work_gate"))
 	assert.False(t, slices.Contains(mcpToolNames(result.Tools), "delete_unread_messages"))
 }
 
@@ -1611,7 +1612,7 @@ func TestAskUserQuestionSelfDriveMode(t *testing.T) {
 	}
 	result, err := askUserQuestion(context.Background(), coord, args)
 	require.NoError(t, err)
-	assert.Contains(t, result, "not allowed")
+	assert.Equal(t, autoProceedAnswer, result)
 }
 
 func TestAskUserWorkGateSelfDriveMode(t *testing.T) {
@@ -1620,7 +1621,7 @@ func TestAskUserWorkGateSelfDriveMode(t *testing.T) {
 	require.NoError(t, errCoord)
 	result, err := askUserWorkGate(context.Background(), coord, "test summary")
 	require.NoError(t, err)
-	assert.Contains(t, result, "not allowed")
+	assert.Equal(t, autoRecordQuestionsAnswer, result)
 }
 
 func TestAskUserQuestionNilCoordinator(t *testing.T) {
@@ -1629,7 +1630,7 @@ func TestAskUserQuestionNilCoordinator(t *testing.T) {
 	}
 	result, err := askUserQuestion(context.Background(), nil, args)
 	require.NoError(t, err)
-	assert.Contains(t, result, "not allowed")
+	assert.Contains(t, result, "workflow coordinator not available")
 }
 
 func TestAskUserQuestionEmptyQuestionList(t *testing.T) {
@@ -1663,7 +1664,27 @@ func TestAskUserWorkGateBlankSummary(t *testing.T) {
 func TestAskUserWorkGateNilCoordinator(t *testing.T) {
 	result, err := askUserWorkGate(context.Background(), nil, "my summary")
 	require.NoError(t, err)
-	assert.Contains(t, result, "not allowed")
+	assert.Contains(t, result, "workflow coordinator not available")
+}
+
+func TestSelectHumanToolCallbacksRetrospectiveDisabled(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("---\nretrospective: \"no\"\n---\n# Goal"), 0o644))
+	stateFile := filepath.Join(dir, "state.json")
+	coord, errCoord := state.NewCoordinatorWith(stateFile, state.Workflow{InteractionMode: state.ModeBrainstorming})
+	require.NoError(t, errCoord)
+
+	callbacks := selectHumanToolCallbacks(dir, coord)
+	questionAnswer, errQuestion := callbacks.question(context.Background(), coord, askUserQuestionArgs{
+		Questions: []questionItem{{Question: "test?", Choices: []string{"yes", "no"}}},
+	})
+	require.NoError(t, errQuestion)
+	assert.Equal(t, autoProceedAnswer, questionAnswer)
+
+	workGateAnswer, errWorkGate := callbacks.workGate(context.Background(), coord, "summary")
+	require.NoError(t, errWorkGate)
+	assert.Equal(t, autoSkipRetrospectiveAnswer, workGateAnswer)
+	assert.Equal(t, state.ModeBuilding, coord.State().InteractionMode)
 }
 
 func TestBuildMCPHTTPHandlerCreation(t *testing.T) {
@@ -1671,7 +1692,7 @@ func TestBuildMCPHTTPHandlerCreation(t *testing.T) {
 	stateFile := filepath.Join(dir, "state.json")
 	coord, errCoord := state.NewCoordinatorWith(stateFile, state.Workflow{})
 	require.NoError(t, errCoord)
-	handler := buildMCPHTTPHandler(dir, coord, []string{"coordinator"})
+	handler := buildMCPHTTPHandler(dir, coord, []string{"coordinator"}, humanToolCallbacks{})
 	assert.NotNil(t, handler)
 }
 
@@ -1926,10 +1947,33 @@ func TestUpdateWorkflowStateWithPendingTodos(t *testing.T) {
 	assert.Contains(t, result, "pending TODO")
 }
 
-func TestUpdateWorkflowStatePreservesHumanPendingStatus(t *testing.T) {
+func TestUpdateWorkflowStatePendingTodosDoesNotMutateStatusOrStartWatchdog(t *testing.T) {
 	stateFile := filepath.Join(t.TempDir(), "state.json")
 	coord, err := state.NewCoordinatorWith(stateFile, state.Workflow{
-		Status:       state.StatusWaitingForHuman,
+		Status:       state.StatusWorking,
+		CurrentAgent: "builder",
+		Todos: []state.TodoItem{
+			{Content: "unfinished task", Status: "pending", Priority: "high"},
+		},
+	})
+	require.NoError(t, err)
+	coord.SetAgentCancel(func() {})
+
+	result, err := updateWorkflowState(coord, "builder", updateWorkflowStateArgs{Status: "agent-done"})
+	require.NoError(t, err)
+	assert.Contains(t, result, "pending TODO")
+	assert.Equal(t, state.StatusWorking, coord.State().Status)
+	assert.False(t, coord.IsShuttingDown())
+
+	reloaded, err := state.NewCoordinator(stateFile)
+	require.NoError(t, err)
+	assert.Equal(t, state.StatusWorking, reloaded.State().Status)
+}
+
+func TestUpdateWorkflowStateWithHumanInput(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+	coord, err := state.NewCoordinatorWith(stateFile, state.Workflow{
+		Status:       state.StatusWorking,
 		HumanMessage: "waiting",
 	})
 	require.NoError(t, err)
@@ -1939,7 +1983,7 @@ func TestUpdateWorkflowStatePreservesHumanPendingStatus(t *testing.T) {
 		AddProgress: "doing stuff",
 	})
 	require.NoError(t, err)
-	assert.Contains(t, result, "preserved")
+	assert.Contains(t, result, "updated successfully")
 }
 
 func TestUpdateWorkflowStateClearsTaskOnComplete(t *testing.T) {
@@ -2002,7 +2046,7 @@ func TestBuildMCPHTTPHandlerWithHandler(t *testing.T) {
 	require.NoError(t, errCoord)
 	srv, _ := setupTestServer(t)
 	srv.rootDir = dir
-	handler := buildMCPHTTPHandler(dir, srv.workspaceCoordinator(dir), []string{"coordinator"})
+	handler := buildMCPHTTPHandler(dir, srv.workspaceCoordinator(dir), []string{"coordinator"}, humanToolCallbacks{})
 	assert.NotNil(t, handler)
 	assert.Implements(t, (*http.Handler)(nil), handler)
 }

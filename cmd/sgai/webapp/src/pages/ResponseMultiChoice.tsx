@@ -144,7 +144,7 @@ export function ResponseMultiChoice() {
             {question.questions && question.questions.length > 0 ? (
               <div className="space-y-6">
               {question.questions.map((q, qIndex) => {
-                const questionKey = `${question.questionId}-${q.question}-${q.choices.join("|")}-${
+                const questionKey = `${question.promptToken}-${q.question}-${q.choices.join("|")}-${
                   q.multiSelect ? "multi" : "single"
                 }`;
                 return (

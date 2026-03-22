@@ -1,3 +1,4 @@
+// Package main implements the sgai CLI and server workflows.
 package main
 
 import (
@@ -354,7 +355,7 @@ func runMultiModelAgent(ctx context.Context, cfg multiModelConfig, wfState state
 				}); errUpdate != nil {
 					log.Fatalln("failed to save state after model done:", errUpdate)
 				}
-			case state.StatusComplete, state.StatusWaitingForHuman:
+			case state.StatusComplete:
 				return newState
 			}
 		}
@@ -419,10 +420,6 @@ func runFlowAgentWithModel(ctx context.Context, cfg multiModelConfig, wfState st
 		switch newState.Status {
 		case state.StatusComplete:
 			return handleCompleteStatus(ctx, cfg, newState, wfState, metadata)
-
-		case state.StatusWaitingForHuman:
-			wfState = handleWaitingForHumanStatus(cfg, newState)
-			continue
 
 		case state.StatusAgentDone:
 			saveState(cfg.coord, newState)
@@ -493,7 +490,7 @@ func buildAgentArgs(agent, baseAgent, modelSpec, sessionID string) []string {
 }
 
 func buildAgentMessage(cfg multiModelConfig, wfState state.Workflow, metadata GoalMetadata) string {
-	msg := buildFlowMessage(cfg.flowDag, cfg.agent, wfState.VisitCounts, cfg.dir, wfState.InteractionMode, metadata.Alias)
+	msg := buildFlowMessage(cfg.flowDag, cfg.agent, wfState.VisitCounts, cfg.dir, metadata.Alias)
 
 	multiModelSection := buildMultiModelSection(wfState.CurrentModel, metadata.Models, cfg.agent)
 	if multiModelSection != "" {
@@ -530,23 +527,32 @@ func buildAgentMessage(cfg multiModelConfig, wfState state.Workflow, metadata Go
 	return msg
 }
 
-func buildAgentEnv(cfg multiModelConfig, wfState state.Workflow, modelSpec string) []string {
-	interactiveEnv := "yes"
-	if wfState.InteractionMode == state.ModeSelfDrive {
-		interactiveEnv = "auto"
+func opencodeEnv(overrides ...string) []string {
+	env := make([]string, 0, len(os.Environ())+len(overrides))
+	for _, entry := range os.Environ() {
+		key, _, found := strings.Cut(entry, "=")
+		if !found {
+			continue
+		}
+		if key == "OPENCODE_CONFIG_DIR" || strings.HasPrefix(key, "SGAI_") {
+			continue
+		}
+		env = append(env, entry)
 	}
+	return append(env, overrides...)
+}
 
+func buildAgentEnv(cfg multiModelConfig, modelSpec string) []string {
 	agentIdentity := cfg.agent
 	if modelSpec != "" {
 		model, variant := parseModelAndVariant(modelSpec)
 		agentIdentity = cfg.agent + "|" + model + "|" + variant
 	}
 
-	return append(os.Environ(),
+	return opencodeEnv(
 		"OPENCODE_CONFIG_DIR="+filepath.Join(cfg.dir, ".sgai"),
 		"SGAI_MCP_URL="+cfg.mcpURL,
-		"SGAI_AGENT_IDENTITY="+agentIdentity,
-		"SGAI_MCP_INTERACTIVE="+interactiveEnv)
+		"SGAI_AGENT_IDENTITY="+agentIdentity)
 }
 
 func executeAgentProcess(ctx context.Context, cfg multiModelConfig, agentArgs []string, agentMsg, prefix string, outputCapture *ringWriter, wfState state.Workflow) (state.Workflow, string, *state.Workflow) {
@@ -562,7 +568,7 @@ func executeAgentProcess(ctx context.Context, cfg multiModelConfig, agentArgs []
 	cmd := exec.CommandContext(agentCtx, "opencode", agentArgs...)
 	cmd.Dir = cfg.dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = buildAgentEnv(cfg, wfState, extractModelFromArgs(agentArgs))
+	cmd.Env = buildAgentEnv(cfg, extractModelFromArgs(agentArgs))
 	cmd.Stdin = strings.NewReader(agentMsg)
 	cmd.Stderr = io.MultiWriter(stderrWriter, outputCapture)
 	cmd.Stdout = io.MultiWriter(jsonWriter, outputCapture)
@@ -601,7 +607,7 @@ func executeAgentProcess(ctx context.Context, cfg multiModelConfig, agentArgs []
 		}); errUpdate != nil {
 			log.Fatalln("failed to save state:", errUpdate)
 		}
-		fmt.Fprintln(os.Stderr, "agent", cfg.agent, "marked as agent-done due to error")
+		fmt.Fprintln(os.Stderr, "agent", cfg.agent, "marked as agent-done due to error", errWait)
 		result := cfg.coord.State()
 		return state.Workflow{}, "", &result
 	}
@@ -611,12 +617,31 @@ func executeAgentProcess(ctx context.Context, cfg multiModelConfig, agentArgs []
 }
 
 func extractModelFromArgs(args []string) string {
-	for i, arg := range args {
-		if arg == "--model" && i+1 < len(args) {
-			return args[i+1]
+	model := ""
+	variant := ""
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--model":
+			if i+1 < len(args) {
+				model = args[i+1]
+				i++
+			}
+		case "--variant":
+			if i+1 < len(args) {
+				variant = args[i+1]
+				i++
+			}
 		}
 	}
-	return ""
+
+	if model == "" {
+		return ""
+	}
+	if variant == "" {
+		return model
+	}
+	return model + " (" + variant + ")"
 }
 
 func exportAgentSession(cfg multiModelConfig, sessionID string, iteration int) {
@@ -780,18 +805,6 @@ func copyCompletionArtifactsToRetrospective(cfg multiModelConfig) {
 			log.Fatalln("failed to copy PROJECT_MANAGEMENT.md to retrospective:", err)
 		}
 	}
-}
-
-func handleWaitingForHumanStatus(cfg multiModelConfig, newState state.Workflow) state.Workflow {
-	saveState(cfg.coord, newState)
-	if newState.MultiChoiceQuestion != nil || newState.HumanMessage != "" {
-		log.Println("agent", cfg.agent, "has pending question after timeout, preserving state for notification")
-		newState.Status = state.StatusWorking
-		return newState
-	}
-	fmt.Println("["+cfg.paddedsgai+"]", "waiting-for-human status without pending question; re-running...")
-	newState.Status = state.StatusWorking
-	return newState
 }
 
 func handleWorkingLoop(cfg multiModelConfig, capturedSessionID *string, consecutiveWorkingIterations int) int {
@@ -1737,7 +1750,7 @@ func canResumeWorkflow(wfState state.Workflow, currentGoalChecksum string) bool 
 	}
 	return wfState.Status == state.StatusWorking ||
 		wfState.Status == state.StatusAgentDone ||
-		state.IsHumanPending(wfState.Status)
+		wfState.NeedsHumanInput()
 }
 
 // extractRetrospectiveDirFromProjectManagement parses the PROJECT_MANAGEMENT.md
@@ -1855,7 +1868,7 @@ func copyFinalStateToRetrospective(dir, retrospectiveDir string) error {
 func exportSession(dir, sessionID, outputPath string) error {
 	cmd := exec.Command("opencode", "export", sessionID)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "OPENCODE_CONFIG_DIR="+filepath.Join(dir, ".sgai"))
+	cmd.Env = opencodeEnv("OPENCODE_CONFIG_DIR=" + filepath.Join(dir, ".sgai"))
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("opencode export failed: %w", err)

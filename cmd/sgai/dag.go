@@ -333,7 +333,7 @@ func buildMultiModelSection(currentModel string, models map[string]any, currentA
 	return sb.String()
 }
 
-func buildFlowMessage(d *dag, currentAgent string, visitCounts map[string]int, dir string, interactionMode string, alias map[string]string) string {
+func buildFlowMessage(d *dag, currentAgent string, visitCounts map[string]int, dir string, alias map[string]string) string {
 	predecessors := d.getPredecessors(currentAgent)
 	predecessorsStr := strings.Join(predecessors, ", ")
 	if predecessorsStr == "" {
@@ -374,12 +374,7 @@ func buildFlowMessage(d *dag, currentAgent string, visitCounts map[string]int, d
 	}
 	agentsListStr := strings.Join(agentLines, "\n")
 
-	modeSection, coordPlan := modeSectionForMode(interactionMode)
-	msg := composePrompt(promptOptions{
-		agent:           currentAgent,
-		modeSection:     modeSection,
-		coordinatorPlan: coordPlan,
-	})
+	msg := composeFlowTemplate(currentAgent)
 
 	msg = strings.ReplaceAll(msg, "%CURRENT_AGENT%", currentAgent)
 	msg = strings.ReplaceAll(msg, "%PREDECESSORS%", predecessorsStr)

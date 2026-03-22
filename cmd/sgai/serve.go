@@ -412,9 +412,7 @@ func (s *Server) startSession(workspacePath string) startSessionResult {
 	coord.OnUpdate(s.notifyStateChange)
 	if errUpdate := coord.UpdateState(func(wf *state.Workflow) {
 		wf.HumanMessage = ""
-		if state.IsHumanPending(wf.Status) {
-			wf.Status = state.StatusWorking
-		}
+		wf.MultiChoiceQuestion = nil
 	}); errUpdate != nil {
 		sess.mu.Lock()
 		sess.running = false
@@ -457,14 +455,13 @@ func (s *Server) startSession(workspacePath string) startSessionResult {
 		}()
 
 		wfState := coord.State()
-		branch := dispatchBranch(wfState.InteractionMode)
-		cfg := branchConfig{
-			workspacePath: workspacePath,
-			mcpURL:        mcpURL,
-			logWriter:     logWriter,
-			coord:         coord,
+		switch wfState.InteractionMode {
+		case state.ModeContinuous:
+			continuousPrompt := readContinuousModePrompt(workspacePath)
+			runContinuousWorkflow(ctx, workspacePath, continuousPrompt, mcpURL, logWriter, coord)
+		default:
+			runWorkflow(ctx, workspacePath, mcpURL, logWriter, coord)
 		}
-		branch.run(ctx, cfg)
 	}()
 
 	return startSessionResult{sess: sess}
@@ -894,9 +891,7 @@ func (s *Server) resetHumanCommunication(workspacePath string) {
 	}
 	if err := coord.UpdateState(func(wf *state.Workflow) {
 		wf.HumanMessage = ""
-		if state.IsHumanPending(wf.Status) {
-			wf.Status = state.StatusWorking
-		}
+		wf.MultiChoiceQuestion = nil
 	}); err != nil {
 		log.Println("failed to reset human communication state:", err)
 	}

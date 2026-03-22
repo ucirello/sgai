@@ -6,7 +6,7 @@ import type { ApiPendingQuestionResponse, ApiWorkspaceEntry } from "@/types";
 export interface StoredResponseState {
   selections: Record<string, string[]>;
   otherText: string;
-  questionId: string;
+  promptToken: string;
 }
 
 function getStorageKey(prefix: string, workspaceName: string): string {
@@ -75,11 +75,12 @@ export function useResponseForm({
   const [selections, setSelections] = useState<Record<string, string[]>>({});
   const [otherText, setOtherText] = useState("");
   const hasUnsavedChangesRef = useRef(false);
-  const previousQuestionIdRef = useRef<string | null>(null);
+  const previousPromptTokenRef = useRef<string | null>(null);
 
   const { workspaces, fetchStatus } = useFactoryState();
   const workspace = workspaces.find((ws) => ws.name === workspaceName) ?? null;
   const question = workspace?.pendingQuestion ?? null;
+  const promptToken = question?.promptToken ?? null;
   const loading = fetchStatus === "fetching" && workspace === null;
   const error: Error | null = fetchStatus === "error" && workspace === null
     ? new Error("Failed to load workspace state")
@@ -93,12 +94,12 @@ export function useResponseForm({
       return;
     }
 
-    if (!question) return;
+    if (promptToken === null) return;
 
-    if (previousQuestionIdRef.current !== question.questionId) {
-      previousQuestionIdRef.current = question.questionId;
+    if (previousPromptTokenRef.current !== promptToken) {
+      previousPromptTokenRef.current = promptToken;
       const stored = loadStoredState(storagePrefix, workspaceName);
-      if (stored && stored.questionId === question.questionId) {
+      if (stored && stored.promptToken === promptToken) {
         setSelections(stored.selections);
         setOtherText(stored.otherText);
       } else {
@@ -106,10 +107,10 @@ export function useResponseForm({
         setOtherText("");
       }
     }
-  }, [active, workspaceName, storagePrefix, question, workspace, onQuestionMissing]);
+  }, [active, workspaceName, storagePrefix, promptToken, workspace, onQuestionMissing]);
 
   useEffect(() => {
-    if (!question) return;
+    if (promptToken === null) return;
 
     const hasSelections = Object.values(selections).some((s) => s.length > 0);
     const hasText = otherText.trim().length > 0;
@@ -118,9 +119,9 @@ export function useResponseForm({
     saveStoredState(storagePrefix, workspaceName, {
       selections,
       otherText,
-      questionId: question.questionId,
+      promptToken,
     });
-  }, [selections, otherText, question, workspaceName, storagePrefix]);
+  }, [selections, otherText, promptToken, workspaceName, storagePrefix]);
 
   useEffect(() => {
     function handleBeforeUnload(e: BeforeUnloadEvent) {
@@ -170,7 +171,7 @@ export function useResponseForm({
 
       try {
         await api.workspaces.respond(workspaceName, {
-          questionId: question.questionId,
+          promptToken: question.promptToken,
           answer: otherText.trim(),
           selectedChoices: allSelectedChoices,
         });

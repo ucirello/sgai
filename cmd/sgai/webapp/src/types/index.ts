@@ -130,7 +130,7 @@ export interface MultiChoiceQuestion {
 }
 
 export interface ApiPendingQuestionResponse {
-  questionId: string;
+  promptToken: string;
   type: "multi-choice" | "work-gate" | "free-text" | "";
   agentName: string;
   message: string;
@@ -138,7 +138,7 @@ export interface ApiPendingQuestionResponse {
 }
 
 export interface ApiRespondRequest {
-  questionId: string;
+  promptToken: string;
   answer: string;
   selectedChoices: string[];
 }

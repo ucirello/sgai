@@ -253,7 +253,7 @@ func TestHashGoalFileDifferentAfterModification(t *testing.T) {
 func TestBuildStateSnapshot(t *testing.T) {
 	modTime := time.Now()
 	wfState := state.Workflow{
-		Status:       state.StatusWaitingForHuman,
+		Status:       state.StatusWorking,
 		HumanMessage: "test question",
 		Progress: []state.ProgressEntry{
 			{Agent: "coordinator", Description: "started"},
@@ -268,7 +268,7 @@ func TestBuildStateSnapshot(t *testing.T) {
 
 	snapshot := buildStateSnapshot(modTime, wfState, nil)
 	assert.Equal(t, modTime, snapshot.modTime)
-	assert.Equal(t, state.StatusWaitingForHuman, snapshot.status)
+	assert.Equal(t, state.StatusWorking, snapshot.status)
 	assert.True(t, snapshot.needsInput)
 	assert.Equal(t, 1, snapshot.progressLen)
 	assert.NotEmpty(t, snapshot.todosHash)

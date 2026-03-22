@@ -61,7 +61,7 @@ Load: `skills({"name":"stpa/step4-loss-scenarios"})`
 At each step:
 1. Load the step-specific skill
 2. Ask ONE question at a time
-3. Use `ask_user_question` to present questions and wait for responses
+3. If you need human input, send one clear `QUESTION:` message to the coordinator for relay instead of calling human-facing tools directly
 4. Record answers in .sgai/PROJECT_MANAGEMENT.md under `## STPA Analysis`
 5. Continue to next question or step
 
@@ -103,8 +103,8 @@ At each step:
 ## When Analysis is Complete
 
 After completing all 4 steps:
-1. Summarize findings in GOAL.md under `## STPA Findings`
-2. Mark the STPA analysis checkbox as complete
+1. Summarize findings in .sgai/PROJECT_MANAGEMENT.md under `## STPA Findings`
+2. If a GOAL checkbox is now satisfied, notify the coordinator with `GOAL COMPLETE: [exact checkbox text from GOAL.md]` instead of editing GOAL.md yourself
 3. Set `status: "agent-done"` to return control
 
 ## Related Skills

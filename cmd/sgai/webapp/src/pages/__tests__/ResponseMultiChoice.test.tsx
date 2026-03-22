@@ -12,7 +12,7 @@ beforeEach(() => {
 });
 
 const mockQuestion = {
-  questionId: "q-123",
+  promptToken: "q-123",
   type: "multi-choice" as const,
   agentName: "coordinator",
   message: "What approach should we take?",
@@ -285,7 +285,11 @@ describe("ResponseMultiChoice", () => {
       await user.click(sendButtons[0]);
 
       await waitFor(() => {
-        expect(mockRespond).toHaveBeenCalled();
+        expect(mockRespond).toHaveBeenCalledWith("test-workspace", {
+          promptToken: "q-123",
+          answer: "",
+          selectedChoices: [],
+        });
       });
     });
 
@@ -455,12 +459,46 @@ describe("ResponseMultiChoice", () => {
         expect((otherTextareas[0] as HTMLTextAreaElement).value).toBe("Test response");
         const stored = JSON.parse(sessionStorage.getItem("sgai-response-test-workspace") || "{}");
         expect(stored.otherText).toBe("Test response");
+        expect(stored.promptToken).toBe("q-123");
+      });
+    });
+
+    it("restores saved draft when prompt token matches the current question", async () => {
+      sessionStorage.setItem(
+        "sgai-response-test-workspace",
+        JSON.stringify({ selections: {}, otherText: "saved content", promptToken: "q-123" }),
+      );
+
+      renderResponseMultiChoice();
+
+      await waitFor(() => {
+        const otherTextareas = screen.queryAllByPlaceholderText("Type your custom response here...");
+        expect(otherTextareas.length).toBeGreaterThan(0);
+        expect((otherTextareas[0] as HTMLTextAreaElement).value).toBe("saved content");
+      });
+    });
+
+    it("ignores saved draft when prompt token does not match the current question", async () => {
+      sessionStorage.setItem(
+        "sgai-response-test-workspace",
+        JSON.stringify({ selections: {}, otherText: "stale content", promptToken: "stale-token" }),
+      );
+
+      renderResponseMultiChoice();
+
+      await waitFor(() => {
+        const otherTextareas = screen.queryAllByPlaceholderText("Type your custom response here...");
+        expect(otherTextareas.length).toBeGreaterThan(0);
+        expect((otherTextareas[0] as HTMLTextAreaElement).value).toBe("");
       });
     });
 
     it("clears sessionStorage on successful submit", async () => {
       const user = userEvent.setup();
-      sessionStorage.setItem("sgai-response-test-workspace", JSON.stringify({ selections: {}, otherText: "saved content", questionId: "q-123" }));
+      sessionStorage.setItem(
+        "sgai-response-test-workspace",
+        JSON.stringify({ selections: {}, otherText: "saved content", promptToken: "q-123" }),
+      );
 
       renderResponseMultiChoice();
 
