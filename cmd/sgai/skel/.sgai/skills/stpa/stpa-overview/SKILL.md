@@ -113,3 +113,6 @@ After completing all 4 steps:
 - `stpa/step2-control-structure` - Control structure modeling
 - `stpa/step3-unsafe-control-actions` - UCA identification tables
 - `stpa/step4-loss-scenarios` - Causal scenario analysis
+
+## Extra Recommendations
+*CRITICAL*: Beware of letting the STPA feedback to lead to scope creep and expansion. YOUR JOB is to make the code simpler and better, and not to appease the STPA analyst. That means avoid the scope creep caused by STPA. Between fixing all hazard and keeping the code simple, prefer to make the code simple. What's a simple code? It is a piece of code that does _one_ thing, _well done_, without extra complexity - in which the failure modes can be of recognized, reasoned about, and of little consequence; and above all for this session are a trying to end up with _fewer_ lines of source code (including tests) than before.
