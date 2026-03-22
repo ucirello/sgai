@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"log"
 	"maps"
@@ -19,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/sandgardenhq/sgai/pkg/state"
@@ -92,6 +90,7 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/workspaces/{name}/adhoc", s.handleAPIAdhocStatus)
 	mux.HandleFunc("POST /api/v1/workspaces/{name}/adhoc", s.handleAPIAdhoc)
 	mux.HandleFunc("DELETE /api/v1/workspaces/{name}/adhoc", s.handleAPIAdhocStop)
+	mux.HandleFunc("POST /api/v1/workspaces/{name}/actions/run", s.handleAPIActionRun)
 	mux.HandleFunc("DELETE /api/v1/workspaces/{name}/messages/{id}", s.handleAPIDeleteMessage)
 
 	mux.HandleFunc("GET /api/v1/workspaces/{name}/workflow.svg", s.handleAPIWorkflowSVG)
@@ -149,47 +148,48 @@ type apiFactoryState struct {
 }
 
 type apiWorkspaceFullState struct {
-	Name            string                      `json:"name"`
-	Dir             string                      `json:"dir"`
-	Running         bool                        `json:"running"`
-	NeedsInput      bool                        `json:"needsInput"`
-	InProgress      bool                        `json:"inProgress"`
-	Pinned          bool                        `json:"pinned"`
-	IsRoot          bool                        `json:"isRoot"`
-	IsFork          bool                        `json:"isFork"`
-	IsExternal      bool                        `json:"isExternal"`
-	HasSGAI         bool                        `json:"hasSgai"`
-	Status          string                      `json:"status"`
-	BadgeClass      string                      `json:"badgeClass"`
-	BadgeText       string                      `json:"badgeText"`
-	HasEditedGoal   bool                        `json:"hasEditedGoal"`
-	InteractiveAuto bool                        `json:"interactiveAuto"`
-	ContinuousMode  bool                        `json:"continuousMode"`
-	CurrentAgent    string                      `json:"currentAgent"`
-	CurrentModel    string                      `json:"currentModel"`
-	Task            string                      `json:"task"`
-	GoalContent     string                      `json:"goalContent"`
-	Description     string                      `json:"description"`
-	RawGoalContent  string                      `json:"rawGoalContent"`
-	FullGoalContent string                      `json:"fullGoalContent"`
-	PMContent       string                      `json:"pmContent"`
-	HasProjectMgmt  bool                        `json:"hasProjectMgmt"`
-	SVGHash         string                      `json:"svgHash"`
-	TotalExecTime   string                      `json:"totalExecTime"`
-	LatestProgress  string                      `json:"latestProgress"`
-	HumanMessage    string                      `json:"humanMessage"`
-	AgentSequence   []apiAgentSequenceEntry     `json:"agentSequence"`
-	Cost            state.SessionCost           `json:"cost"`
-	ModelStatuses   []apiModelStatusEntry       `json:"modelStatuses,omitempty"`
-	AgentModels     []apiAgentModelEntry        `json:"agentModels,omitempty"`
-	Events          []apiEventEntry             `json:"events"`
-	Messages        []apiMessageEntry           `json:"messages"`
-	ProjectTodos    []apiTodoEntry              `json:"projectTodos"`
-	AgentTodos      []apiTodoEntry              `json:"agentTodos"`
-	Forks           []apiForkEntry              `json:"forks,omitempty"`
-	Log             []apiLogEntry               `json:"log"`
-	PendingQuestion *apiPendingQuestionResponse `json:"pendingQuestion,omitempty"`
-	Actions         []apiActionEntry            `json:"actions,omitempty"`
+	Name              string                      `json:"name"`
+	Dir               string                      `json:"dir"`
+	Running           bool                        `json:"running"`
+	NeedsInput        bool                        `json:"needsInput"`
+	InProgress        bool                        `json:"inProgress"`
+	Pinned            bool                        `json:"pinned"`
+	IsRoot            bool                        `json:"isRoot"`
+	IsFork            bool                        `json:"isFork"`
+	IsExternal        bool                        `json:"isExternal"`
+	HasSGAI           bool                        `json:"hasSgai"`
+	Status            string                      `json:"status"`
+	BadgeClass        string                      `json:"badgeClass"`
+	BadgeText         string                      `json:"badgeText"`
+	HasEditedGoal     bool                        `json:"hasEditedGoal"`
+	InteractiveAuto   bool                        `json:"interactiveAuto"`
+	ContinuousMode    bool                        `json:"continuousMode"`
+	CurrentAgent      string                      `json:"currentAgent"`
+	CurrentModel      string                      `json:"currentModel"`
+	Task              string                      `json:"task"`
+	GoalContent       string                      `json:"goalContent"`
+	Description       string                      `json:"description"`
+	RawGoalContent    string                      `json:"rawGoalContent"`
+	FullGoalContent   string                      `json:"fullGoalContent"`
+	PMContent         string                      `json:"pmContent"`
+	HasProjectMgmt    bool                        `json:"hasProjectMgmt"`
+	SVGHash           string                      `json:"svgHash"`
+	TotalExecTime     string                      `json:"totalExecTime"`
+	LatestProgress    string                      `json:"latestProgress"`
+	HumanMessage      string                      `json:"humanMessage"`
+	AgentSequence     []apiAgentSequenceEntry     `json:"agentSequence"`
+	Cost              state.SessionCost           `json:"cost"`
+	ModelStatuses     []apiModelStatusEntry       `json:"modelStatuses,omitempty"`
+	AgentModels       []apiAgentModelEntry        `json:"agentModels,omitempty"`
+	Events            []apiEventEntry             `json:"events"`
+	Messages          []apiMessageEntry           `json:"messages"`
+	ProjectTodos      []apiTodoEntry              `json:"projectTodos"`
+	AgentTodos        []apiTodoEntry              `json:"agentTodos"`
+	Forks             []apiForkEntry              `json:"forks,omitempty"`
+	Log               []apiLogEntry               `json:"log"`
+	PendingQuestion   *apiPendingQuestionResponse `json:"pendingQuestion,omitempty"`
+	Actions           []apiActionEntry            `json:"actions,omitempty"`
+	ActionConfigError string                      `json:"actionConfigError,omitempty"`
 }
 
 func (s *Server) handleAPIState(w http.ResponseWriter, _ *http.Request) {
@@ -345,47 +345,50 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 		description = ws.DirName
 	}
 
+	actionState := loadActionsForAPI(ws.Directory)
+
 	full := apiWorkspaceFullState{
-		Name:            ws.DirName,
-		Dir:             ws.Directory,
-		Running:         ws.Running,
-		NeedsInput:      needsInput,
-		InProgress:      ws.InProgress,
-		Pinned:          ws.Pinned,
-		IsRoot:          ws.IsRoot,
-		IsFork:          kind == workspaceFork,
-		IsExternal:      ws.External,
-		HasSGAI:         ws.HasWorkspace,
-		Status:          status,
-		BadgeClass:      badgeClass,
-		BadgeText:       badgeText,
-		HasEditedGoal:   hasEditedGoal,
-		InteractiveAuto: interactiveAuto,
-		ContinuousMode:  readContinuousModePrompt(ws.Directory) != "",
-		CurrentAgent:    currentAgent,
-		CurrentModel:    resolveCurrentModel(ws.Directory, wfState),
-		Task:            wfState.Task,
-		GoalContent:     goalContent,
-		Description:     description,
-		RawGoalContent:  rawGoalContent,
-		FullGoalContent: fullGoalContent,
-		PMContent:       pmContent,
-		HasProjectMgmt:  hasProjectMgmt,
-		SVGHash:         s.getWorkflowSVGHashCached(ws.Directory, currentAgent),
-		TotalExecTime:   totalExecTime,
-		LatestProgress:  getLatestProgress(wfState.Progress),
-		HumanMessage:    wfState.HumanMessage,
-		AgentSequence:   agentSeq,
-		Cost:            wfState.Cost,
-		ModelStatuses:   modelStatuses,
-		AgentModels:     collectAgentModels(ws.Directory),
-		Events:          events,
-		Messages:        messages,
-		ProjectTodos:    convertTodosForAPI(wfState.ProjectTodos),
-		AgentTodos:      convertTodosForAPI(wfState.Todos),
-		Log:             logLines,
-		PendingQuestion: pendingQuestion,
-		Actions:         loadActionsForAPI(ws.Directory),
+		Name:              ws.DirName,
+		Dir:               ws.Directory,
+		Running:           ws.Running,
+		NeedsInput:        needsInput,
+		InProgress:        ws.InProgress,
+		Pinned:            ws.Pinned,
+		IsRoot:            ws.IsRoot,
+		IsFork:            kind == workspaceFork,
+		IsExternal:        ws.External,
+		HasSGAI:           ws.HasWorkspace,
+		Status:            status,
+		BadgeClass:        badgeClass,
+		BadgeText:         badgeText,
+		HasEditedGoal:     hasEditedGoal,
+		InteractiveAuto:   interactiveAuto,
+		ContinuousMode:    readContinuousModePrompt(ws.Directory) != "",
+		CurrentAgent:      currentAgent,
+		CurrentModel:      resolveCurrentModel(ws.Directory, wfState),
+		Task:              wfState.Task,
+		GoalContent:       goalContent,
+		Description:       description,
+		RawGoalContent:    rawGoalContent,
+		FullGoalContent:   fullGoalContent,
+		PMContent:         pmContent,
+		HasProjectMgmt:    hasProjectMgmt,
+		SVGHash:           s.getWorkflowSVGHashCached(ws.Directory, currentAgent),
+		TotalExecTime:     totalExecTime,
+		LatestProgress:    getLatestProgress(wfState.Progress),
+		HumanMessage:      wfState.HumanMessage,
+		AgentSequence:     agentSeq,
+		Cost:              wfState.Cost,
+		ModelStatuses:     modelStatuses,
+		AgentModels:       collectAgentModels(ws.Directory),
+		Events:            events,
+		Messages:          messages,
+		ProjectTodos:      convertTodosForAPI(wfState.ProjectTodos),
+		AgentTodos:        convertTodosForAPI(wfState.Todos),
+		Log:               logLines,
+		PendingQuestion:   pendingQuestion,
+		Actions:           actionState.Actions,
+		ActionConfigError: actionState.ConfigError,
 	}
 
 	if ws.IsRoot {
@@ -810,10 +813,14 @@ func (s *Server) handleAPISnippetDetail(w http.ResponseWriter, r *http.Request) 
 }
 
 type apiActionEntry struct {
-	Name        string `json:"name"`
-	Model       string `json:"model"`
-	Prompt      string `json:"prompt"`
-	Description string `json:"description,omitempty"`
+	Name            string   `json:"name"`
+	Model           string   `json:"model"`
+	Prompt          string   `json:"prompt"`
+	Script          string   `json:"script,omitempty"`
+	Description     string   `json:"description,omitempty"`
+	Kind            string   `json:"kind,omitempty"`
+	Variables       []string `json:"variables,omitempty"`
+	ValidationError string   `json:"validationError,omitempty"`
 }
 
 type apiAgentSequenceEntry struct {
@@ -823,18 +830,19 @@ type apiAgentSequenceEntry struct {
 	IsCurrent   bool   `json:"isCurrent"`
 }
 
-func loadActionsForAPI(workspacePath string) []apiActionEntry {
-	config, errLoad := loadProjectConfig(workspacePath)
-	if errLoad != nil || config == nil || config.Actions == nil {
-		return convertActionsForAPI(defaultActionConfigs())
+func loadActionsForAPI(workspacePath string) actionAPIState {
+	configs, errLoad := loadActionConfigs(workspacePath)
+	if errLoad != nil {
+		return actionAPIState{ConfigError: errLoad.Error()}
 	}
-	return convertActionsForAPI(config.Actions)
+	return actionAPIState{Actions: convertActionsForAPI(configs)}
 }
 
 func convertActionsForAPI(configs []actionConfig) []apiActionEntry {
+	nameErrors := actionIdentityErrors(configs)
 	actions := make([]apiActionEntry, 0, len(configs))
-	for _, a := range configs {
-		actions = append(actions, apiActionEntry(a))
+	for i, a := range configs {
+		actions = append(actions, convertActionForAPIWithIdentityError(a, nameErrors[i]))
 	}
 	return actions
 }
@@ -1805,17 +1813,8 @@ func (s *Server) handleAPIAdhocStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	st := s.getAdhocState(workspacePath)
-	st.mu.Lock()
-	running := st.running
-	output := st.output.String()
-	st.mu.Unlock()
-
-	writeJSON(w, apiAdhocResponse{
-		Running: running,
-		Output:  output,
-		Message: "adhoc status",
-	})
+	result := s.adhocStatusService(workspacePath)
+	writeJSON(w, apiAdhocResponse(result))
 }
 
 func (s *Server) handleAPIAdhoc(w http.ResponseWriter, r *http.Request) {
@@ -1830,74 +1829,16 @@ func (s *Server) handleAPIAdhoc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.TrimSpace(req.Prompt) == "" || strings.TrimSpace(req.Model) == "" {
-		http.Error(w, "prompt and model are required", http.StatusBadRequest)
+	result := s.adhocStartService(workspacePath, req.Prompt, req.Model)
+	if result.Error != nil {
+		http.Error(w, result.Error.Error(), http.StatusBadRequest)
 		return
 	}
-
-	st := s.getAdhocState(workspacePath)
-	st.mu.Lock()
-	if st.running {
-		output := st.output.String()
-		st.mu.Unlock()
-		writeJSON(w, apiAdhocResponse{
-			Running: true,
-			Output:  output,
-			Message: "ad-hoc prompt already running",
-		})
-		return
-	}
-
-	st.running = true
-	st.output.Reset()
-	st.selectedModel = strings.TrimSpace(req.Model)
-	st.promptText = strings.TrimSpace(req.Prompt)
-
-	args := buildAdhocArgs(st.selectedModel)
-	cmd := exec.Command("opencode", args...)
-	cmd.Dir = workspacePath
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = opencodeEnv("OPENCODE_CONFIG_DIR=" + filepath.Join(workspacePath, ".sgai"))
-	cmd.Stdin = strings.NewReader(st.promptText)
-	writer := &lockedWriter{mu: &st.mu, buf: &st.output}
-	prefix := fmt.Sprintf("[%s][adhoc:0000]", filepath.Base(workspacePath))
-	stdoutPW := &prefixWriter{prefix: prefix + " ", w: os.Stdout, startTime: time.Now()}
-	stderrPW := &prefixWriter{prefix: prefix + " ", w: os.Stderr, startTime: time.Now()}
-	cmd.Stdout = io.MultiWriter(stdoutPW, writer)
-	cmd.Stderr = io.MultiWriter(stderrPW, writer)
-	commandLine := "$ opencode " + strings.Join(args, " ")
-	promptLine := "prompt: " + st.promptText
-	_, _ = fmt.Fprintln(stderrPW, commandLine)
-	_, _ = fmt.Fprintln(stderrPW, promptLine)
-	st.output.WriteString(commandLine + "\n")
-	st.output.WriteString(promptLine + "\n")
-
-	if errStart := cmd.Start(); errStart != nil {
-		st.running = false
-		st.mu.Unlock()
-		http.Error(w, "failed to start command", http.StatusInternalServerError)
-		return
-	}
-
-	st.cmd = cmd
-	st.mu.Unlock()
-
-	go func() {
-		errWait := cmd.Wait()
-		st.mu.Lock()
-		if errWait != nil {
-			st.output.WriteString("\n[command exited with error: " + errWait.Error() + "]\n")
-		}
-		st.running = false
-		st.cmd = nil
-		st.mu.Unlock()
-	}()
-
-	s.notifyStateChange()
 
 	writeJSON(w, apiAdhocResponse{
-		Running: true,
-		Message: "ad-hoc prompt started",
+		Running: result.Running,
+		Output:  result.Output,
+		Message: result.Message,
 	})
 }
 
@@ -1916,19 +1857,8 @@ func (s *Server) handleAPIAdhocStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	st := s.getAdhocState(workspacePath)
-	st.stop()
-	s.notifyStateChange()
-
-	st.mu.Lock()
-	output := st.output.String()
-	st.mu.Unlock()
-
-	writeJSON(w, apiAdhocResponse{
-		Running: false,
-		Output:  output,
-		Message: "ad-hoc stopped",
-	})
+	result := s.adhocStopService(workspacePath)
+	writeJSON(w, apiAdhocResponse(result))
 }
 
 func (s *Server) handleAPIWorkflowSVG(w http.ResponseWriter, r *http.Request) {

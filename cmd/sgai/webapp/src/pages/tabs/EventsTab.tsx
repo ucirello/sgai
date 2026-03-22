@@ -6,17 +6,18 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
+import { ActionBar } from "@/components/ActionBar";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { api } from "@/lib/api";
 import { useFactoryState } from "@/lib/factory-state";
 import { useAdhocRun } from "@/hooks/useAdhocRun";
-import { ActionBar } from "./SessionTab";
 import type { ApiEventEntry, ApiModelStatusEntry, ApiAgentModelEntry, ApiActionEntry } from "@/types";
 
 interface EventsTabProps {
   workspaceName: string;
   goalContent?: string;
   actions?: ApiActionEntry[];
+  actionConfigError?: string;
 }
 
 function EventsTabSkeleton() {
@@ -192,18 +193,18 @@ function EventTimeline({ events }: { events: ApiEventEntry[] }) {
   );
 }
 
-export function EventsTab({ workspaceName, goalContent, actions }: EventsTabProps) {
+export function EventsTab({ workspaceName, goalContent, actions, actionConfigError }: EventsTabProps) {
   const [goalOpenError, setGoalOpenError] = useState<string | null>(null);
   const [isGoalOpenPending, startGoalOpenTransition] = useTransition();
   const [actionOutputOpen, setActionOutputOpen] = useState(false);
 
-  const hasActions = Boolean(actions && actions.length > 0);
+  const hasActionBar = Boolean((actions && actions.length > 0) || actionConfigError?.trim());
 
   const {
     output: actionOutput,
     isRunning: isActionRunning,
     runError: actionRunError,
-    startRun: startActionRun,
+    startActionRun,
     stopRun: stopActionRun,
     outputRef: actionOutputRef,
   } = useAdhocRun({ workspaceName, skipModelsFetch: true });
@@ -225,9 +226,9 @@ export function EventsTab({ workspaceName, goalContent, actions }: EventsTabProp
     });
   };
 
-  const handleActionClick = (action: ApiActionEntry) => {
+  const handleActionClick = (action: ApiActionEntry, variables: Record<string, string>) => {
     setActionOutputOpen(true);
-    startActionRun(action.prompt, action.model);
+    void startActionRun(action.name, variables);
   };
 
   if (fetchStatus === "fetching" && !workspace) return <EventsTabSkeleton />;
@@ -245,10 +246,11 @@ export function EventsTab({ workspaceName, goalContent, actions }: EventsTabProp
 
   return (
     <div className="space-y-4">
-      {hasActions && (
+      {hasActionBar && (
         <div className="space-y-3">
           <ActionBar
-            actions={actions!}
+            actions={actions ?? []}
+            actionConfigError={actionConfigError}
             isRunning={isActionRunning}
             onActionClick={handleActionClick}
           />

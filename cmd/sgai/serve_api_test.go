@@ -808,20 +808,63 @@ func TestCollectAgentsWithAgents(t *testing.T) {
 	assert.Len(t, result, 2)
 }
 
-func TestLoadActionsForAPIDefault(t *testing.T) {
-	result := loadActionsForAPI("/nonexistent/workspace")
-	assert.NotNil(t, result)
-}
-
-func TestLoadActionsForAPIWithActions(t *testing.T) {
+func TestLoadActionsForAPIUsesConfigActionMetadata(t *testing.T) {
 	dir := t.TempDir()
-	actionsDir := filepath.Join(dir, ".sgai", "actions")
-	require.NoError(t, os.MkdirAll(actionsDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(actionsDir, "test-action.md"),
-		[]byte("---\nname: Test Action\ndescription: A test\nicon: play\n---\n# Action"), 0o644))
+	writeActionTestConfig(t, dir, projectConfig{
+		Actions: []actionConfig{
+			{
+				Name:        "Summarize",
+				Model:       "openai/gpt-5.4",
+				Prompt:      "hello {{ .Name }}",
+				Description: "Summarize something",
+			},
+			{
+				Name:        "Print",
+				Model:       "ignored-model",
+				Script:      `printf "%s" "{{ .Message }}"`,
+				Description: "Print a message",
+			},
+		},
+	})
 
 	result := loadActionsForAPI(dir)
-	assert.NotEmpty(t, result)
+	require.Empty(t, result.ConfigError)
+	require.Len(t, result.Actions, 2)
+	assert.Equal(t, apiActionEntry{
+		Name:        "Summarize",
+		Model:       "openai/gpt-5.4",
+		Prompt:      "hello {{ .Name }}",
+		Description: "Summarize something",
+		Kind:        "prompt",
+		Variables:   []string{"Name"},
+	}, result.Actions[0])
+	assert.Equal(t, apiActionEntry{
+		Name:        "Print",
+		Script:      `printf "%s" "{{ .Message }}"`,
+		Description: "Print a message",
+		Kind:        "script",
+		Variables:   []string{"Message"},
+	}, result.Actions[1])
+}
+
+func TestLoadActionsForAPISurfacesInvalidScriptValidationError(t *testing.T) {
+	dir := t.TempDir()
+	writeActionTestConfig(t, dir, projectConfig{
+		Actions: []actionConfig{{
+			Name:   "Broken",
+			Script: `printf "%s" "{{ .Message }}" | cat`,
+		}},
+	})
+
+	result := loadActionsForAPI(dir)
+	require.Empty(t, result.ConfigError)
+	require.Len(t, result.Actions, 1)
+	assert.Equal(t, apiActionEntry{
+		Name:            "Broken",
+		Script:          `printf "%s" "{{ .Message }}" | cat`,
+		Kind:            "script",
+		ValidationError: `action "Broken" rendered an invalid command: unsupported shell operator "|"`,
+	}, result.Actions[0])
 }
 
 func TestConvertActionsForAPIEmpty(t *testing.T) {
@@ -1021,15 +1064,16 @@ func TestLoadActionsForAPI(t *testing.T) {
 	tests := []struct {
 		name      string
 		setupFunc func(*testing.T, string)
-		validate  func(*testing.T, []apiActionEntry)
+		validate  func(*testing.T, actionAPIState)
 	}{
 		{
 			name: "noConfig",
 			setupFunc: func(_ *testing.T, _ string) {
 			},
-			validate: func(t *testing.T, actions []apiActionEntry) {
-				assert.Len(t, actions, 3)
-				assert.Equal(t, "Create PR", actions[0].Name)
+			validate: func(t *testing.T, state actionAPIState) {
+				assert.Empty(t, state.ConfigError)
+				assert.Len(t, state.Actions, 3)
+				assert.Equal(t, "Create PR", state.Actions[0].Name)
 			},
 		},
 		{
@@ -1044,9 +1088,10 @@ func TestLoadActionsForAPI(t *testing.T) {
 				require.NoError(t, err)
 				require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), data, 0644))
 			},
-			validate: func(t *testing.T, actions []apiActionEntry) {
-				assert.Len(t, actions, 1)
-				assert.Equal(t, "Custom Action", actions[0].Name)
+			validate: func(t *testing.T, state actionAPIState) {
+				assert.Empty(t, state.ConfigError)
+				assert.Len(t, state.Actions, 1)
+				assert.Equal(t, "Custom Action", state.Actions[0].Name)
 			},
 		},
 		{
@@ -1059,9 +1104,30 @@ func TestLoadActionsForAPI(t *testing.T) {
 				require.NoError(t, err)
 				require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), data, 0644))
 			},
-			validate: func(t *testing.T, actions []apiActionEntry) {
-				assert.Len(t, actions, 3)
-				assert.Equal(t, "Create PR", actions[0].Name)
+			validate: func(t *testing.T, state actionAPIState) {
+				assert.Empty(t, state.ConfigError)
+				assert.Len(t, state.Actions, 3)
+				assert.Equal(t, "Create PR", state.Actions[0].Name)
+			},
+		},
+		{
+			name: "invalidJSON",
+			setupFunc: func(t *testing.T, dir string) {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), []byte("not valid json"), 0o644))
+			},
+			validate: func(t *testing.T, state actionAPIState) {
+				assert.Empty(t, state.Actions)
+				assert.Contains(t, state.ConfigError, "invalid JSON syntax")
+			},
+		},
+		{
+			name: "unreadableConfigPath",
+			setupFunc: func(t *testing.T, dir string) {
+				require.NoError(t, os.Mkdir(filepath.Join(dir, configFileName), 0o755))
+			},
+			validate: func(t *testing.T, state actionAPIState) {
+				assert.Empty(t, state.Actions)
+				assert.Contains(t, state.ConfigError, "reading config file")
 			},
 		},
 	}
@@ -1076,6 +1142,19 @@ func TestLoadActionsForAPI(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuildWorkspaceFullStateIncludesActionConfigError(t *testing.T) {
+	srv, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, rootDir, "broken-action-config-ws")
+	require.NoError(t, os.WriteFile(filepath.Join(wsDir, configFileName), []byte("not valid json"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
+
+	ws := workspaceInfo{DirName: "broken-action-config-ws", Directory: wsDir, HasWorkspace: true}
+	result := srv.buildWorkspaceFullState(ws, nil)
+
+	assert.Empty(t, result.Actions)
+	assert.Contains(t, result.ActionConfigError, "invalid JSON syntax")
 }
 
 func TestConvertActionsForAPI(t *testing.T) {
@@ -1095,7 +1174,7 @@ func TestConvertActionsForAPI(t *testing.T) {
 				{Name: "Action 1", Model: "model1", Prompt: "prompt1", Description: "desc1"},
 			},
 			expected: []apiActionEntry{
-				{Name: "Action 1", Model: "model1", Prompt: "prompt1", Description: "desc1"},
+				{Name: "Action 1", Model: "model1", Prompt: "prompt1", Description: "desc1", Kind: "prompt"},
 			},
 		},
 		{
@@ -1105,8 +1184,8 @@ func TestConvertActionsForAPI(t *testing.T) {
 				{Name: "Action 2", Model: "model2", Prompt: "prompt2", Description: "desc2"},
 			},
 			expected: []apiActionEntry{
-				{Name: "Action 1", Model: "model1", Prompt: "prompt1"},
-				{Name: "Action 2", Model: "model2", Prompt: "prompt2", Description: "desc2"},
+				{Name: "Action 1", Model: "model1", Prompt: "prompt1", Kind: "prompt"},
+				{Name: "Action 2", Model: "model2", Prompt: "prompt2", Description: "desc2", Kind: "prompt"},
 			},
 		},
 	}

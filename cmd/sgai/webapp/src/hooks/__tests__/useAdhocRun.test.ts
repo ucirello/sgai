@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
-import { renderHook, act } from "@testing-library/react";
+import { renderHook, act, waitFor } from "@testing-library/react";
 import { useAdhocRun } from "@/hooks/useAdhocRun";
 
 const mockAdhoc = mock(() => Promise.resolve({ output: "result", running: false }));
+const mockActionRun = mock(() => Promise.resolve({ output: "action result", running: false }));
 const mockAdhocStatus = mock(() => Promise.resolve({ output: "", running: false }));
 const mockAdhocStop = mock(() => Promise.resolve({ output: "Stopped.", running: false }));
 const mockModelsList = mock(() => Promise.resolve({ models: [{ id: "model-1" }], defaultModel: "model-1" }));
@@ -11,6 +12,7 @@ mock.module("@/lib/api", () => ({
   api: {
     workspaces: {
       adhoc: mockAdhoc,
+      actionRun: mockActionRun,
       adhocStatus: mockAdhocStatus,
       adhocStop: mockAdhocStop,
     },
@@ -29,10 +31,12 @@ mock.module("@/lib/api", () => ({
 beforeEach(() => {
   localStorage.clear();
   mockAdhoc.mockClear();
+  mockActionRun.mockClear();
   mockAdhocStatus.mockClear();
   mockAdhocStop.mockClear();
   mockModelsList.mockClear();
   mockAdhoc.mockImplementation(() => Promise.resolve({ output: "result", running: false }));
+  mockActionRun.mockImplementation(() => Promise.resolve({ output: "action result", running: false }));
   mockAdhocStatus.mockImplementation(() => Promise.resolve({ output: "", running: false }));
   mockAdhocStop.mockImplementation(() => Promise.resolve({ output: "Stopped.", running: false }));
   mockModelsList.mockImplementation(() => Promise.resolve({ models: [{ id: "model-1" }], defaultModel: "model-1" }));
@@ -306,14 +310,50 @@ describe("useAdhocRun", () => {
     });
   });
 
+  describe("startActionRun", () => {
+    it("calls the named action endpoint with variables", async () => {
+      const { result } = renderHook(() =>
+        useAdhocRun({ workspaceName: "test-ws", skipModelsFetch: true })
+      );
+
+      await act(async () => {
+        await result.current.startActionRun("Run Tests", { Branch: "main" });
+      });
+
+      expect(mockActionRun).toHaveBeenCalledWith("test-ws", {
+        name: "Run Tests",
+        variables: { Branch: "main" },
+      });
+      expect(result.current.output).toBe("action result");
+    });
+
+    it("allows overriding the target workspace for named actions", async () => {
+      const { result } = renderHook(() =>
+        useAdhocRun({ workspaceName: "root-ws", skipModelsFetch: true })
+      );
+
+      await act(async () => {
+        await result.current.startActionRun("Run Tests", {}, "fork-ws");
+      });
+
+      expect(mockActionRun).toHaveBeenCalledWith("fork-ws", {
+        name: "Run Tests",
+        variables: {},
+      });
+    });
+  });
+
   describe("models fetching", () => {
     it("fetches models when skipModelsFetch is false", async () => {
+      mockModelsList.mockImplementationOnce(() => new Promise(() => {}));
+
       renderHook(() =>
         useAdhocRun({ workspaceName: "test-ws", skipModelsFetch: false })
       );
 
-      await new Promise((r) => setTimeout(r, 100));
-      expect(mockModelsList).toHaveBeenCalledWith("test-ws");
+      await waitFor(() => {
+        expect(mockModelsList).toHaveBeenCalledWith("test-ws");
+      });
     });
 
     it("skips fetching models when skipModelsFetch is true", async () => {
@@ -321,8 +361,9 @@ describe("useAdhocRun", () => {
         useAdhocRun({ workspaceName: "test-ws", skipModelsFetch: true })
       );
 
-      await new Promise((r) => setTimeout(r, 100));
-      expect(mockModelsList).not.toHaveBeenCalled();
+      await waitFor(() => {
+        expect(mockModelsList).not.toHaveBeenCalled();
+      });
     });
   });
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { api, ApiError } from "@/lib/api";
-import type { ApiModelsResponse } from "@/types";
+import type { ApiAdhocResponse, ApiModelsResponse } from "@/types";
 
 const MAX_HISTORY_ENTRIES = 20;
 const POLL_INTERVAL_MS = 2000;
@@ -45,7 +45,8 @@ export interface UseAdhocRunResult {
   output: string;
   isRunning: boolean;
   runError: string | null;
-  startRun: (promptOverride?: string, modelOverride?: string) => void;
+  startRun: (promptOverride?: string, modelOverride?: string, workspaceOverride?: string) => void;
+  startActionRun: (actionName: string, variables?: Record<string, string>, workspaceOverride?: string) => void;
   stopRun: () => void;
   handleSubmit: (event: React.FormEvent) => void;
   handleKeyDown: (event: React.KeyboardEvent) => void;
@@ -73,6 +74,7 @@ export function useAdhocRun({
   const [output, setOutput] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+  const [runWorkspaceName, setRunWorkspaceName] = useState(workspaceName);
   const [promptHistory, setPromptHistory] = useState<string[]>(() =>
     readLocalStorage<string[]>(storageKey(workspaceName, "history"), []),
   );
@@ -80,6 +82,7 @@ export function useAdhocRun({
   const outputRef = useRef<HTMLPreElement | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mountedRef = useRef(true);
+  const previousWorkspaceNameRef = useRef(workspaceName);
 
   // -- persist helpers --
 
@@ -142,7 +145,13 @@ export function useAdhocRun({
 
   // reset running state when workspace changes
   useEffect(() => {
+    if (previousWorkspaceNameRef.current === workspaceName) {
+      return;
+    }
+
+    previousWorkspaceNameRef.current = workspaceName;
     stopPolling();
+    setRunWorkspaceName(workspaceName);
     setIsRunning(false);
     setOutput("");
     setRunError(null);
@@ -195,10 +204,10 @@ export function useAdhocRun({
     }
   }, [models, selectedModel, currentModel, setSelectedModel]);
 
-  const startStatusPolling = useCallback(() => {
+  const startStatusPolling = useCallback((statusWorkspaceName: string) => {
     pollTimerRef.current = setInterval(async () => {
       try {
-        const poll = await api.workspaces.adhocStatus(workspaceName);
+        const poll = await api.workspaces.adhocStatus(statusWorkspaceName);
         if (!mountedRef.current) return;
         if (poll.output) setOutput(poll.output);
         if (!poll.running) { stopPolling(); setIsRunning(false); }
@@ -207,53 +216,107 @@ export function useAdhocRun({
         setIsRunning(false);
       }
     }, POLL_INTERVAL_MS);
-  }, [workspaceName, stopPolling]);
+  }, [stopPolling]);
 
   useEffect(() => {
-    if (!workspaceName) return;
+    if (!workspaceName || runWorkspaceName !== workspaceName) return;
     let cancelled = false;
     api.workspaces.adhocStatus(workspaceName).then((status) => {
       if (cancelled) return;
       if (status.output) setOutput(status.output);
-      if (status.running) { setIsRunning(true); startStatusPolling(); }
+      if (status.running) {
+        setRunWorkspaceName(workspaceName);
+        setIsRunning(true);
+        startStatusPolling(workspaceName);
+      }
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [workspaceName, startStatusPolling]);
+  }, [workspaceName, runWorkspaceName, startStatusPolling]);
 
-  const startRun = useCallback(
-    async (promptOverride?: string, modelOverride?: string) => {
-      const trimmedPrompt = (promptOverride ?? prompt).trim();
-      const trimmedModel = (modelOverride ?? selectedModel).trim();
-      if (!workspaceName || isRunning || !trimmedPrompt || !trimmedModel) return;
+  const executeRun = useCallback(
+    async ({
+      targetWorkspaceName,
+      historyEntry,
+      errorMessage,
+      execute,
+    }: {
+      targetWorkspaceName: string;
+      historyEntry?: string;
+      errorMessage: string;
+      execute: (workspace: string) => Promise<ApiAdhocResponse>;
+    }) => {
+      const trimmedWorkspaceName = targetWorkspaceName.trim();
+      if (!trimmedWorkspaceName || isRunning) return;
 
       stopPolling();
+      setRunWorkspaceName(trimmedWorkspaceName);
       setIsRunning(true);
       setRunError(null);
       setOutput("");
-      addToHistory(trimmedPrompt);
+      if (historyEntry) {
+        addToHistory(historyEntry);
+      }
 
       try {
-        const result = await api.workspaces.adhoc(workspaceName, trimmedPrompt, trimmedModel);
+        const result = await execute(trimmedWorkspaceName);
         if (result.output) setOutput(result.output);
-        if (!result.running) { setIsRunning(false); return; }
-        startStatusPolling();
+        if (!result.running) {
+          setIsRunning(false);
+          return;
+        }
+        startStatusPolling(trimmedWorkspaceName);
       } catch (err) {
         if (err instanceof ApiError) {
           setRunError(err.message);
         } else {
-          setRunError("Failed to execute ad-hoc prompt");
+          setRunError(errorMessage);
         }
         setIsRunning(false);
       }
     },
-    [workspaceName, isRunning, prompt, selectedModel, stopPolling, addToHistory, startStatusPolling],
+    [addToHistory, isRunning, startStatusPolling, stopPolling],
+  );
+
+  const startRun = useCallback(
+    async (promptOverride?: string, modelOverride?: string, workspaceOverride?: string) => {
+      const trimmedPrompt = (promptOverride ?? prompt).trim();
+      const trimmedModel = (modelOverride ?? selectedModel).trim();
+      const targetWorkspaceName = workspaceOverride ?? workspaceName;
+      if (!targetWorkspaceName || !trimmedPrompt || !trimmedModel) return;
+
+      await executeRun({
+        targetWorkspaceName,
+        historyEntry: trimmedPrompt,
+        errorMessage: "Failed to execute ad-hoc prompt",
+        execute: (targetWorkspace) => api.workspaces.adhoc(targetWorkspace, trimmedPrompt, trimmedModel),
+      });
+    },
+    [executeRun, prompt, selectedModel, workspaceName],
+  );
+
+  const startActionRun = useCallback(
+    async (actionName: string, variables: Record<string, string> = {}, workspaceOverride?: string) => {
+      const trimmedActionName = actionName.trim();
+      const targetWorkspaceName = workspaceOverride ?? workspaceName;
+      if (!targetWorkspaceName || !trimmedActionName) return;
+
+      await executeRun({
+        targetWorkspaceName,
+        errorMessage: "Failed to execute action",
+        execute: (targetWorkspace) => api.workspaces.actionRun(targetWorkspace, {
+          name: trimmedActionName,
+          variables,
+        }),
+      });
+    },
+    [executeRun, workspaceName],
   );
 
   const stopRun = useCallback(async () => {
-    if (!workspaceName || !isRunning) return;
+    if (!runWorkspaceName || !isRunning) return;
 
     try {
-      await api.workspaces.adhocStop(workspaceName);
+      await api.workspaces.adhocStop(runWorkspaceName);
       stopPolling();
       setIsRunning(false);
       setOutput((prev) => (prev ? prev + "\n\nStopped." : "Stopped."));
@@ -264,7 +327,7 @@ export function useAdhocRun({
         setRunError("Failed to stop ad-hoc prompt");
       }
     }
-  }, [workspaceName, isRunning, stopPolling]);
+  }, [isRunning, runWorkspaceName, stopPolling]);
 
   const handleSubmit = useCallback(
     (event: React.FormEvent) => {
@@ -296,6 +359,7 @@ export function useAdhocRun({
     isRunning,
     runError,
     startRun,
+    startActionRun,
     stopRun,
     handleSubmit,
     handleKeyDown,

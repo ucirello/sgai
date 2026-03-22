@@ -3,7 +3,7 @@ import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/re
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { SessionTab, ActionBar } from "../SessionTab";
+import { SessionTab } from "../SessionTab";
 
 beforeEach(() => {
   document.body.style.pointerEvents = "auto";
@@ -462,62 +462,5 @@ describe("SessionTab", () => {
       renderSessionTab({ hasProjectMgmt: true });
       expect(screen.getByText("No content available")).toBeTruthy();
     });
-  });
-});
-
-describe("ActionBar", () => {
-  it("renders nothing when actions array is empty", () => {
-    const { container } = render(
-      <TooltipProvider>
-        <ActionBar actions={[]} isRunning={false} onActionClick={() => {}} />
-      </TooltipProvider>
-    );
-    expect(container.innerHTML).toBe("");
-  });
-
-  it("renders action buttons", () => {
-    const actions = [
-      { name: "Run Tests", model: "model-1", prompt: "run tests", description: "Run test suite" },
-    ];
-
-    render(
-      <TooltipProvider>
-        <ActionBar actions={actions} isRunning={false} onActionClick={() => {}} />
-      </TooltipProvider>
-    );
-
-    expect(screen.getByText("Run Tests")).toBeTruthy();
-  });
-
-  it("disables buttons when running", () => {
-    const actions = [
-      { name: "Run Tests", model: "model-1", prompt: "run tests", description: "Run test suite" },
-    ];
-
-    render(
-      <TooltipProvider>
-        <ActionBar actions={actions} isRunning={true} onActionClick={() => {}} />
-      </TooltipProvider>
-    );
-
-    const button = screen.getByText("Run Tests");
-    expect(button.closest("button")?.hasAttribute("disabled")).toBe(true);
-  });
-
-  it("calls onActionClick when button is clicked", async () => {
-    const user = userEvent.setup();
-    const onActionClick = mock(() => {});
-    const actions = [
-      { name: "Run Tests", model: "model-1", prompt: "run tests", description: "Run test suite" },
-    ];
-
-    render(
-      <TooltipProvider>
-        <ActionBar actions={actions} isRunning={false} onActionClick={onActionClick} />
-      </TooltipProvider>
-    );
-
-    await user.click(screen.getByText("Run Tests"));
-    expect(onActionClick).toHaveBeenCalledWith(actions[0]);
   });
 });

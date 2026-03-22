@@ -22,7 +22,7 @@ import {
   AlertDialogCancel,
 } from "@/components/ui/alert-dialog";
 import { PromptHistory } from "@/components/PromptHistory";
-import { ActionBar } from "@/pages/tabs/SessionTab";
+import { ActionBar } from "@/components/ActionBar";
 import { api } from "@/lib/api";
 import { useFactoryState, triggerFactoryRefresh } from "@/lib/factory-state";
 import { useAdhocRun } from "@/hooks/useAdhocRun";
@@ -31,7 +31,9 @@ import type { ApiForkEntry, ApiActionEntry } from "@/types";
 interface ForksTabProps {
   workspaceName: string;
   actions?: ApiActionEntry[];
-  onActionClick?: (action: ApiActionEntry, forkName: string) => void;
+  actionConfigError?: string;
+  onActionClick?: (action: ApiActionEntry, variables: Record<string, string>, forkName: string) => void;
+  isActionRunning?: boolean;
 }
 
 function ForksTabSkeleton() {
@@ -68,13 +70,18 @@ interface CompactForkRowProps {
   rootName: string;
   needsInput: boolean;
   actions?: ApiActionEntry[];
-  onActionClick?: (action: ApiActionEntry, forkName: string) => void;
+  isActionRunning: boolean;
+  onActionClick?: (action: ApiActionEntry, variables: Record<string, string>, forkName: string) => void;
 }
 
-function CompactForkRow({ fork, rootName, needsInput, actions, onActionClick }: CompactForkRowProps) {
+function CompactForkRow({ fork, rootName, needsInput, actions, isActionRunning, onActionClick }: CompactForkRowProps) {
   const navigate = useNavigate();
   const [actionError, setActionError] = useState<string | null>(null);
   const [isActionPending, startActionTransition] = useTransition();
+  const respondLabel = `Respond to fork ${fork.name}`;
+  const openEditorLabel = `Open fork ${fork.name} in Editor`;
+  const openInSgaiLabel = `Open fork ${fork.name} in sgai`;
+  const deleteForkLabel = `Delete fork ${fork.name}`;
 
   const handleOpenEditor = useCallback((event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -139,12 +146,12 @@ function CompactForkRow({ fork, rootName, needsInput, actions, onActionClick }: 
                 className="h-7 w-7"
                 onClick={handleRespond}
                 disabled={isActionPending || !needsInput}
-                aria-label="Respond"
+                aria-label={respondLabel}
               >
                 <Mail className="h-3.5 w-3.5" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Respond</TooltipContent>
+            <TooltipContent>{respondLabel}</TooltipContent>
           </Tooltip>
 
           <Tooltip>
@@ -156,12 +163,12 @@ function CompactForkRow({ fork, rootName, needsInput, actions, onActionClick }: 
                 className="h-7 w-7"
                 onClick={handleOpenEditor}
                 disabled={isActionPending}
-                aria-label="Open in Editor"
+                aria-label={openEditorLabel}
               >
                 <SquarePen className="h-3.5 w-3.5" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Open in Editor</TooltipContent>
+            <TooltipContent>{openEditorLabel}</TooltipContent>
           </Tooltip>
 
           <Tooltip>
@@ -173,12 +180,12 @@ function CompactForkRow({ fork, rootName, needsInput, actions, onActionClick }: 
                 className="h-7 w-7"
                 onClick={handleOpenInSgai}
                 disabled={isActionPending}
-                aria-label="Open in sgai"
+                aria-label={openInSgaiLabel}
               >
                 <ExternalLink className="h-3.5 w-3.5" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Open in sgai</TooltipContent>
+            <TooltipContent>{openInSgaiLabel}</TooltipContent>
           </Tooltip>
 
           <AlertDialog>
@@ -191,13 +198,13 @@ function CompactForkRow({ fork, rootName, needsInput, actions, onActionClick }: 
                     variant="ghost"
                     className="h-7 w-7 text-destructive hover:text-destructive"
                     disabled={isActionPending}
-                    aria-label="Delete fork"
+                    aria-label={deleteForkLabel}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </AlertDialogTrigger>
               </TooltipTrigger>
-              <TooltipContent>Delete fork</TooltipContent>
+              <TooltipContent>{deleteForkLabel}</TooltipContent>
             </Tooltip>
             <AlertDialogContent>
               <AlertDialogHeader>
@@ -221,28 +228,16 @@ function CompactForkRow({ fork, rootName, needsInput, actions, onActionClick }: 
         </div>
 
         {actions && actions.length > 0 && (
-          <div className="flex items-center gap-1 shrink-0 border-l pl-2 ml-1">
-            {actions.map((action) => (
-              <Tooltip key={`${action.name}-${action.model}`}>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="h-7 text-xs px-2"
-                    disabled={isActionPending}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      onActionClick?.(action, fork.name);
-                    }}
-                  >
-                    {action.name}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>{action.description || action.model}</TooltipContent>
-              </Tooltip>
-            ))}
+          <div className="shrink-0 border-l pl-2 ml-1">
+            <ActionBar
+              actions={actions}
+              isRunning={isActionPending || isActionRunning}
+              onActionClick={(action, variables) => onActionClick?.(action, variables, fork.name)}
+              accessibilityContext={`fork ${fork.name}`}
+              className="flex items-center gap-1"
+              buttonClassName="h-7 px-2 text-xs"
+              showValidationErrors={false}
+            />
           </div>
         )}
       </div>
@@ -387,7 +382,7 @@ function InlineRunBox({ workspaceName }: { workspaceName: string }) {
   );
 }
 
-export function ForksTab({ workspaceName, actions, onActionClick }: ForksTabProps) {
+export function ForksTab({ workspaceName, actions, actionConfigError, onActionClick, isActionRunning = false }: ForksTabProps) {
   const navigate = useNavigate();
   const { workspaces: allWorkspaces, fetchStatus } = useFactoryState();
   const handleCreateFork = useCallback(() => {
@@ -418,15 +413,17 @@ export function ForksTab({ workspaceName, actions, onActionClick }: ForksTabProp
   }
 
   const forks = workspace.forks ?? [];
-  const isAnyForkRunning = forks.some((fork) => fork.running);
+  const hasActionBar = Boolean((actions && actions.length > 0) || actionConfigError?.trim());
 
   return (
     <div className="space-y-4">
-      {actions && actions.length > 0 && (
+      {hasActionBar && (
         <ActionBar
-          actions={actions}
-          isRunning={isAnyForkRunning}
-          onActionClick={(action) => onActionClick?.(action, workspaceName)}
+          actions={actions ?? []}
+          actionConfigError={actionConfigError}
+          isRunning={isActionRunning}
+          onActionClick={(action, variables) => onActionClick?.(action, variables, workspaceName)}
+          accessibilityContext={`workspace ${workspaceName}`}
         />
       )}
       {forks.length === 0 ? (
@@ -447,6 +444,7 @@ export function ForksTab({ workspaceName, actions, onActionClick }: ForksTabProp
               rootName={workspaceName}
               needsInput={needsInputMap[fork.name] ?? false}
               actions={actions}
+              isActionRunning={isActionRunning}
               onActionClick={onActionClick}
             />
           ))}

@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAdhocStatusService(t *testing.T) {
@@ -118,4 +121,65 @@ func TestAnsiEscapePatternMatches(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestRunScriptActionLogsQuotedArguments(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, rootDir, "script-log-ws")
+
+	result := server.runScriptAction(wsDir, "Print", []string{"printf", "%s", "hello world"})
+	require.NoError(t, result.Error)
+
+	require.Eventually(t, func() bool {
+		st := server.getAdhocState(wsDir)
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		return !st.running
+	}, time.Second, 10*time.Millisecond)
+
+	st := server.getAdhocState(wsDir)
+	st.mu.Lock()
+	output := st.output.String()
+	st.mu.Unlock()
+
+	assert.Contains(t, output, `$ printf %s "hello world"`)
+	assert.NotContains(t, output, "$ printf %s hello world")
+}
+
+func TestAdhocStopServiceDoesNotReportStopAsCommandError(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, rootDir, "stop-coordination-ws")
+
+	result := server.startCommandService(wsDir, commandStartSpec{
+		command:               "sleep",
+		args:                  []string{"30"},
+		logLabel:              "test",
+		startedMessage:        "started",
+		alreadyRunningMessage: "already running",
+	})
+	require.NoError(t, result.Error)
+
+	require.Eventually(t, func() bool {
+		st := server.getAdhocState(wsDir)
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		return st.running && st.cmd != nil
+	}, time.Second, 10*time.Millisecond)
+
+	stopResult := server.adhocStopService(wsDir)
+	assert.Contains(t, stopResult.Output, "[stopped by user]")
+
+	require.Eventually(t, func() bool {
+		st := server.getAdhocState(wsDir)
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		return !st.running && st.cmd == nil
+	}, time.Second, 10*time.Millisecond)
+
+	st := server.getAdhocState(wsDir)
+	st.mu.Lock()
+	output := st.output.String()
+	st.mu.Unlock()
+
+	assert.False(t, strings.Contains(output, "[command exited with error:"), output)
 }
