@@ -121,7 +121,7 @@ test.describe("Agent Coordination Workflow", () => {
     }
   });
 
-  test("view changes tab shows diffs", async ({ page }) => {
+  test("workspace detail no longer exposes diff or commits tabs", async ({ page }) => {
     await page.waitForSelector("text=Workspaces", { timeout: 10000 });
 
     const workspaceLink = page.locator("a[href^='/workspaces/']").first();
@@ -129,36 +129,10 @@ test.describe("Agent Coordination Workflow", () => {
 
     await page.waitForURL(/\/workspaces\/[^/]+/);
 
-    const changesTab = page.locator('a[href$="/changes"]');
-    const hasChangesTab = await changesTab.isVisible().catch(() => false);
-
-    if (hasChangesTab) {
-      await changesTab.click();
-
-      await page.waitForURL(/\/changes/);
-
-      await expect(page.locator("text=Diffs")).toBeVisible();
-    }
-  });
-
-  test("view commits tab shows commit history", async ({ page }) => {
-    await page.waitForSelector("text=Workspaces", { timeout: 10000 });
-
-    const workspaceLink = page.locator("a[href^='/workspaces/']").first();
-    await workspaceLink.click();
-
-    await page.waitForURL(/\/workspaces\/[^/]+/);
-
-    const commitsTab = page.locator('a[href$="/commits"]');
-    const hasCommitsTab = await commitsTab.isVisible().catch(() => false);
-
-    if (hasCommitsTab) {
-      await commitsTab.click();
-
-      await page.waitForURL(/\/commits/);
-
-      await expect(page.locator("text=Commits")).toBeVisible();
-    }
+    await expect(page.getByRole("link", { name: "Diffs" })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "Commits" })).toHaveCount(0);
+    await expect(page.locator('a[href$="/changes"]')).toHaveCount(0);
+    await expect(page.locator('a[href$="/commits"]')).toHaveCount(0);
   });
 
   test("execution time displays correctly", async ({ page }) => {

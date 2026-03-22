@@ -57,8 +57,6 @@ const createMockWorkspace = (overrides = {}) => ({
   messages: [],
   projectTodos: [],
   agentTodos: [],
-  changes: { description: "", diffLines: [] },
-  commits: [],
   log: [],
   external: false,
   ...overrides,
@@ -282,15 +280,44 @@ describe("WorkspaceDetail", () => {
       expect(mockForkTemplate).not.toHaveBeenCalled();
     });
 
-    it("keeps root repository fork navigation unchanged", async () => {
-      mockWorkspaces = [createMockWorkspace({ isRoot: true, forks: [{ name: "test-workspace-fork", dir: "/path/to/test-workspace-fork", running: false, needsInput: false, inProgress: false, pinned: false, description: "Fork 1", commitAhead: 0, commits: [] }] })];
-      renderWorkspaceDetail("test-workspace", "forks");
+    it("lets forked roots open the fork editor", async () => {
+      mockWorkspaces = [createMockWorkspace({ isRoot: true, forks: [{ name: "test-workspace-fork", dir: "/path/to/test-workspace-fork", running: false, needsInput: false, inProgress: false, pinned: false, description: "Fork 1" }] })];
+
+      const { router } = renderWorkspaceDetailRouter("/workspaces/test-workspace/fork");
 
       await waitFor(() => {
-        expect(screen.getByRole("link", { name: "Forks" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Create Fork" })).toBeTruthy();
       });
 
-      expect(screen.queryByRole("link", { name: "Fork" })).toBeNull();
+      expect(screen.getByRole("link", { name: "Forks" })).toBeTruthy();
+      expect(screen.getByRole("link", { name: "Fork" })).toBeTruthy();
+      expect(router.state.location.pathname).toBe("/workspaces/test-workspace/fork");
+    });
+
+    it("redirects forked roots from progress routes to Forks", async () => {
+      mockWorkspaces = [createMockWorkspace({ isRoot: true, forks: [{ name: "test-workspace-fork", dir: "/path/to/test-workspace-fork", running: false, needsInput: false, inProgress: false, pinned: false, description: "Fork 1" }] })];
+
+      renderWorkspaceDetailRouter("/workspaces/test-workspace/progress");
+
+      await waitFor(() => {
+        expect(mockNavigate).toHaveBeenCalledWith("/workspaces/test-workspace/forks", { replace: true });
+      });
+
+      expect(screen.getByRole("link", { name: "Forks" })).toBeTruthy();
+      expect(screen.getByRole("link", { name: "Fork" })).toBeTruthy();
+    });
+
+    it("redirects unsupported tabs to Progress for standalone workspaces", async () => {
+      mockWorkspaces = [createMockWorkspace()];
+
+      renderWorkspaceDetailRouter("/workspaces/test-workspace/unknown");
+
+      await waitFor(() => {
+        expect(mockNavigate).toHaveBeenCalledWith("/workspaces/test-workspace/progress", { replace: true });
+      });
+
+      expect(screen.getByRole("link", { name: "Progress" })).toBeTruthy();
+      expect(screen.queryByRole("heading", { name: /Unknown Tab — Not Yet Available/i })).toBeNull();
     });
 
     it("shows Start button when workspace is not running", async () => {
@@ -612,6 +639,13 @@ describe("WorkspaceDetail", () => {
         const errorAlert = errorElements.find(el => el.getAttribute("role") === "alert");
         expect(errorAlert).toBeTruthy();
       });
+
+      await waitFor(() => {
+        const runningBadges = screen.queryAllByText("running");
+        expect(runningBadges.length).toBeGreaterThan(0);
+      });
+
+      expect(screen.queryByText("stopped")).toBeNull();
     });
 
     it("shows error message when pin toggle fails", async () => {

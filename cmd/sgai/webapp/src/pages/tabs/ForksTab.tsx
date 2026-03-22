@@ -1,6 +1,6 @@
 import { useState, useTransition, useMemo, useCallback, type MouseEvent } from "react";
 import { useNavigate } from "react-router";
-import { ChevronRight, ChevronDown, Mail, SquarePen, ExternalLink, Trash2, Square } from "lucide-react";
+import { Mail, SquarePen, ExternalLink, Trash2, Square } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -21,18 +21,12 @@ import {
   AlertDialogAction,
   AlertDialogCancel,
 } from "@/components/ui/alert-dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 import { PromptHistory } from "@/components/PromptHistory";
 import { ActionBar } from "@/pages/tabs/SessionTab";
 import { api } from "@/lib/api";
 import { useFactoryState, triggerFactoryRefresh } from "@/lib/factory-state";
 import { useAdhocRun } from "@/hooks/useAdhocRun";
-import type { ApiForkEntry, ApiForkCommit, ApiActionEntry } from "@/types";
+import type { ApiForkEntry, ApiActionEntry } from "@/types";
 
 interface ForksTabProps {
   workspaceName: string;
@@ -69,54 +63,6 @@ function StatusDot({ running, needsInput }: { running: boolean; needsInput: bool
   );
 }
 
-function ForkCommitList({ commits }: { commits: ApiForkCommit[] }) {
-  if (!commits || commits.length === 0) {
-    return <p className="text-xs italic text-muted-foreground">No commits to display.</p>;
-  }
-
-  return (
-    <ol className="space-y-1.5 list-decimal list-inside">
-      {commits.map((commit) => (
-        <li key={commit.changeId} className="text-xs space-y-0.5">
-          <div className="inline-flex items-center gap-2 flex-wrap">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="font-mono text-muted-foreground cursor-help">
-                  {commit.changeId.slice(0, 8)}
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>{commit.changeId} {commit.commitId}</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="text-muted-foreground cursor-help">{commit.timestamp}</span>
-              </TooltipTrigger>
-              <TooltipContent>{commit.timestamp}</TooltipContent>
-            </Tooltip>
-            {commit.bookmarks && commit.bookmarks.length > 0 && (
-              <span className="inline-flex gap-1">
-                {commit.bookmarks.map((bm) => (
-                  <Badge key={bm} variant="secondary" className="text-[0.6rem] px-1.5 py-0">
-                    {bm}
-                  </Badge>
-                ))}
-              </span>
-            )}
-          </div>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="text-sm truncate max-w-md cursor-help ml-4">
-                {commit.description}
-              </div>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-sm">{commit.description}</TooltipContent>
-          </Tooltip>
-        </li>
-      ))}
-    </ol>
-  );
-}
-
 interface CompactForkRowProps {
   fork: ApiForkEntry;
   rootName: string;
@@ -127,7 +73,6 @@ interface CompactForkRowProps {
 
 function CompactForkRow({ fork, rootName, needsInput, actions, onActionClick }: CompactForkRowProps) {
   const navigate = useNavigate();
-  const [isOpen, setIsOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [isActionPending, startActionTransition] = useTransition();
 
@@ -170,172 +115,144 @@ function CompactForkRow({ fork, rootName, needsInput, actions, onActionClick }: 
     navigate(`/workspaces/${encodeURIComponent(fork.name)}/progress`);
   }, [fork.name, navigate]);
 
-  const hasCommits = fork.commits && fork.commits.length > 0;
-
   return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-      <div className="border rounded-md overflow-hidden">
-        <div className="flex items-center gap-2 px-3 py-2 bg-muted/10 hover:bg-muted/20 transition-colors">
-          <CollapsibleTrigger asChild>
-            <button
-              type="button"
-              className="shrink-0 p-0.5 rounded hover:bg-muted transition-colors"
-              aria-label={isOpen ? "Collapse commits" : "Expand commits"}
-              disabled={!hasCommits}
-            >
-              {isOpen
-                ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-                : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-              }
-            </button>
-          </CollapsibleTrigger>
-
+    <div className="border rounded-md overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-2 bg-muted/10 hover:bg-muted/20 transition-colors">
           <StatusDot running={fork.running} needsInput={needsInput} />
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="font-medium text-sm truncate flex-1 min-w-0 cursor-default">
+              {fork.description || fork.name}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>{fork.name}</TooltipContent>
+        </Tooltip>
+
+        <div className="flex items-center gap-1 shrink-0">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                size="icon"
+                variant={needsInput ? "default" : "ghost"}
+                className="h-7 w-7"
+                onClick={handleRespond}
+                disabled={isActionPending || !needsInput}
+                aria-label="Respond"
+              >
+                <Mail className="h-3.5 w-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Respond</TooltipContent>
+          </Tooltip>
 
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className="font-medium text-sm truncate flex-1 min-w-0 cursor-default">
-                {fork.description || fork.name}
-              </span>
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="h-7 w-7"
+                onClick={handleOpenEditor}
+                disabled={isActionPending}
+                aria-label="Open in Editor"
+              >
+                <SquarePen className="h-3.5 w-3.5" />
+              </Button>
             </TooltipTrigger>
-            <TooltipContent>{fork.name}</TooltipContent>
+            <TooltipContent>Open in Editor</TooltipContent>
           </Tooltip>
 
-          <div className="flex items-center gap-1 shrink-0">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="h-7 w-7"
+                onClick={handleOpenInSgai}
+                disabled={isActionPending}
+                aria-label="Open in sgai"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Open in sgai</TooltipContent>
+          </Tooltip>
+
+          <AlertDialog>
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  size="icon"
-                  variant={needsInput ? "default" : "ghost"}
-                  className="h-7 w-7"
-                  onClick={handleRespond}
-                  disabled={isActionPending || !needsInput}
-                  aria-label="Respond"
-                >
-                  <Mail className="h-3.5 w-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Respond</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="h-7 w-7"
-                  onClick={handleOpenEditor}
-                  disabled={isActionPending}
-                  aria-label="Open in Editor"
-                >
-                  <SquarePen className="h-3.5 w-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Open in Editor</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="h-7 w-7"
-                  onClick={handleOpenInSgai}
-                  disabled={isActionPending}
-                  aria-label="Open in sgai"
-                >
-                  <ExternalLink className="h-3.5 w-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Open in sgai</TooltipContent>
-            </Tooltip>
-
-            <AlertDialog>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <AlertDialogTrigger asChild>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      className="h-7 w-7 text-destructive hover:text-destructive"
-                      disabled={isActionPending}
-                      aria-label="Delete fork"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </AlertDialogTrigger>
-                </TooltipTrigger>
-                <TooltipContent>Delete fork</TooltipContent>
-              </Tooltip>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Delete fork</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    This will permanently delete &lsquo;{fork.name}&rsquo; from disk. This action cannot be undone.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction
-                    onClick={handleDeleteConfirmed}
+                <AlertDialogTrigger asChild>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7 text-destructive hover:text-destructive"
                     disabled={isActionPending}
-                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    aria-label="Delete fork"
                   >
-                    Delete
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          </div>
-
-          {actions && actions.length > 0 && (
-            <div className="flex items-center gap-1 shrink-0 border-l pl-2 ml-1">
-              {actions.map((action) => (
-                <Tooltip key={`${action.name}-${action.model}`}>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="h-7 text-xs px-2"
-                      disabled={isActionPending}
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        onActionClick?.(action, fork.name);
-                      }}
-                    >
-                      {action.name}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>{action.description || action.model}</TooltipContent>
-                </Tooltip>
-              ))}
-            </div>
-          )}
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </AlertDialogTrigger>
+              </TooltipTrigger>
+              <TooltipContent>Delete fork</TooltipContent>
+            </Tooltip>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete fork</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This will permanently delete &lsquo;{fork.name}&rsquo; from disk. This action cannot be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={handleDeleteConfirmed}
+                  disabled={isActionPending}
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                >
+                  Delete
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
 
-        {actionError && (
-          <div className="px-3 py-1.5 border-t bg-destructive/5">
-            <p className="text-xs text-destructive" role="alert">{actionError}</p>
+        {actions && actions.length > 0 && (
+          <div className="flex items-center gap-1 shrink-0 border-l pl-2 ml-1">
+            {actions.map((action) => (
+              <Tooltip key={`${action.name}-${action.model}`}>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs px-2"
+                    disabled={isActionPending}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onActionClick?.(action, fork.name);
+                    }}
+                  >
+                    {action.name}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{action.description || action.model}</TooltipContent>
+              </Tooltip>
+            ))}
           </div>
         )}
-
-        <CollapsibleContent>
-          {hasCommits && (
-            <div className="px-4 py-3 border-t bg-muted/5">
-              <ScrollArea className="max-h-[150px]">
-                <ForkCommitList commits={fork.commits} />
-              </ScrollArea>
-            </div>
-          )}
-        </CollapsibleContent>
       </div>
-    </Collapsible>
+
+      {actionError && (
+        <div className="px-3 py-1.5 border-t bg-destructive/5">
+          <p className="text-xs text-destructive" role="alert">{actionError}</p>
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -36,8 +36,6 @@ export function makeWorkspace(overrides: Partial<ApiWorkspaceEntry> = {}): ApiWo
     messages: [],
     projectTodos: [],
     agentTodos: [],
-    changes: { description: "", diffLines: [] },
-    commits: [],
     log: [],
     ...overrides,
   };

@@ -25,7 +25,6 @@ import type {
   ApiOpenEditorResponse,
   ApiDeleteForkResponse,
   ApiDeleteWorkspaceResponse,
-  ApiDiffResponse,
   ApiDeleteMessageResponse,
   ApiAttachWorkspaceResponse,
   ApiDetachWorkspaceResponse,
@@ -156,10 +155,6 @@ export const api = {
       fetchJSON<ApiDeleteWorkspaceResponse>(
         `/api/v1/workspaces/${encodeURIComponent(name)}/delete`,
         { method: "POST", body: JSON.stringify({ confirm: true }) },
-      ),
-    getDiff: (name: string) =>
-      fetchJSON<ApiDiffResponse>(
-        `/api/v1/workspaces/${encodeURIComponent(name)}/diff`,
       ),
     deleteMessage: (name: string, messageId: number) =>
       fetchJSON<ApiDeleteMessageResponse>(

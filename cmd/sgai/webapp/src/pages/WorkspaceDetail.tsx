@@ -29,8 +29,6 @@ const SessionTab = lazy(() => import("./tabs/SessionTab").then((m) => ({ default
 const MessagesTab = lazy(() => import("./tabs/MessagesTab").then((m) => ({ default: m.MessagesTab })));
 const LogTab = lazy(() => import("./tabs/LogTab").then((m) => ({ default: m.LogTab })));
 const RunTab = lazy(() => import("./tabs/RunTab").then((m) => ({ default: m.RunTab })));
-const ChangesTab = lazy(() => import("./tabs/ChangesTab").then((m) => ({ default: m.ChangesTab })));
-const CommitsTab = lazy(() => import("./tabs/CommitsTab").then((m) => ({ default: m.CommitsTab })));
 const EventsTab = lazy(() => import("./tabs/EventsTab").then((m) => ({ default: m.EventsTab })));
 const ForksTab = lazy(() => import("./tabs/ForksTab").then((m) => ({ default: m.ForksTab })));
 
@@ -78,8 +76,6 @@ const TABS = [
   { key: "progress", label: "Progress" },
   { key: "fork", label: "Fork" },
   { key: "log", label: "Log" },
-  { key: "changes", label: "Diffs" },
-  { key: "commits", label: "Commits" },
   { key: "messages", label: "Messages" },
   { key: "internals", label: "Internals" },
   { key: "run", label: "Run" },
@@ -87,7 +83,33 @@ const TABS = [
 
 const ROOT_TABS = [
   { key: "forks", label: "Forks" },
+  { key: "fork", label: "Fork" },
 ] as const;
+
+const DEFAULT_TAB = TABS[0].key;
+const DEFAULT_ROOT_TAB = ROOT_TABS[0].key;
+const TAB_KEYS = new Set(TABS.map((tab) => tab.key));
+const ROOT_TAB_KEYS = new Set(ROOT_TABS.map((tab) => tab.key));
+
+function resolveRedirectTab({
+  requestedTab,
+  isForkedRoot,
+  showForkTab,
+}: {
+  requestedTab: string;
+  isForkedRoot: boolean;
+  showForkTab: boolean;
+}): string | null {
+  if (isForkedRoot) {
+    return ROOT_TAB_KEYS.has(requestedTab) ? null : DEFAULT_ROOT_TAB;
+  }
+
+  if (requestedTab === "fork" && !showForkTab) {
+    return DEFAULT_TAB;
+  }
+
+  return TAB_KEYS.has(requestedTab) ? null : DEFAULT_TAB;
+}
 
 interface TabNavProps {
   workspaceName: string;
@@ -131,7 +153,7 @@ function TabNav({ workspaceName, activeTab, isRoot, hasForks, showForkTab }: Tab
 export function WorkspaceDetail(): JSX.Element | null {
   const { name, "*": tabPath } = useParams<{ name: string; "*": string }>();
   const workspaceName = name ?? "";
-  const activeTab = tabPath?.split("/")[0] || "progress";
+  const requestedTab = tabPath?.split("/")[0] || "progress";
   const navigate = useNavigate();
 
   const [actionError, setActionError] = useState<string | null>(null);
@@ -189,6 +211,9 @@ export function WorkspaceDetail(): JSX.Element | null {
 
   const hasForks = (detail?.forks?.length ?? 0) > 0;
   const isForkedRoot = Boolean(detail?.isRoot && hasForks);
+  const showForkTab = canCreateForkFromWorkspace(detail);
+  const redirectTab = resolveRedirectTab({ requestedTab, isForkedRoot, showForkTab });
+  const activeTab = redirectTab ?? requestedTab;
 
   const [actionOutputOpen, setActionOutputOpen] = useState(false);
   const {
@@ -206,19 +231,11 @@ export function WorkspaceDetail(): JSX.Element | null {
   }, [startActionRun]);
 
   useEffect(() => {
-    if (!detail || !detail.isRoot) return;
+    if (!detail) return;
     if (detail.name !== workspaceName) return;
-    const encodedName = encodeURIComponent(detail.name);
-
-    if (hasForks && activeTab !== "forks") {
-      navigate(`/workspaces/${encodedName}/forks`, { replace: true });
-      return;
-    }
-
-    if (!hasForks && activeTab === "forks") {
-      navigate(`/workspaces/${encodedName}/progress`, { replace: true });
-    }
-  }, [detail, hasForks, activeTab, navigate, workspaceName]);
+    if (!redirectTab) return;
+    navigate(`/workspaces/${encodeURIComponent(detail.name)}/${redirectTab}`, { replace: true });
+  }, [detail, navigate, redirectTab, workspaceName]);
 
   if (loading && !detail) return <WorkspaceDetailSkeleton />;
 
@@ -260,8 +277,6 @@ export function WorkspaceDetail(): JSX.Element | null {
   const showEditGoalAction = detail.hasSgai || Boolean(detail.goalContent?.trim());
   const showOpenEditorAction = true;
   const isActionDisabled = effectiveRunning || isStartStopPending || isSelfDrivePending;
-  const showStandaloneForkTab = canCreateForkFromWorkspace(detail) && !detail.isRoot;
-
   const handleStart = () => {
     if (!workspaceName) return;
     setActionError(null);
@@ -281,11 +296,13 @@ export function WorkspaceDetail(): JSX.Element | null {
   const handleStop = () => {
     if (!workspaceName) return;
     setActionError(null);
-    setRunningOverride(false);
     startStartStopTransition(async () => {
       try {
-        await api.workspaces.stop(workspaceName);
+        const result = await api.workspaces.stop(workspaceName);
         triggerFactoryRefresh();
+        if (!result.running) {
+          setRunningOverride(false);
+        }
       } catch (err) {
         setActionError(err instanceof Error ? err.message : "Failed to stop session");
       }
@@ -623,7 +640,7 @@ export function WorkspaceDetail(): JSX.Element | null {
             activeTab={activeTab}
             isRoot={detail.isRoot}
             hasForks={hasForks}
-            showForkTab={showStandaloneForkTab}
+            showForkTab={showForkTab}
           />
 
         </div>
@@ -675,7 +692,7 @@ export function WorkspaceDetail(): JSX.Element | null {
               hasProjectMgmt={detail.hasProjectMgmt}
               actions={detail.actions}
               onActionClick={isForkedRoot ? handleActionClick : undefined}
-              showForkTab={showStandaloneForkTab}
+              showForkTab={showForkTab}
             />
           </Suspense>
         </div>
@@ -720,10 +737,6 @@ function TabContent({
       return showForkTab ? <InlineForkEditor key={workspaceName} workspaceName={workspaceName} /> : <NotYetAvailable pageName="Fork Tab" />;
     case "log":
       return <LogTab workspaceName={workspaceName} />;
-    case "changes":
-      return <ChangesTab workspaceName={workspaceName} />;
-    case "commits":
-      return <CommitsTab workspaceName={workspaceName} />;
     case "messages":
       return <MessagesTab workspaceName={workspaceName} />;
     case "internals":

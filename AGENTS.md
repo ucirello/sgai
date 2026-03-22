@@ -56,6 +56,8 @@ You must use the skill `run-long-running-processes-in-tmux`
 
 When implementing new features that handle external input, interact with the filesystem, or manage concurrent operations, the coordinator should consider invoking the stpa-analyst to identify unsafe control actions and loss scenarios before implementation begins.
 
+When making changes, you can safely assume that backward compatibility is not necessary unless explicitly stated in GOAL.md - therefore, changes that simplify the code can be made by mostly deleting lines.
+
 # Code Auditing Guidance
 
 When auditing for dead routes, check both literal usage (API endpoint calls from frontend) AND semantic liveness (does the route lead to functionality that has been replaced by inline components or other mechanisms). A route that is technically reachable but leads to replaced functionality is dead.

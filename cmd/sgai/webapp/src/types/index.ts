@@ -35,8 +35,6 @@ export interface ApiWorkspaceEntry {
   messages: ApiMessageEntry[];
   projectTodos: ApiTodoEntry[];
   agentTodos: ApiTodoEntry[];
-  changes: ApiChangesData;
-  commits: ApiCommitEntry[];
   forks?: ApiForkEntry[];
   log: ApiLogEntry[];
   pendingQuestion?: ApiPendingQuestionResponse;
@@ -236,31 +234,6 @@ export interface ApiLogEntry {
   text: string;
 }
 
-export interface ApiDiffLine {
-  lineNumber: number;
-  text: string;
-  class: string;
-}
-
-export interface ApiChangesData {
-  description: string;
-  diffLines: ApiDiffLine[];
-}
-
-export interface ApiDiffResponse {
-  diff: string;
-}
-
-export interface ApiCommitEntry {
-  changeId: string;
-  commitId: string;
-  workspaces?: string[];
-  timestamp: string;
-  bookmarks?: string[];
-  description: string;
-  graphChar: string;
-}
-
 export interface ApiEventEntry {
   timestamp: string;
   formattedTime: string;
@@ -275,14 +248,6 @@ export interface ApiAgentModelEntry {
   models: string[];
 }
 
-export interface ApiForkCommit {
-  changeId: string;
-  commitId: string;
-  timestamp: string;
-  bookmarks?: string[];
-  description: string;
-}
-
 export interface ApiForkEntry {
   name: string;
   dir: string;
@@ -291,8 +256,6 @@ export interface ApiForkEntry {
   inProgress: boolean;
   pinned: boolean;
   description: string;
-  commitAhead: number;
-  commits: ApiForkCommit[];
 }
 
 export interface ApiComposerAgentConf {
