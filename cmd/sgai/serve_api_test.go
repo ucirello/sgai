@@ -2518,7 +2518,7 @@ func TestComposeSaveWorkspaceNotFound(t *testing.T) {
 func TestComposeSaveWithMatchingEtag(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "etag-match-ws")
-	goalContent := "# Goal"
+	goalContent := "---\ntitle: Goal\n---\nBody"
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte(goalContent), 0o644))
 
 	etag := computeEtag([]byte(goalContent))

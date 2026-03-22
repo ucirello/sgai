@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
+import { resolveRepositoryLabelFromCandidates } from "@/lib/repository-label";
 import { MissingWorkspaceNotice } from "@/components/MissingWorkspaceNotice";
 import type { ApiComposeTemplateEntry } from "@/types";
 
@@ -22,13 +23,21 @@ export function ComposeTemplateRedirect() {
       setError(null);
 
       try {
-        const resp = await api.compose.templates();
+        const [resp, composeState] = await Promise.all([
+          api.compose.templates(),
+          api.compose.get(workspace),
+        ]);
         const template = resp.templates.find((entry) => entry.id === id);
         if (!template) {
           throw new Error("Template not found");
         }
 
-        const draft = buildDraftRequest(template);
+        const draft = buildDraftRequest(
+          template,
+          workspace,
+          composeState.wizard.title,
+          composeState.state.title,
+        );
         await api.compose.saveDraft(workspace, draft);
 
         if (!cancelled) {
@@ -78,9 +87,19 @@ export function ComposeTemplateRedirect() {
   );
 }
 
-function buildDraftRequest(template: ApiComposeTemplateEntry) {
+function buildDraftRequest(
+  template: ApiComposeTemplateEntry,
+  workspace: string,
+  ...titleCandidates: Array<string | null | undefined>
+) {
+  const repositoryTitle = resolveRepositoryLabelFromCandidates(
+    workspace,
+    ...titleCandidates,
+  );
+
   return {
     state: {
+      title: repositoryTitle,
       description: "",
       completionGate: "",
       agents: template.agents,
@@ -90,6 +109,7 @@ function buildDraftRequest(template: ApiComposeTemplateEntry) {
     wizard: {
       currentStep: 1,
       fromTemplate: template.id,
+      title: repositoryTitle,
       description: "",
       techStack: [],
       safetyAnalysis: false,

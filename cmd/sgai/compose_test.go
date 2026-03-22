@@ -10,8 +10,9 @@ import (
 )
 
 func TestDefaultComposerState(t *testing.T) {
-	state := defaultComposerState()
+	state := defaultComposerState(filepath.Join(t.TempDir(), "my-workspace"))
 	assert.NotNil(t, state)
+	assert.Equal(t, "my-workspace", state.Title)
 	assert.Len(t, state.Agents, 1)
 	assert.Equal(t, "coordinator", state.Agents[0].Name)
 	assert.True(t, state.Agents[0].Selected)
@@ -21,23 +22,27 @@ func TestDefaultComposerState(t *testing.T) {
 func TestExtractDescriptionFromBody(t *testing.T) {
 	tests := []struct {
 		name     string
+		title    string
 		body     string
 		expected string
 	}{
 		{
 			name:     "simpleDescription",
+			title:    "My Project",
 			body:     "# My Project\n\nThis is a description.\n\n## Tasks\n\n- Task 1\n- Task 2",
-			expected: "My Project\n\nThis is a description.",
+			expected: "This is a description.",
 		},
 		{
 			name:     "descriptionWithMultipleSections",
+			title:    "My Project",
 			body:     "# My Project\n\nThis is a description.\n\nMore details here.\n\n## Tasks\n\n- Task 1",
-			expected: "My Project\n\nThis is a description.\n\nMore details here.",
+			expected: "This is a description.\n\nMore details here.",
 		},
 		{
 			name:     "noTasksSection",
+			title:    "My Project",
 			body:     "# My Project\n\nThis is a description.",
-			expected: "My Project\n\nThis is a description.",
+			expected: "This is a description.",
 		},
 		{
 			name:     "emptyBody",
@@ -51,20 +56,63 @@ func TestExtractDescriptionFromBody(t *testing.T) {
 		},
 		{
 			name:     "titleWithTrailingWhitespace",
+			title:    "Title Only",
 			body:     "# Title Only\n   ",
-			expected: "Title Only",
+			expected: "",
 		},
 		{
 			name:     "tasksSectionAtEnd",
+			title:    "My Project",
 			body:     "# My Project\n\nDescription here.\n\n## Tasks\n\n- Task 1\n\n## Another Section\n\nMore content",
-			expected: "My Project\n\nDescription here.\n\n## Another Section\n\nMore content",
+			expected: "Description here.\n\n## Another Section\n\nMore content",
+		},
+		{
+			name:     "preservesDifferentBodyHeading",
+			title:    "Frontmatter Title",
+			body:     "# Body Heading\n\nDescription here.",
+			expected: "# Body Heading\n\nDescription here.",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := extractDescriptionFromBody(tt.body)
+			result := extractDescriptionFromBody(tt.body, tt.title)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestStripLeadingComposerTitleTrimsATXClosingHashes(t *testing.T) {
+	body := "# Release Plan ###\n\nDescription here."
+	assert.Equal(t, "Description here.", stripLeadingComposerTitle(body, "Release Plan"))
+}
+
+func TestStripLeadingComposerTitleHonorsATXIndentationBoundary(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		expected string
+	}{
+		{
+			name:     "threeLeadingSpaces",
+			body:     "   # Release Plan\n\nDescription here.",
+			expected: "Description here.",
+		},
+		{
+			name:     "fourLeadingSpaces",
+			body:     "    # Release Plan\n\nDescription here.",
+			expected: "    # Release Plan\n\nDescription here.",
+		},
+		{
+			name:     "leadingTab",
+			body:     "\t# Release Plan\n\nDescription here.",
+			expected: "\t# Release Plan\n\nDescription here.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, stripLeadingComposerTitle(tt.body, "Release Plan"))
 		})
 	}
 }
@@ -120,13 +168,13 @@ func TestLoadComposerStateFromDisk(t *testing.T) {
 		name      string
 		setupFunc func(*testing.T, string)
 		wantErr   bool
-		validate  func(*testing.T, composerState)
+		validate  func(*testing.T, string, composerState)
 	}{
 		{
 			name: "loadFromValidGOAL",
 			setupFunc: func(t *testing.T, dir string) {
 				goalContent := `---
-title: Repository Title
+title: Frontmatter Title
 flow: |
   "agent1" -> "agent2"
 models:
@@ -147,9 +195,9 @@ Description here.
 				require.NoError(t, os.WriteFile(goalPath, []byte(goalContent), 0644))
 			},
 			wantErr: false,
-			validate: func(t *testing.T, state composerState) {
-				assert.Equal(t, "Repository Title", state.Title)
-				assert.Equal(t, "My Project\n\nDescription here.", state.Description)
+			validate: func(t *testing.T, _ string, state composerState) {
+				assert.Equal(t, "Frontmatter Title", state.Title)
+				assert.Equal(t, "# My Project\n\nDescription here.", state.Description)
 				assert.Equal(t, "make test", state.CompletionGate)
 				assert.Contains(t, state.Flow, "agent1")
 				assert.Contains(t, state.Tasks, "Task 1")
@@ -164,7 +212,8 @@ Description here.
 			setupFunc: func(_ *testing.T, _ string) {
 			},
 			wantErr: false,
-			validate: func(t *testing.T, state composerState) {
+			validate: func(t *testing.T, dir string, state composerState) {
+				assert.Equal(t, filepath.Base(dir), state.Title)
 				assert.Len(t, state.Agents, 1)
 				assert.Equal(t, "coordinator", state.Agents[0].Name)
 			},
@@ -181,7 +230,8 @@ invalid yaml content
 				require.NoError(t, os.WriteFile(goalPath, []byte(goalContent), 0644))
 			},
 			wantErr: false,
-			validate: func(t *testing.T, state composerState) {
+			validate: func(t *testing.T, dir string, state composerState) {
+				assert.Equal(t, filepath.Base(dir), state.Title)
 				assert.Len(t, state.Agents, 1)
 				assert.Equal(t, "coordinator", state.Agents[0].Name)
 			},
@@ -199,7 +249,9 @@ flow: |
 				require.NoError(t, os.WriteFile(goalPath, []byte(goalContent), 0644))
 			},
 			wantErr: false,
-			validate: func(t *testing.T, state composerState) {
+			validate: func(t *testing.T, dir string, state composerState) {
+				assert.Equal(t, filepath.Base(dir), state.Title)
+				assert.Equal(t, "# My Project", state.Description)
 				assert.Len(t, state.Agents, 0)
 			},
 		},
@@ -213,7 +265,7 @@ flow: |
 			state := loadComposerStateFromDisk(dir)
 
 			if tt.validate != nil {
-				tt.validate(t, state)
+				tt.validate(t, dir, state)
 			}
 		})
 	}
@@ -228,8 +280,8 @@ func TestBuildGOALContent(t *testing.T) {
 		{
 			name: "buildCompleteGOAL",
 			state: composerState{
-				Title:          "Repository Title",
-				Description:    "My Project\n\nDescription here.",
+				Title:          "Frontmatter Title",
+				Description:    "Description here.",
 				CompletionGate: "make test",
 				Flow:           `"agent1" -> "agent2"`,
 				Tasks:          "- Task 1\n- Task 2",
@@ -240,14 +292,16 @@ func TestBuildGOALContent(t *testing.T) {
 			},
 			validate: func(t *testing.T, content string) {
 				assert.Contains(t, content, "---")
-				assert.Contains(t, content, "title: Repository Title")
+				assert.Contains(t, content, "title:")
+				assert.Contains(t, content, "Frontmatter Title")
 				assert.Contains(t, content, "flow: |")
 				assert.Contains(t, content, `"agent1" -> "agent2"`)
 				assert.Contains(t, content, "models:")
 				assert.Contains(t, content, `"agent1": "model1"`)
 				assert.Contains(t, content, `"agent2": "model2"`)
 				assert.Contains(t, content, "completionGateScript: make test")
-				assert.Contains(t, content, "My Project")
+				assert.Contains(t, content, "Description here.")
+				assert.NotContains(t, content, "# Frontmatter Title")
 				assert.Contains(t, content, "## Tasks")
 				assert.Contains(t, content, "Task 1")
 			},
@@ -255,36 +309,40 @@ func TestBuildGOALContent(t *testing.T) {
 		{
 			name: "buildGOALWithNoFlow",
 			state: composerState{
-				Title:       "My Project",
-				Description: "My Project",
+				Title:       "No Flow Title",
+				Description: "Description only",
 				Agents: []composerAgentConf{
 					{Name: "agent1", Selected: true, Model: "model1"},
 				},
 			},
 			validate: func(t *testing.T, content string) {
 				assert.NotContains(t, content, "flow:")
+				assert.Contains(t, content, "title:")
+				assert.Contains(t, content, "No Flow Title")
 				assert.Contains(t, content, "models:")
-				assert.Contains(t, content, "My Project")
+				assert.Contains(t, content, "Description only")
 			},
 		},
 		{
 			name: "buildGOALWithNoAgents",
 			state: composerState{
-				Title:       "My Project",
-				Description: "My Project",
+				Title:       "No Agents Title",
+				Description: "Description only",
 				Flow:        `"agent1" -> "agent2"`,
 			},
 			validate: func(t *testing.T, content string) {
 				assert.Contains(t, content, "flow:")
+				assert.Contains(t, content, "title:")
+				assert.Contains(t, content, "No Agents Title")
 				assert.NotContains(t, content, "models:")
-				assert.Contains(t, content, "My Project")
+				assert.Contains(t, content, "Description only")
 			},
 		},
 		{
 			name: "buildGOALWithUnselectedAgents",
 			state: composerState{
-				Title:       "My Project",
-				Description: "My Project",
+				Title:       "Selected Agents Title",
+				Description: "Description only",
 				Agents: []composerAgentConf{
 					{Name: "agent1", Selected: false, Model: "model1"},
 					{Name: "agent2", Selected: true, Model: "model2"},
@@ -299,8 +357,8 @@ func TestBuildGOALContent(t *testing.T) {
 		{
 			name: "buildGOALWithNoTasks",
 			state: composerState{
-				Title:       "My Project",
-				Description: "My Project",
+				Title:       "No Tasks Title",
+				Description: "Description only",
 				Agents: []composerAgentConf{
 					{Name: "agent1", Selected: true, Model: "model1"},
 				},
@@ -312,8 +370,8 @@ func TestBuildGOALContent(t *testing.T) {
 		{
 			name: "buildGOALWithNoCompletionGate",
 			state: composerState{
-				Title:       "My Project",
-				Description: "My Project",
+				Title:       "No Gate Title",
+				Description: "Description only",
 				Agents: []composerAgentConf{
 					{Name: "agent1", Selected: true, Model: "model1"},
 				},
@@ -339,6 +397,7 @@ func TestDefaultWizardState(t *testing.T) {
 	assert.Equal(t, 1, state.CurrentStep)
 	assert.False(t, state.SafetyAnalysis)
 	assert.Empty(t, state.FromTemplate)
+	assert.Empty(t, state.Title)
 	assert.Empty(t, state.Description)
 	assert.Empty(t, state.TechStack)
 	assert.Empty(t, state.CompletionGate)
@@ -358,12 +417,14 @@ func TestSyncWizardState(t *testing.T) {
 				TechStack:   []string{},
 			},
 			state: composerState{
+				Title: "Compose Title",
 				Agents: []composerAgentConf{
 					{Name: "go-developer", Selected: true, Model: "model1"},
 					{Name: "stpa-analyst", Selected: true, Model: "model2"},
 				},
 			},
 			validate: func(t *testing.T, wizard wizardState) {
+				assert.Equal(t, "Compose Title", wizard.Title)
 				assert.Contains(t, wizard.TechStack, "go")
 				assert.True(t, wizard.SafetyAnalysis)
 			},

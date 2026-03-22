@@ -1265,6 +1265,7 @@ type apiComposeStateResponse struct {
 type apiWizardState struct {
 	CurrentStep    int      `json:"currentStep"`
 	FromTemplate   string   `json:"fromTemplate,omitempty"`
+	Title          string   `json:"title,omitempty"`
 	Description    string   `json:"description,omitempty"`
 	TechStack      []string `json:"techStack"`
 	SafetyAnalysis bool     `json:"safetyAnalysis"`
@@ -1284,28 +1285,7 @@ func (s *Server) handleAPIComposeState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cs := s.getComposerSession(workspacePath)
-	cs.mu.Lock()
-	currentState := cs.state
-	wizard := syncWizardState(cs.wizard, currentState)
-	cs.mu.Unlock()
-
-	var flowErr string
-	if currentState.Flow != "" {
-		if _, errParse := parseFlow(currentState.Flow, workspacePath); errParse != nil {
-			flowErr = errParse.Error()
-		}
-	}
-
-	techStack := buildAPITechStackItems(wizard.TechStack)
-
-	writeJSON(w, apiComposeStateResponse{
-		Workspace:      filepath.Base(workspacePath),
-		State:          currentState,
-		Wizard:         apiWizardState(wizard),
-		TechStackItems: techStack,
-		FlowError:      flowErr,
-	})
+	writeJSON(w, s.composeStateService(workspacePath))
 }
 
 func buildAPITechStackItems(selectedTech []string) []apiTechStackItem {
@@ -1337,42 +1317,19 @@ func (s *Server) handleAPIComposeSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	goalPath := filepath.Join(workspacePath, "GOAL.md")
-
-	ifMatch := r.Header.Get("If-Match")
-	if ifMatch != "" {
-		currentContent, errRead := os.ReadFile(goalPath)
-		if errRead != nil && !os.IsNotExist(errRead) {
-			http.Error(w, "failed to read current GOAL.md", http.StatusInternalServerError)
+	result, errSave := s.composeSaveService(workspacePath, r.Header.Get("If-Match"))
+	if errSave != nil {
+		if errors.Is(errSave, errComposerGoalModified) {
+			http.Error(w, errSave.Error(), http.StatusPreconditionFailed)
 			return
 		}
-		currentEtag := computeEtag(currentContent)
-		if ifMatch != currentEtag {
-			http.Error(w, "GOAL.md has been modified by another session", http.StatusPreconditionFailed)
-			return
-		}
-	}
-
-	cs := s.getComposerSession(workspacePath)
-	cs.mu.Lock()
-	currentState := cs.state
-	cs.mu.Unlock()
-
-	goalContent := buildGOALContent(currentState)
-
-	if errWrite := os.WriteFile(goalPath, []byte(goalContent), 0644); errWrite != nil {
-		http.Error(w, "failed to save GOAL.md: "+errWrite.Error(), http.StatusInternalServerError)
+		http.Error(w, errSave.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	s.notifyStateChange()
-
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	if err := json.NewEncoder(w).Encode(apiComposeSaveResponse{
-		Saved:     true,
-		Workspace: filepath.Base(workspacePath),
-	}); err != nil {
+	if err := json.NewEncoder(w).Encode(apiComposeSaveResponse(result)); err != nil {
 		log.Println("failed to encode json response:", err)
 	}
 }
@@ -1417,33 +1374,13 @@ func (s *Server) handleAPIComposePreview(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	cs := s.getComposerSession(workspacePath)
-	cs.mu.Lock()
-	currentState := cs.state
-	cs.mu.Unlock()
-
-	preview := buildGOALContent(currentState)
-
-	var flowErr string
-	if currentState.Flow != "" {
-		if _, errParse := parseFlow(currentState.Flow, workspacePath); errParse != nil {
-			flowErr = errParse.Error()
-		}
-	}
-
-	goalPath := filepath.Join(workspacePath, "GOAL.md")
-	existingContent, errRead := os.ReadFile(goalPath)
-	if errRead != nil && !os.IsNotExist(errRead) {
-		http.Error(w, "failed to read current GOAL.md", http.StatusInternalServerError)
+	result, errPreview := s.composePreviewService(workspacePath)
+	if errPreview != nil {
+		http.Error(w, errPreview.Error(), http.StatusInternalServerError)
 		return
 	}
-	etag := computeEtag(existingContent)
 
-	writeJSON(w, apiComposePreviewResponse{
-		Content:   preview,
-		FlowError: flowErr,
-		Etag:      etag,
-	})
+	writeJSON(w, apiComposePreviewResponse(result))
 }
 
 type apiComposeDraftRequest struct {
@@ -1468,15 +1405,7 @@ func (s *Server) handleAPIComposeDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cs := s.getComposerSession(workspacePath)
-	cs.mu.Lock()
-	cs.state = req.State
-	cs.wizard = wizardState(req.Wizard)
-	cs.mu.Unlock()
-
-	s.notifyStateChange()
-
-	writeJSON(w, apiComposeDraftResponse{Saved: true})
+	writeJSON(w, apiComposeDraftResponse(s.composeDraftService(workspacePath, req.State, wizardState(req.Wizard))))
 }
 
 type apiForkRequest struct {

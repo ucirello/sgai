@@ -270,7 +270,7 @@ describe("Dashboard", () => {
       renderDashboard();
 
       await waitFor(() => {
-        const expandButtons = screen.queryAllByLabelText("Toggle forks");
+        const expandButtons = screen.queryAllByRole("button", { name: /forks for /i });
         expect(expandButtons.length).toBeGreaterThan(0);
       });
     });
@@ -284,7 +284,7 @@ describe("Dashboard", () => {
         expect(ws2Elements.length).toBeGreaterThan(0);
       });
 
-      const expandButtons = screen.getAllByLabelText("Toggle forks");
+      const expandButtons = screen.getAllByRole("button", { name: /forks for /i });
       await user.click(expandButtons[0]);
 
       await waitFor(() => {
@@ -405,11 +405,11 @@ describe("Dashboard", () => {
       renderDashboard();
 
       await waitFor(() => {
-        const expandButtons = screen.queryAllByLabelText("Toggle forks");
+        const expandButtons = screen.queryAllByRole("button", { name: /forks for /i });
         expect(expandButtons.length).toBeGreaterThan(0);
       });
 
-      const expandButtons = screen.getAllByLabelText("Toggle forks");
+      const expandButtons = screen.getAllByRole("button", { name: /forks for /i });
       await user.click(expandButtons[0]);
 
       await waitFor(() => {
@@ -511,7 +511,7 @@ describe("Dashboard", () => {
         expect(ws2Elements.length).toBeGreaterThan(0);
       });
 
-      const expandButtons = screen.getAllByLabelText("Toggle forks");
+      const expandButtons = screen.getAllByRole("button", { name: /forks for /i });
       await user.click(expandButtons[0]);
 
       await waitFor(() => {
@@ -575,11 +575,11 @@ describe("Dashboard", () => {
       renderDashboard();
 
       await waitFor(() => {
-        const expandButtons = screen.queryAllByLabelText("Toggle forks");
+        const expandButtons = screen.queryAllByRole("button", { name: /forks for /i });
         expect(expandButtons.length).toBeGreaterThan(0);
       });
 
-      const expandButtons = screen.getAllByLabelText("Toggle forks");
+      const expandButtons = screen.getAllByRole("button", { name: /forks for /i });
       await user.click(expandButtons[0]);
 
       await waitFor(() => {

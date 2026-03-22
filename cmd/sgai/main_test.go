@@ -1147,6 +1147,12 @@ func TestExtractBodyNoFrontmatter(t *testing.T) {
 	assert.Equal(t, "Just plain text", string(result))
 }
 
+func TestExtractBodyWithDelimiterSubstringInFrontmatterValue(t *testing.T) {
+	input := []byte("---\ntitle: Keep --- title\n---\n# Body content")
+	result := extractBody(input)
+	assert.Equal(t, "# Body content", string(result))
+}
+
 func TestExtractFrontmatterDescriptionEmpty(t *testing.T) {
 	result := extractFrontmatterDescription("")
 	assert.Empty(t, result)
@@ -1419,6 +1425,23 @@ retrospective: "true"
 			}
 		})
 	}
+}
+
+func TestParseYAMLFrontmatterPreservesTitleWhenOtherMetadataIsInvalid(t *testing.T) {
+	content := []byte("---\ntitle: Preserved Title\nflow: [invalid yaml\n---\n# Goal")
+
+	metadata, errParse := parseYAMLFrontmatter(content)
+	require.Error(t, errParse)
+	assert.Equal(t, "Preserved Title", metadata.Title)
+}
+
+func TestParseYAMLFrontmatterAllowsDelimiterSubstringInValues(t *testing.T) {
+	content := []byte("---\ntitle: Keep --- title\ncontinuousModePrompt: keep --- prompt\n---\n# Goal")
+
+	metadata, errParse := parseYAMLFrontmatter(content)
+	require.NoError(t, errParse)
+	assert.Equal(t, "Keep --- title", metadata.Title)
+	assert.Equal(t, "keep --- prompt", metadata.ContinuousModePrompt)
 }
 
 func TestRetrospectiveEnabled(t *testing.T) {
@@ -3018,6 +3041,16 @@ flow: test
 content`,
 			expectOK:     true,
 			expectedYAML: "title: \"Quoted --- Title\"\nflow: test\n",
+		},
+		{
+			name: "delimiterSubstringInValue",
+			content: `---
+title: Keep --- title
+continuousModePrompt: keep --- prompt
+---
+content`,
+			expectOK:     true,
+			expectedYAML: "title: Keep --- title\ncontinuousModePrompt: keep --- prompt\n",
 		},
 	}
 

@@ -117,7 +117,7 @@ Create endpoints for user registration and login with JWT auth.
 - [ ] Tests pass before completion
 ```
 
-See [GOAL.example.md](GOAL.example.md) for full reference.
+See [cmd/sgai/GOAL.example.md](cmd/sgai/GOAL.example.md) for full reference.
 
 **Agent Aliases:**
 

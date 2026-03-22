@@ -4,15 +4,24 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ArrowLeft, ArrowRight, Pencil, Wand2 } from "lucide-react";
 import { api } from "@/lib/api";
+import { useFactoryState } from "@/lib/factory-state";
+import { resolveRepositoryLabel } from "@/lib/repository-label";
 import type { ApiComposeTemplateEntry } from "@/types";
 
 export function ComposeLanding() {
   const [searchParams] = useSearchParams();
   const workspace = searchParams.get("workspace") ?? "";
+  const { workspaces } = useFactoryState();
   const [templates, setTemplates] = useState<ApiComposeTemplateEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+
+  const workspaceEntry = workspaces.find((entry) => entry.name === workspace);
+  const workspaceLabel = workspace
+    ? resolveRepositoryLabel(workspaceEntry ?? { name: workspace })
+    : "Dashboard";
 
   useEffect(() => {
     let cancelled = false;
@@ -45,7 +54,7 @@ export function ComposeLanding() {
           className="text-sm text-muted-foreground hover:text-foreground transition-colors"
         >
           <ArrowLeft className="inline h-4 w-4 mr-1" />
-          Back to {workspace || "Dashboard"}
+          Back to {workspaceLabel}
         </Link>
       </nav>
 
@@ -67,26 +76,28 @@ export function ComposeLanding() {
       ) : (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 mb-8">
           {templates.map((tmpl) => (
-            <Link
-              key={tmpl.id}
-              to={`/compose/template/${encodeURIComponent(tmpl.id)}?workspace=${encodeURIComponent(workspace)}`}
-              className="no-underline"
-            >
-              <Card className="h-full hover:border-primary transition-colors cursor-pointer py-4">
-                <CardContent className="text-center px-4 py-0">
-                  <div className="text-2xl mb-2">{tmpl.icon}</div>
-                  <div className="font-semibold text-sm mb-1 truncate" title={tmpl.name}>
-                    {tmpl.name}
-                  </div>
-                  <p
-                    className="text-xs text-muted-foreground line-clamp-2"
-                    title={tmpl.description}
-                  >
-                    {tmpl.description}
-                  </p>
-                </CardContent>
-              </Card>
-            </Link>
+            <Tooltip key={tmpl.id}>
+              <TooltipTrigger asChild>
+                <Link
+                  to={`/compose/template/${encodeURIComponent(tmpl.id)}?workspace=${encodeURIComponent(workspace)}`}
+                  className="no-underline"
+                >
+                  <Card className="h-full hover:border-primary transition-colors cursor-pointer py-4">
+                    <CardContent className="text-center px-4 py-0">
+                      <div className="text-2xl mb-2">{tmpl.icon}</div>
+                      <div className="font-semibold text-sm mb-1 truncate">{tmpl.name}</div>
+                      <p className="text-xs text-muted-foreground line-clamp-2">{tmpl.description}</p>
+                    </CardContent>
+                  </Card>
+                </Link>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-xs">
+                <div className="space-y-1">
+                  <div className="font-semibold">{tmpl.name}</div>
+                  <p className="text-xs leading-relaxed">{tmpl.description}</p>
+                </div>
+              </TooltipContent>
+            </Tooltip>
           ))}
         </div>
       )}

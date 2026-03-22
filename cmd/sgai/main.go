@@ -1012,11 +1012,65 @@ func splitFrontmatterBody(content, lineEnding []byte) ([]byte, []byte, error) {
 }
 
 func splitFrontmatter(content []byte) (yamlContent []byte, ok bool) {
-	sections, errSplit := splitFrontmatterSections(content)
-	if errSplit != nil {
+	yamlStart, yamlEnd, _, ok, errFrontmatter := frontmatterBounds(content)
+	if errFrontmatter != nil || !ok {
 		return nil, false
 	}
-	return sections.yamlContent, true
+	return content[yamlStart:yamlEnd], true
+}
+
+func frontmatterBounds(content []byte) (int, int, int, bool, error) {
+	line, next, ok := nextFrontmatterLine(content, 0)
+	if !ok || !bytes.Equal(line, []byte("---")) {
+		return 0, 0, 0, false, nil
+	}
+
+	yamlStart := next
+	for lineStart := next; ; {
+		line, next, ok = nextFrontmatterLine(content, lineStart)
+		if !ok {
+			return 0, 0, 0, false, fmt.Errorf("no closing '---' found for frontmatter")
+		}
+		if bytes.Equal(line, []byte("---")) {
+			return yamlStart, lineStart, next, true, nil
+		}
+		lineStart = next
+	}
+}
+
+func nextFrontmatterLine(content []byte, start int) ([]byte, int, bool) {
+	if start >= len(content) {
+		return nil, start, false
+	}
+
+	end := bytes.IndexByte(content[start:], '\n')
+	if end == -1 {
+		line := bytes.TrimSuffix(content[start:], []byte("\r"))
+		return line, len(content), true
+	}
+
+	end += start
+	line := bytes.TrimSuffix(content[start:end], []byte("\r"))
+	return line, end + 1, true
+}
+
+func extractFrontmatterTitle(yamlContent []byte) (string, bool) {
+	for start := 0; ; {
+		line, next, ok := nextFrontmatterLine(yamlContent, start)
+		if !ok {
+			return "", false
+		}
+		if len(line) > 0 && line[0] != ' ' && line[0] != '\t' && bytes.HasPrefix(line, []byte("title:")) {
+			var metadata struct {
+				Title string `json:"title" yaml:"title"`
+			}
+			if errUnmarshal := yaml.Unmarshal(line, &metadata); errUnmarshal == nil {
+				return strings.TrimSpace(metadata.Title), true
+			}
+			return "", false
+		}
+		start = next
+	}
 }
 
 func parseFrontmatterMap(content []byte) map[string]string {
@@ -1117,6 +1171,9 @@ func tryReloadGoalMetadata(goalPath string, current GoalMetadata, flowDag *dag) 
 
 	newMetadata, errParse := parseYAMLFrontmatter(content)
 	if errParse != nil {
+		if strings.TrimSpace(newMetadata.Title) != "" {
+			current.Title = newMetadata.Title
+		}
 		return current, errParse
 	}
 
@@ -1136,9 +1193,17 @@ func parseYAMLFrontmatter(content []byte) (GoalMetadata, error) {
 		}
 		return GoalMetadata{}, errSplit
 	}
-	var metadata GoalMetadata
-	if err := yaml.Unmarshal(sections.yamlContent, &metadata); err != nil {
-		return GoalMetadata{}, fmt.Errorf("failed to parse YAML frontmatter: %w", err)
+
+	title, hasTitle := extractFrontmatterTitle(sections.yamlContent)
+	metadata := GoalMetadata{}
+	if hasTitle {
+		metadata.Title = title
+	}
+	if errUnmarshal := yaml.Unmarshal(sections.yamlContent, &metadata); errUnmarshal != nil {
+		return metadata, fmt.Errorf("failed to parse YAML frontmatter: %w", errUnmarshal)
+	}
+	if metadata.Title == "" && hasTitle {
+		metadata.Title = title
 	}
 
 	return metadata, nil

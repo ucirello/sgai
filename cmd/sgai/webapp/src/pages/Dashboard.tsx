@@ -35,6 +35,7 @@ import { Loader2, Inbox, Trash2, Link as LinkIcon } from "lucide-react";
 import { useFactoryState, triggerFactoryRefresh } from "@/lib/factory-state";
 import { useSidebarResize } from "@/hooks/useSidebarResize";
 import { cn } from "@/lib/utils";
+import { api } from "@/lib/api";
 import { getRepositoryTitle } from "@/lib/repository-title";
 import { getWorkspaceDeletionCopy } from "@/lib/workspace-delete-copy";
 import type { ApiWorkspaceEntry } from "@/lib/factory-state";
@@ -295,7 +296,8 @@ function WorkspaceTreeItem({ workspace, selectedName, workspaceLookup }: Workspa
             size="icon"
             onClick={() => setExpanded((prev) => !prev)}
             className="w-5 h-6 p-0 text-xs font-semibold shrink-0 mr-1 bg-muted text-muted-foreground hover:bg-secondary hover:text-secondary-foreground transition-colors self-start mt-1"
-            aria-label="Toggle forks"
+            aria-label={expanded ? `Collapse forks for ${displayText}` : `Expand forks for ${displayText}`}
+            aria-expanded={expanded}
           >
             {expanded ? "−" : "+"}
           </Button>
@@ -441,7 +443,8 @@ function PinnedTreeItem({ workspace, selectedName, workspaceLookup, pinnedForks 
             size="icon"
             onClick={() => setExpanded((prev) => !prev)}
             className="w-5 h-6 p-0 text-xs font-semibold shrink-0 mr-1 bg-muted text-muted-foreground hover:bg-secondary hover:text-secondary-foreground transition-colors self-start mt-1"
-            aria-label="Toggle forks"
+            aria-label={expanded ? `Collapse forks for ${displayText}` : `Expand forks for ${displayText}`}
+            aria-expanded={expanded}
           >
             {expanded ? "−" : "+"}
           </Button>
