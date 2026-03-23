@@ -7,9 +7,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"gopkg.in/yaml.v3"
 )
 
 type composerState struct {
+	Title          string              `json:"title,omitempty"`
 	Description    string              `json:"description"`
 	CompletionGate string              `json:"completionGate"`
 	Agents         []composerAgentConf `json:"agents"`
@@ -59,6 +62,7 @@ func loadComposerStateFromDisk(dir string) composerState {
 	bodyContent := string(extractBody(content))
 
 	st := composerState{
+		Title:          metadata.Title,
 		Description:    extractDescriptionFromBody(bodyContent),
 		CompletionGate: metadata.CompletionGateScript,
 		Flow:           metadata.Flow,
@@ -150,7 +154,19 @@ func extractTasksFromBody(body string) string {
 func buildGOALContent(st composerState) string {
 	var buf bytes.Buffer
 
+	title := strings.TrimSpace(st.Title)
+	if title == "" {
+		title = composeGoalTitleFromText(st.Description, "Untitled Goal")
+	}
+	titleBlock, errMarshal := yaml.Marshal(struct {
+		Title string `yaml:"title"`
+	}{Title: title})
+	if errMarshal != nil {
+		titleBlock = []byte("title: Untitled Goal\n")
+	}
+
 	buf.WriteString("---\n")
+	buf.Write(titleBlock)
 
 	if st.Flow != "" {
 		buf.WriteString("flow: |\n")

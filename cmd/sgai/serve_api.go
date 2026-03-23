@@ -169,7 +169,8 @@ type apiWorkspaceFullState struct {
 	CurrentModel      string                      `json:"currentModel"`
 	Task              string                      `json:"task"`
 	GoalContent       string                      `json:"goalContent"`
-	Description       string                      `json:"description"`
+	Title             string                      `json:"title"`
+	ComputedTitle     string                      `json:"computedTitle,omitempty"`
 	RawGoalContent    string                      `json:"rawGoalContent"`
 	FullGoalContent   string                      `json:"fullGoalContent"`
 	PMContent         string                      `json:"pmContent"`
@@ -287,6 +288,10 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 	}
 
 	goalContent, rawGoalContent, fullGoalContent, pmContent, hasProjectMgmt := readGoalAndPMForAPI(ws.Directory)
+	titleState := goalTitleStateFromContent([]byte(fullGoalContent), ws.DirName)
+	if titleState.NeedsRepair {
+		s.enqueueGoalTitleRepair(ws.Directory)
+	}
 
 	hasEditedGoal := false
 	if data, errRead := os.ReadFile(filepath.Join(ws.Directory, "GOAL.md")); errRead == nil {
@@ -341,11 +346,6 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 		}
 	}
 
-	description := extractGoalDescription(fullGoalContent)
-	if description == "" {
-		description = ws.DirName
-	}
-
 	actionState := loadActionsForAPI(ws.Directory)
 
 	full := apiWorkspaceFullState{
@@ -369,7 +369,8 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 		CurrentModel:      resolveCurrentModel(ws.Directory, wfState),
 		Task:              wfState.Task,
 		GoalContent:       goalContent,
-		Description:       description,
+		Title:             titleState.Title,
+		ComputedTitle:     titleState.ComputedTitle,
 		RawGoalContent:    rawGoalContent,
 		FullGoalContent:   fullGoalContent,
 		PMContent:         pmContent,
@@ -408,20 +409,19 @@ func (s *Server) collectForksForAPIFromGroups(rootDir string, groups []workspace
 		for i, fork := range grp.Forks {
 			wg.Go(func() {
 				wfState := s.loadWorkspaceState(fork.Directory)
-				description := fork.DirName
-				if goalData, errGoal := os.ReadFile(filepath.Join(fork.Directory, "GOAL.md")); errGoal == nil {
-					if extracted := extractGoalDescription(string(goalData)); extracted != "" {
-						description = extracted
-					}
+				titleState := goalTitleStateFromPath(fork.Directory, fork.DirName)
+				if titleState.NeedsRepair {
+					s.enqueueGoalTitleRepair(fork.Directory)
 				}
 				forks[i] = apiForkEntry{
-					Name:        fork.DirName,
-					Dir:         fork.Directory,
-					Running:     fork.Running,
-					NeedsInput:  wfState.NeedsHumanInput(),
-					InProgress:  fork.InProgress,
-					Pinned:      fork.Pinned,
-					Description: description,
+					Name:          fork.DirName,
+					Dir:           fork.Directory,
+					Running:       fork.Running,
+					NeedsInput:    wfState.NeedsHumanInput(),
+					InProgress:    fork.InProgress,
+					Pinned:        fork.Pinned,
+					Title:         titleState.Title,
+					ComputedTitle: titleState.ComputedTitle,
 				}
 			})
 		}
@@ -1002,13 +1002,14 @@ func convertEventsForAPI(displays []eventsProgressDisplay) []apiEventEntry {
 }
 
 type apiForkEntry struct {
-	Name        string `json:"name"`
-	Dir         string `json:"dir"`
-	Running     bool   `json:"running"`
-	NeedsInput  bool   `json:"needsInput"`
-	InProgress  bool   `json:"inProgress"`
-	Pinned      bool   `json:"pinned"`
-	Description string `json:"description"`
+	Name          string `json:"name"`
+	Dir           string `json:"dir"`
+	Running       bool   `json:"running"`
+	NeedsInput    bool   `json:"needsInput"`
+	InProgress    bool   `json:"inProgress"`
+	Pinned        bool   `json:"pinned"`
+	Title         string `json:"title"`
+	ComputedTitle string `json:"computedTitle,omitempty"`
 }
 
 func promptTokenForState(coord *state.Coordinator, wfState state.Workflow) string {

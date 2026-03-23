@@ -1,110 +1,295 @@
 package main
 
-import "strings"
+import (
+	"bytes"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"unicode"
 
-func extractGoalDescription(fullContent string) string {
-	body := stripFrontmatter(fullContent)
-	for line := range strings.SplitSeq(body, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
+	"gopkg.in/yaml.v3"
+)
+
+type goalTitleState struct {
+	Title         string
+	ComputedTitle string
+	NeedsRepair   bool
+}
+
+func (s goalTitleState) label() string {
+	if s.Title != "" {
+		return s.Title
+	}
+	return s.ComputedTitle
+}
+
+func goalTitleStateFromPath(dir, dirName string) goalTitleState {
+	if dir == "" {
+		return goalTitleState{ComputedTitle: dirName}
+	}
+	data, errRead := os.ReadFile(filepath.Join(dir, "GOAL.md"))
+	if errRead != nil {
+		return goalTitleState{ComputedTitle: dirName}
+	}
+	return goalTitleStateFromContent(data, dirName)
+}
+
+func goalTitleStateFromContent(content []byte, dirName string) goalTitleState {
+	fallback := dirName
+	if len(content) == 0 {
+		return goalTitleState{ComputedTitle: fallback}
+	}
+	if _, ok := splitFrontmatter(content); !ok {
+		return goalTitleState{ComputedTitle: fallback}
+	}
+	metadata, errParse := parseYAMLFrontmatter(content)
+	if errParse != nil {
+		return goalTitleState{ComputedTitle: fallback}
+	}
+	title := strings.TrimSpace(metadata.Title)
+	if title != "" {
+		return goalTitleState{Title: title}
+	}
+	return goalTitleState{ComputedTitle: fallback, NeedsRepair: true}
+}
+
+func composeGoalTitleFromContent(content []byte, fallback string) string {
+	return composeGoalTitleFromText(string(extractBody(content)), fallback)
+}
+
+func composeGoalTitleFromText(text, fallback string) string {
+	for line := range strings.SplitSeq(text, "\n") {
+		candidate := normalizedGoalTitle(line)
+		if candidate != "" {
+			return candidate
+		}
+	}
+	return fallback
+}
+
+func normalizedGoalTitle(input string) string {
+	candidate := strings.Join(strings.Fields(strings.TrimSpace(input)), " ")
+	return strings.TrimFunc(candidate, func(r rune) bool {
+		return unicode.IsPunct(r) || unicode.IsSpace(r) || unicode.IsSymbol(r)
+	})
+}
+
+func sanitizedPersistedGoalTitle(title string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(title)), " ")
+}
+
+type goalFrontmatterSections struct {
+	frontmatter []byte
+	after       []byte
+	lineEnding  []byte
+}
+
+func splitGoalFrontmatterSections(content []byte) (goalFrontmatterSections, error) {
+	sections, errSplit := splitFrontmatterSections(content)
+	if errSplit != nil {
+		if !bytes.HasPrefix(content, []byte("---")) {
+			return goalFrontmatterSections{}, fmt.Errorf("GOAL.md has no frontmatter")
+		}
+		return goalFrontmatterSections{}, fmt.Errorf("GOAL.md %w", errSplit)
+	}
+	return goalFrontmatterSections{
+		frontmatter: sections.yamlContent,
+		after:       sections.after,
+		lineEnding:  sections.lineEnding,
+	}, nil
+}
+
+func updatedGoalFrontmatter(content []byte, title string) ([]byte, error) {
+	var doc yaml.Node
+	if len(bytes.TrimSpace(content)) == 0 {
+		doc.Kind = yaml.DocumentNode
+		doc.Content = []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}
+	} else if errUnmarshal := yaml.Unmarshal(content, &doc); errUnmarshal != nil {
+		return nil, fmt.Errorf("parse GOAL.md frontmatter: %w", errUnmarshal)
+	}
+	if len(doc.Content) == 0 {
+		doc.Content = []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}
+	}
+	mapping := doc.Content[0]
+	if mapping.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("GOAL.md frontmatter must be a mapping")
+	}
+	if !setGoalFrontmatterTitle(mapping, title) {
+		prependGoalFrontmatterTitle(mapping, title)
+	}
+	var buf bytes.Buffer
+	encoder := yaml.NewEncoder(&buf)
+	if errEncode := encoder.Encode(&doc); errEncode != nil {
+		return nil, fmt.Errorf("marshal GOAL.md frontmatter: %w", errEncode)
+	}
+	if errClose := encoder.Close(); errClose != nil {
+		return nil, fmt.Errorf("close GOAL.md frontmatter encoder: %w", errClose)
+	}
+	return buf.Bytes(), nil
+}
+
+func setGoalFrontmatterTitle(mapping *yaml.Node, title string) bool {
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value != "title" {
 			continue
 		}
-		plain := stripMarkdownFormatting(trimmed)
-		plain = strings.TrimSpace(plain)
-		if plain == "" {
-			continue
-		}
-		if len(plain) >= 256 {
-			return plain[:255] + "..."
-		}
-		return plain
+		value := mapping.Content[i+1]
+		value.Kind = yaml.ScalarNode
+		value.Tag = "!!str"
+		value.Style = 0
+		value.Value = title
+		value.Content = nil
+		value.Alias = nil
+		value.Anchor = ""
+		return true
 	}
-	return ""
+	return false
 }
 
-func stripMarkdownFormatting(s string) string {
-	s = stripMarkdownHeadingPrefix(s)
-	s = stripMarkdownCheckboxMarkers(s)
-	s = stripMarkdownListMarkers(s)
-	s = stripMarkdownLinks(s)
-	s = stripMarkdownEmphasis(s)
-	s = stripMarkdownInlineCode(s)
-	return s
-}
-
-func stripMarkdownHeadingPrefix(s string) string {
-	for len(s) > 0 && s[0] == '#' {
-		s = s[1:]
+func prependGoalFrontmatterTitle(mapping *yaml.Node, title string) {
+	titleNodes := []*yaml.Node{
+		{Kind: yaml.ScalarNode, Tag: "!!str", Value: "title"},
+		{Kind: yaml.ScalarNode, Tag: "!!str", Value: title},
 	}
-	return strings.TrimLeft(s, " ")
+	mapping.Content = append(titleNodes, mapping.Content...)
 }
 
-func stripMarkdownCheckboxMarkers(s string) string {
-	for _, prefix := range []string{"- [x] ", "- [X] ", "- [ ] "} {
-		if strings.HasPrefix(s, prefix) {
-			return s[len(prefix):]
+func frontmatterWithLineEnding(content, lineEnding []byte) []byte {
+	if !bytes.Equal(lineEnding, []byte("\r\n")) {
+		return content
+	}
+	return bytes.ReplaceAll(content, []byte("\n"), lineEnding)
+}
+
+func contentWithInsertedGoalTitle(content []byte, title string) ([]byte, error) {
+	sections, errSplit := splitGoalFrontmatterSections(content)
+	if errSplit != nil {
+		return nil, errSplit
+	}
+	frontmatter, errUpdate := updatedGoalFrontmatter(sections.frontmatter, title)
+	if errUpdate != nil {
+		return nil, errUpdate
+	}
+	frontmatter = frontmatterWithLineEnding(frontmatter, sections.lineEnding)
+	delimiter := []byte("---")
+	var buf bytes.Buffer
+	buf.Write(delimiter)
+	buf.Write(sections.lineEnding)
+	buf.Write(frontmatter)
+	if len(frontmatter) == 0 || !bytes.HasSuffix(frontmatter, sections.lineEnding) {
+		buf.Write(sections.lineEnding)
+	}
+	buf.Write(delimiter)
+	buf.Write(sections.after)
+	return buf.Bytes(), nil
+}
+
+func defaultGoalTitleComposer(workspacePath string, goalContent []byte) (string, error) {
+	return composeGoalTitleFromContent(goalContent, filepath.Base(workspacePath)), nil
+}
+
+func canonicalGoalTitleRepairPath(workspacePath string) string {
+	if workspacePath == "" {
+		return ""
+	}
+	return resolveSymlinks(workspacePath)
+}
+
+func (s *Server) enqueueGoalTitleRepair(workspacePath string) {
+	workspacePath = canonicalGoalTitleRepairPath(workspacePath)
+	if workspacePath == "" {
+		return
+	}
+	s.goalTitleRepairMu.Lock()
+	if _, ok := s.goalTitleRepairQueued[workspacePath]; ok {
+		s.goalTitleRepairMu.Unlock()
+		return
+	}
+	s.goalTitleRepairQueued[workspacePath] = struct{}{}
+	s.goalTitleRepairQueue = append(s.goalTitleRepairQueue, workspacePath)
+	if s.goalTitleRepairRunning {
+		s.goalTitleRepairMu.Unlock()
+		return
+	}
+	s.goalTitleRepairRunning = true
+	s.goalTitleRepairMu.Unlock()
+	go s.runGoalTitleRepairLoop()
+}
+
+func (s *Server) runGoalTitleRepairLoop() {
+	for {
+		workspacePath, ok := s.nextGoalTitleRepair()
+		if !ok {
+			return
 		}
-	}
-	return s
-}
-
-func stripMarkdownListMarkers(s string) string {
-	if strings.HasPrefix(s, "- ") || strings.HasPrefix(s, "* ") {
-		return s[2:]
-	}
-	for i, c := range s {
-		if c >= '0' && c <= '9' {
-			continue
+		if errRepair := s.repairGoalTitle(workspacePath); errRepair != nil {
+			log.Println("failed to repair GOAL.md title:", errRepair)
 		}
-		if c == '.' && i > 0 && i+1 < len(s) && s[i+1] == ' ' {
-			return s[i+2:]
-		}
-		break
+		s.finishGoalTitleRepair(workspacePath)
 	}
-	return s
 }
 
-func stripMarkdownLinks(s string) string {
-	var result strings.Builder
-	i := 0
-	for i < len(s) {
-		if s[i] == '[' {
-			closeBracket := strings.Index(s[i:], "]")
-			if closeBracket == -1 {
-				result.WriteByte(s[i])
-				i++
-				continue
-			}
-			absClose := i + closeBracket
-			linkText := s[i+1 : absClose]
-			if absClose+1 < len(s) && s[absClose+1] == '(' {
-				closeParen := strings.Index(s[absClose+1:], ")")
-				if closeParen != -1 {
-					result.WriteString(linkText)
-					i = absClose + 1 + closeParen + 1
-					continue
-				}
-			}
-			result.WriteString(linkText)
-			i = absClose + 1
-			continue
-		}
-		result.WriteByte(s[i])
-		i++
+func (s *Server) nextGoalTitleRepair() (string, bool) {
+	s.goalTitleRepairMu.Lock()
+	defer s.goalTitleRepairMu.Unlock()
+	if len(s.goalTitleRepairQueue) == 0 {
+		s.goalTitleRepairRunning = false
+		return "", false
 	}
-	return result.String()
+	workspacePath := s.goalTitleRepairQueue[0]
+	s.goalTitleRepairQueue = s.goalTitleRepairQueue[1:]
+	return workspacePath, true
 }
 
-func stripMarkdownEmphasis(s string) string {
-	s = strings.ReplaceAll(s, "***", "")
-	s = strings.ReplaceAll(s, "**", "")
-	s = strings.ReplaceAll(s, "*", "")
-	s = strings.ReplaceAll(s, "___", "")
-	s = strings.ReplaceAll(s, "__", "")
-	s = strings.ReplaceAll(s, "_", "")
-	return s
+func (s *Server) finishGoalTitleRepair(workspacePath string) {
+	workspacePath = canonicalGoalTitleRepairPath(workspacePath)
+	s.goalTitleRepairMu.Lock()
+	delete(s.goalTitleRepairQueued, workspacePath)
+	s.goalTitleRepairMu.Unlock()
 }
 
-func stripMarkdownInlineCode(s string) string {
-	return strings.ReplaceAll(s, "`", "")
+func (s *Server) repairGoalTitle(workspacePath string) error {
+	workspacePath = canonicalGoalTitleRepairPath(workspacePath)
+	goalPath := filepath.Join(workspacePath, "GOAL.md")
+	goalContent, errRead := s.goalTitleReadFile(goalPath)
+	if errRead != nil {
+		if os.IsNotExist(errRead) {
+			return nil
+		}
+		return fmt.Errorf("read GOAL.md: %w", errRead)
+	}
+	titleState := goalTitleStateFromContent(goalContent, filepath.Base(workspacePath))
+	if !titleState.NeedsRepair {
+		return nil
+	}
+	latestGoalContent, errReadLatest := s.goalTitleReadFile(goalPath)
+	if errReadLatest != nil {
+		if os.IsNotExist(errReadLatest) {
+			return nil
+		}
+		return fmt.Errorf("re-read GOAL.md: %w", errReadLatest)
+	}
+	latestTitleState := goalTitleStateFromContent(latestGoalContent, filepath.Base(workspacePath))
+	if !latestTitleState.NeedsRepair {
+		return nil
+	}
+	title, errCompose := s.goalTitleComposer(workspacePath, latestGoalContent)
+	if errCompose != nil {
+		return fmt.Errorf("compose title: %w", errCompose)
+	}
+	title = sanitizedPersistedGoalTitle(title)
+	if title == "" {
+		return fmt.Errorf("compose title: empty title")
+	}
+	updatedContent, errUpdate := contentWithInsertedGoalTitle(latestGoalContent, title)
+	if errUpdate != nil {
+		return fmt.Errorf("insert title: %w", errUpdate)
+	}
+	if errWrite := os.WriteFile(goalPath, updatedContent, 0o644); errWrite != nil {
+		return fmt.Errorf("write GOAL.md: %w", errWrite)
+	}
+	s.notifyStateChange()
+	return nil
 }

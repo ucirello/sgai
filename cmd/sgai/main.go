@@ -895,6 +895,7 @@ func countPendingTodos(wfState state.Workflow, agent string) int {
 // and completion gate command. Models can be either a single string
 // or an array of strings per agent (for multi-model support).
 type GoalMetadata struct {
+	Title                string            `json:"title,omitempty" yaml:"title,omitempty"`
 	Flow                 string            `json:"flow,omitempty" yaml:"flow,omitempty"`
 	Models               map[string]any    `json:"models,omitempty" yaml:"models,omitempty"`
 	Alias                map[string]string `json:"alias,omitempty" yaml:"alias,omitempty"`
@@ -951,20 +952,71 @@ func parseAgentSnippets(dir, agentName string) []string {
 	return metadata.Snippets
 }
 
-func splitFrontmatter(content []byte) (yamlContent []byte, ok bool) {
+type frontmatterSections struct {
+	yamlContent []byte
+	after       []byte
+	lineEnding  []byte
+}
+
+func splitFrontmatterSections(content []byte) (frontmatterSections, error) {
 	delimiter := []byte("---")
 	if !bytes.HasPrefix(content, delimiter) {
+		return frontmatterSections{}, fmt.Errorf("content has no frontmatter")
+	}
+	lineEnding, rest, errLineEnding := frontmatterLineEnding(content[len(delimiter):])
+	if errLineEnding != nil {
+		return frontmatterSections{}, errLineEnding
+	}
+	yamlContent, after, errSplit := splitFrontmatterBody(rest, lineEnding)
+	if errSplit != nil {
+		return frontmatterSections{}, errSplit
+	}
+	return frontmatterSections{yamlContent: yamlContent, after: after, lineEnding: lineEnding}, nil
+}
+
+func frontmatterLineEnding(content []byte) ([]byte, []byte, error) {
+	if bytes.HasPrefix(content, []byte("\r\n")) {
+		return []byte("\r\n"), content[2:], nil
+	}
+	if bytes.HasPrefix(content, []byte("\n")) {
+		return []byte("\n"), content[1:], nil
+	}
+	return nil, nil, fmt.Errorf("frontmatter opening delimiter must end with newline")
+}
+
+func splitFrontmatterBody(content, lineEnding []byte) ([]byte, []byte, error) {
+	delimiter := []byte("---")
+	if bytes.HasPrefix(content, delimiter) {
+		after := content[len(delimiter):]
+		if len(after) > 0 && !bytes.HasPrefix(after, lineEnding) {
+			return nil, nil, fmt.Errorf("frontmatter closing delimiter must be on its own line")
+		}
+		return nil, after, nil
+	}
+	scanOffset := 0
+	for {
+		nextLineOffset := bytes.Index(content[scanOffset:], lineEnding)
+		if nextLineOffset < 0 {
+			return nil, nil, fmt.Errorf("no closing '---' found for frontmatter")
+		}
+		nextLineOffset += scanOffset
+		lineStart := nextLineOffset + len(lineEnding)
+		if bytes.HasPrefix(content[lineStart:], delimiter) {
+			after := content[lineStart+len(delimiter):]
+			if len(after) == 0 || bytes.HasPrefix(after, lineEnding) {
+				return content[:lineStart], after, nil
+			}
+		}
+		scanOffset = lineStart
+	}
+}
+
+func splitFrontmatter(content []byte) (yamlContent []byte, ok bool) {
+	sections, errSplit := splitFrontmatterSections(content)
+	if errSplit != nil {
 		return nil, false
 	}
-	rest := content[len(delimiter):]
-	if len(rest) > 0 && rest[0] == '\n' {
-		rest = rest[1:]
-	}
-	before, _, found := bytes.Cut(rest, delimiter)
-	if !found {
-		return nil, false
-	}
-	return before, true
+	return sections.yamlContent, true
 }
 
 func parseFrontmatterMap(content []byte) map[string]string {
@@ -1077,15 +1129,15 @@ func tryReloadGoalMetadata(goalPath string, current GoalMetadata, flowDag *dag) 
 // parseYAMLFrontmatter extracts YAML frontmatter from content delimited by "---".
 // If no frontmatter is found, returns default metadata.
 func parseYAMLFrontmatter(content []byte) (GoalMetadata, error) {
-	yamlContent, ok := splitFrontmatter(content)
-	if !ok {
-		if bytes.HasPrefix(content, []byte("---")) {
-			return GoalMetadata{}, fmt.Errorf("no closing '---' found for frontmatter")
+	sections, errSplit := splitFrontmatterSections(content)
+	if errSplit != nil {
+		if !bytes.HasPrefix(content, []byte("---")) {
+			return GoalMetadata{}, nil
 		}
-		return GoalMetadata{}, nil
+		return GoalMetadata{}, errSplit
 	}
 	var metadata GoalMetadata
-	if err := yaml.Unmarshal(yamlContent, &metadata); err != nil {
+	if err := yaml.Unmarshal(sections.yamlContent, &metadata); err != nil {
 		return GoalMetadata{}, fmt.Errorf("failed to parse YAML frontmatter: %w", err)
 	}
 
@@ -1226,30 +1278,18 @@ func initializeJJ(dir string) error {
 }
 
 func extractBody(content []byte) []byte {
-	delimiter := []byte("---")
-
-	if !bytes.HasPrefix(content, delimiter) {
+	sections, errSplit := splitFrontmatterSections(content)
+	if errSplit != nil {
 		return content
 	}
-
-	rest := content[len(delimiter):]
-	if len(rest) > 0 && rest[0] == '\n' {
-		rest = rest[1:]
-	}
-
-	closingIdx := bytes.Index(rest, delimiter)
-	if closingIdx == -1 {
-		return content
-	}
-
-	bodyStart := len(delimiter) + 1 + closingIdx + len(delimiter)
-	if bodyStart < len(content) && content[bodyStart] == '\n' {
-		bodyStart++
-	}
-	if bodyStart >= len(content) {
+	after := sections.after
+	if len(after) == 0 {
 		return []byte{}
 	}
-	return content[bodyStart:]
+	if bytes.HasPrefix(after, sections.lineEnding) {
+		return after[len(sections.lineEnding):]
+	}
+	return after
 }
 
 // generateRetrospectiveDirName generates a timestamp-based folder name in format YYYY-MM-DD-HH-II.XXXX

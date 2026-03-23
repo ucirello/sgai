@@ -12,6 +12,8 @@ export function makeWorkspace(overrides: Partial<ApiWorkspaceEntry> = {}): ApiWo
     pinned: false,
     isRoot: false,
     isFork: false,
+    title: "test-project",
+    computedTitle: "",
     status: "stopped",
     badgeClass: "",
     badgeText: "",

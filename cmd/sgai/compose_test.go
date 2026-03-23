@@ -126,6 +126,7 @@ func TestLoadComposerStateFromDisk(t *testing.T) {
 			name: "loadFromValidGOAL",
 			setupFunc: func(t *testing.T, dir string) {
 				goalContent := `---
+title: Repository Title
 flow: |
   "agent1" -> "agent2"
 models:
@@ -147,6 +148,7 @@ Description here.
 			},
 			wantErr: false,
 			validate: func(t *testing.T, state composerState) {
+				assert.Equal(t, "Repository Title", state.Title)
 				assert.Equal(t, "My Project\n\nDescription here.", state.Description)
 				assert.Equal(t, "make test", state.CompletionGate)
 				assert.Contains(t, state.Flow, "agent1")
@@ -226,6 +228,7 @@ func TestBuildGOALContent(t *testing.T) {
 		{
 			name: "buildCompleteGOAL",
 			state: composerState{
+				Title:          "Repository Title",
 				Description:    "My Project\n\nDescription here.",
 				CompletionGate: "make test",
 				Flow:           `"agent1" -> "agent2"`,
@@ -237,6 +240,7 @@ func TestBuildGOALContent(t *testing.T) {
 			},
 			validate: func(t *testing.T, content string) {
 				assert.Contains(t, content, "---")
+				assert.Contains(t, content, "title: Repository Title")
 				assert.Contains(t, content, "flow: |")
 				assert.Contains(t, content, `"agent1" -> "agent2"`)
 				assert.Contains(t, content, "models:")
@@ -251,6 +255,7 @@ func TestBuildGOALContent(t *testing.T) {
 		{
 			name: "buildGOALWithNoFlow",
 			state: composerState{
+				Title:       "My Project",
 				Description: "My Project",
 				Agents: []composerAgentConf{
 					{Name: "agent1", Selected: true, Model: "model1"},
@@ -265,6 +270,7 @@ func TestBuildGOALContent(t *testing.T) {
 		{
 			name: "buildGOALWithNoAgents",
 			state: composerState{
+				Title:       "My Project",
 				Description: "My Project",
 				Flow:        `"agent1" -> "agent2"`,
 			},
@@ -277,6 +283,7 @@ func TestBuildGOALContent(t *testing.T) {
 		{
 			name: "buildGOALWithUnselectedAgents",
 			state: composerState{
+				Title:       "My Project",
 				Description: "My Project",
 				Agents: []composerAgentConf{
 					{Name: "agent1", Selected: false, Model: "model1"},
@@ -292,6 +299,7 @@ func TestBuildGOALContent(t *testing.T) {
 		{
 			name: "buildGOALWithNoTasks",
 			state: composerState{
+				Title:       "My Project",
 				Description: "My Project",
 				Agents: []composerAgentConf{
 					{Name: "agent1", Selected: true, Model: "model1"},
@@ -304,6 +312,7 @@ func TestBuildGOALContent(t *testing.T) {
 		{
 			name: "buildGOALWithNoCompletionGate",
 			state: composerState{
+				Title:       "My Project",
 				Description: "My Project",
 				Agents: []composerAgentConf{
 					{Name: "agent1", Selected: true, Model: "model1"},

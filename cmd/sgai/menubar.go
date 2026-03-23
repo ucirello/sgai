@@ -2,18 +2,16 @@ package main
 
 import (
 	"net/url"
-	"os"
-	"path/filepath"
 	"sync"
 )
 
 type menuBarItem struct {
-	name        string
-	description string
-	needsInput  bool
-	running     bool
-	stopped     bool
-	pinned      bool
+	name       string
+	title      string
+	needsInput bool
+	running    bool
+	stopped    bool
+	pinned     bool
 }
 
 type menuBarState struct {
@@ -26,31 +24,19 @@ type menuBarAction struct {
 	actionURL string
 }
 
-func toMenuBarItem(w workspaceInfo) menuBarItem {
+func toMenuBarItem(srv *Server, w workspaceInfo) menuBarItem {
+	titleState := goalTitleStateFromPath(w.Directory, w.DirName)
+	if srv != nil && titleState.NeedsRepair {
+		srv.enqueueGoalTitleRepair(w.Directory)
+	}
 	return menuBarItem{
-		name:        w.DirName,
-		description: goalDescription(w.Directory, w.DirName),
-		needsInput:  w.NeedsInput,
-		running:     w.Running,
-		stopped:     !w.Running && w.InProgress,
-		pinned:      w.Pinned,
+		name:       w.DirName,
+		title:      titleState.label(),
+		needsInput: w.NeedsInput,
+		running:    w.Running,
+		stopped:    !w.Running && w.InProgress,
+		pinned:     w.Pinned,
 	}
-}
-
-func goalDescription(directory, dirName string) string {
-	if directory == "" {
-		return dirName
-	}
-	goalPath := filepath.Join(directory, "GOAL.md")
-	data, errRead := os.ReadFile(goalPath)
-	if errRead != nil {
-		return dirName
-	}
-	desc := extractGoalDescription(string(data))
-	if desc == "" {
-		return dirName
-	}
-	return desc
 }
 
 func countAttention(items []menuBarItem) int {
@@ -94,7 +80,7 @@ func filterVisibleItems(items []menuBarItem) []menuBarItem {
 }
 
 func formatMenuItemLabel(item menuBarItem) string {
-	label := item.description
+	label := item.title
 	if label == "" {
 		label = item.name
 	}

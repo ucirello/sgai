@@ -23,6 +23,8 @@ import { useFactoryState, triggerFactoryRefresh } from "@/lib/factory-state";
 import { useAdhocRun } from "@/hooks/useAdhocRun";
 import { ChevronRight, Square } from "lucide-react";
 import type { ApiWorkspaceEntry, ApiActionEntry } from "@/types";
+import { getRepositoryTitle } from "@/lib/repository-title";
+import { getWorkspaceDeletionCopy } from "@/lib/workspace-delete-copy";
 import { cn } from "@/lib/utils";
 
 const SessionTab = lazy(() => import("./tabs/SessionTab").then((m) => ({ default: m.SessionTab })));
@@ -257,8 +259,15 @@ export function WorkspaceDetail(): JSX.Element | null {
 
   if (!detail) return null;
 
+  const detailLabel = getRepositoryTitle(detail);
+  const deletionCopy = getWorkspaceDeletionCopy({
+    workspaceLabel: detailLabel,
+    isExternal: detail.external,
+    isFork: detail.isFork,
+  });
+
   if (!detail.hasSgai && !detail.isRoot) {
-    return <NoWorkspaceState name={detail.name} dir={detail.dir} />;
+    return <NoWorkspaceState label={detailLabel} name={detail.name} dir={detail.dir} />;
   }
 
   const effectiveRunning = runningOverride !== null ? runningOverride : (detail.running ?? false);
@@ -394,10 +403,20 @@ export function WorkspaceDetail(): JSX.Element | null {
             <Tooltip>
               <TooltipTrigger asChild>
                 <h3 className="m-0 text-xl font-semibold whitespace-nowrap overflow-hidden text-ellipsis">
-                  {detail.description || detail.name}
+                  {detailLabel}
                 </h3>
               </TooltipTrigger>
-              <TooltipContent>{detail.isFork ? detail.name : detail.dir}</TooltipContent>
+              <TooltipContent>
+                <div className="max-w-xs">
+                  <div className="font-medium">{detailLabel}</div>
+                  {detailLabel !== detail.name && (
+                    <div className="text-xs text-muted-foreground mt-1">Name: {detail.name}</div>
+                  )}
+                  {!detail.isFork && (
+                    <div className="text-xs text-muted-foreground mt-1">{detail.dir}</div>
+                  )}
+                </div>
+              </TooltipContent>
             </Tooltip>
           </div>
 
@@ -624,18 +643,13 @@ export function WorkspaceDetail(): JSX.Element | null {
                           variant="destructive"
                           disabled={isDeletePending}
                         >
-                          Delete
+                          {deletionCopy.triggerText}
                         </Button>
                       </AlertDialogTrigger>
                       <AlertDialogContent>
                         <AlertDialogHeader>
-                          <AlertDialogTitle>Delete workspace</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            {(!detail.external || detail.isFork)
-                              ? <>This will permanently delete the workspace directory from disk. This action cannot be undone.</>
-                              : <>This will remove &lsquo;{detail.name}&rsquo; from the interface. The directory and its contents will NOT be deleted.</>
-                            }
-                          </AlertDialogDescription>
+                          <AlertDialogTitle>{deletionCopy.dialogTitle}</AlertDialogTitle>
+                          <AlertDialogDescription>{deletionCopy.dialogDescription}</AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
                           <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -644,7 +658,7 @@ export function WorkspaceDetail(): JSX.Element | null {
                             disabled={isDeletePending}
                             className="bg-destructive text-white hover:bg-destructive/90"
                           >
-                            {(!detail.external || detail.isFork) ? "Delete" : "Remove"}
+                            {isDeletePending ? deletionCopy.pendingText : deletionCopy.confirmText}
                           </AlertDialogAction>
                         </AlertDialogFooter>
                       </AlertDialogContent>
@@ -822,12 +836,12 @@ function TabContent({
   }
 }
 
-function NoWorkspaceState({ name, dir }: { name: string; dir: string }) {
+function NoWorkspaceState({ label, name, dir }: { label: string; name: string; dir: string }) {
   return (
     <div>
       <div className="sticky top-0 z-10 bg-background">
         <header className="flex items-center gap-3 mb-3 pb-3 border-b">
-          <h3 className="m-0 text-xl font-semibold" title={dir}>{name}</h3>
+          <h3 className="m-0 text-xl font-semibold" title={dir}>{label}</h3>
           <Badge variant="secondary">no workspace</Badge>
         </header>
       </div>

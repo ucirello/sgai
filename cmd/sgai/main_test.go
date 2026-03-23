@@ -1338,6 +1338,7 @@ func TestParseYAMLFrontmatter(t *testing.T) {
 		{
 			name: "validFrontmatter",
 			content: `---
+title: Canonical Goal Title
 flow: |
   "agent1" -> "agent2"
 models:
@@ -1346,6 +1347,7 @@ models:
 # Goal`,
 			wantErr: false,
 			validate: func(t *testing.T, m GoalMetadata) {
+				assert.Equal(t, "Canonical Goal Title", m.Title)
 				assert.Contains(t, m.Flow, "agent1")
 				assert.Equal(t, "model1", m.Models["agent1"])
 			},
@@ -3001,12 +3003,21 @@ content`,
 			expectedYAML: "key1: value1\nkey2: value2\n",
 		},
 		{
-			name: "noNewlineAfterDelimiter",
+			name: "openingDelimiterMustEndWithNewline",
 			content: `---key: value
 ---
 content`,
+			expectOK: false,
+		},
+		{
+			name: "quotedDelimiterSubstringInsideFrontmatterValue",
+			content: `---
+title: "Quoted --- Title"
+flow: test
+---
+content`,
 			expectOK:     true,
-			expectedYAML: "key: value\n",
+			expectedYAML: "title: \"Quoted --- Title\"\nflow: test\n",
 		},
 	}
 
@@ -4702,6 +4713,12 @@ func readSkeletonFileForTest(t *testing.T, relPath string) string {
 
 func TestExtractBodyWithFrontmatter(t *testing.T) {
 	content := []byte("---\ntitle: test\n---\n# Body content")
+	result := extractBody(content)
+	assert.Equal(t, "# Body content", string(result))
+}
+
+func TestExtractBodyIgnoresDelimiterSubstringInsideFrontmatterBlockScalar(t *testing.T) {
+	content := []byte("---\ndescription: |\n  first line\n  --- not a delimiter line\nflow: test\n---\n# Body content")
 	result := extractBody(content)
 	assert.Equal(t, "# Body content", string(result))
 }

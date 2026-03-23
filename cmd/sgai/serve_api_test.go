@@ -3063,15 +3063,16 @@ func TestBuildWorkspaceFullStateExternal(t *testing.T) {
 	assert.True(t, result.IsExternal)
 }
 
-func TestBuildWorkspaceFullStateGoalDescription(t *testing.T) {
+func TestBuildWorkspaceFullStateCanonicalTitle(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
-	goalContent := "---\nflow: |\n  \"a\" -> \"b\"\n---\n# My Cool Project\nSome body"
+	goalContent := "---\ntitle: Canonical Repository Title\nflow: |\n  \"a\" -> \"b\"\n---\n# Body Heading That Must Be Ignored\nSome body"
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte(goalContent), 0644))
 
 	ws := workspaceInfo{Directory: wsDir, DirName: "test-ws"}
 	result := server.buildWorkspaceFullState(ws, nil)
-	assert.Equal(t, "My Cool Project", result.Description)
+	assert.Equal(t, "Canonical Repository Title", result.Title)
+	assert.Empty(t, result.ComputedTitle)
 	assert.True(t, result.HasEditedGoal)
 }
 
@@ -3081,8 +3082,91 @@ func TestBuildWorkspaceFullStateNoGoal(t *testing.T) {
 
 	ws := workspaceInfo{DirName: "nogoal-ws", Directory: wsDir, HasWorkspace: true}
 	result := srv.buildWorkspaceFullState(ws, nil)
-	assert.Equal(t, "nogoal-ws", result.Description)
+	assert.Empty(t, result.Title)
+	assert.Equal(t, "nogoal-ws", result.ComputedTitle)
 	assert.False(t, result.HasEditedGoal)
+}
+
+func TestBuildWorkspaceFullStateNoFrontmatterUsesComputedTitle(t *testing.T) {
+	srv, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, rootDir, "nofm-ws")
+	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Plain Heading\n\nBody"), 0o644))
+
+	ws := workspaceInfo{DirName: "nofm-ws", Directory: wsDir, HasWorkspace: true}
+	result := srv.buildWorkspaceFullState(ws, nil)
+	assert.Empty(t, result.Title)
+	assert.Equal(t, "nofm-ws", result.ComputedTitle)
+}
+
+func TestBuildWorkspaceFullStateRepairsMissingGoalTitle(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, rootDir, "repair-ws")
+	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\nflow: |\n  \"a\" -> \"b\"\n---\n# Improve Repository Titles\n\nBody"), 0o644))
+
+	server.goalTitleComposer = func(_ string, _ []byte) (string, error) {
+		return "Repaired Repository Title", nil
+	}
+
+	ws := workspaceInfo{DirName: "repair-ws", Directory: wsDir, HasWorkspace: true}
+	result := server.buildWorkspaceFullState(ws, nil)
+	assert.Empty(t, result.Title)
+	assert.Equal(t, "repair-ws", result.ComputedTitle)
+
+	require.Eventually(t, func() bool {
+		data, errRead := os.ReadFile(filepath.Join(wsDir, "GOAL.md"))
+		if errRead != nil {
+			return false
+		}
+		return strings.Contains(string(data), "title: Repaired Repository Title")
+	}, time.Second, 10*time.Millisecond)
+
+	result = server.buildWorkspaceFullState(ws, nil)
+	assert.Equal(t, "Repaired Repository Title", result.Title)
+	assert.Empty(t, result.ComputedTitle)
+}
+
+func TestBuildFullFactoryStateRepairsMissingTitlesSequentially(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	firstDir := setupTestWorkspace(t, rootDir, "first-ws")
+	secondDir := setupTestWorkspace(t, rootDir, "second-ws")
+	require.NoError(t, os.WriteFile(filepath.Join(firstDir, "GOAL.md"), []byte("---\nflow: test\n---\n# First Goal"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(secondDir, "GOAL.md"), []byte("---\nflow: test\n---\n# Second Goal"), 0o644))
+
+	var mu sync.Mutex
+	currentConcurrent := 0
+	maxConcurrent := 0
+	server.goalTitleComposer = func(workspacePath string, _ []byte) (string, error) {
+		mu.Lock()
+		currentConcurrent++
+		if currentConcurrent > maxConcurrent {
+			maxConcurrent = currentConcurrent
+		}
+		mu.Unlock()
+
+		time.Sleep(20 * time.Millisecond)
+
+		mu.Lock()
+		currentConcurrent--
+		mu.Unlock()
+
+		return strings.TrimSuffix(filepath.Base(workspacePath), "-ws") + " repaired", nil
+	}
+
+	result := server.buildFullFactoryState()
+	require.Len(t, result.Workspaces, 2)
+
+	require.Eventually(t, func() bool {
+		firstData, errFirst := os.ReadFile(filepath.Join(firstDir, "GOAL.md"))
+		secondData, errSecond := os.ReadFile(filepath.Join(secondDir, "GOAL.md"))
+		if errFirst != nil || errSecond != nil {
+			return false
+		}
+		return strings.Contains(string(firstData), "title: first repaired") && strings.Contains(string(secondData), "title: second repaired")
+	}, 2*time.Second, 10*time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 1, maxConcurrent)
 }
 
 func TestBuildWorkspaceFullStateRunningWithSession(t *testing.T) {
@@ -4445,29 +4529,32 @@ func TestLockedWriterPlainText(t *testing.T) {
 	assert.Equal(t, "plain text", output)
 }
 
-func TestGoalDescription(t *testing.T) {
+func TestGoalTitle(t *testing.T) {
 	t.Run("emptyDirectory", func(t *testing.T) {
-		got := goalDescription("", "fallback")
-		assert.Equal(t, "fallback", got)
+		result := goalTitleStateFromPath("", "fallback")
+		assert.Empty(t, result.Title)
+		assert.Equal(t, "fallback", result.ComputedTitle)
 	})
 
 	t.Run("noGoalFile", func(t *testing.T) {
 		dir := t.TempDir()
-		got := goalDescription(dir, "fallback")
-		assert.Equal(t, "fallback", got)
+		result := goalTitleStateFromPath(dir, "fallback")
+		assert.Empty(t, result.Title)
+		assert.Equal(t, "fallback", result.ComputedTitle)
 	})
 
-	t.Run("goalWithDescription", func(t *testing.T) {
+	t.Run("goalWithFrontmatterTitle", func(t *testing.T) {
 		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("---\n---\n# My Project\n\nSome description"), 0o644))
-		got := goalDescription(dir, "fallback")
-		assert.NotEqual(t, "fallback", got)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("---\ntitle: Menu Title\n---\n# My Project\n\nSome description"), 0o644))
+		result := goalTitleStateFromPath(dir, "fallback")
+		assert.Equal(t, "Menu Title", result.Title)
+		assert.Empty(t, result.ComputedTitle)
 	})
 }
 
 func TestToMenuBarItem(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("---\n---\n# Test\nDesc"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("---\ntitle: Test Title\n---\n# Test\nDesc"), 0o644))
 
 	w := workspaceInfo{
 		DirName:    "test-ws",
@@ -4478,8 +4565,9 @@ func TestToMenuBarItem(t *testing.T) {
 		Pinned:     false,
 	}
 
-	item := toMenuBarItem(w)
+	item := toMenuBarItem(nil, w)
 	assert.Equal(t, "test-ws", item.name)
+	assert.Equal(t, "Test Title", item.title)
 	assert.True(t, item.needsInput)
 	assert.True(t, item.running)
 	assert.False(t, item.stopped)

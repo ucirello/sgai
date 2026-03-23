@@ -112,9 +112,9 @@ func rebuildMenuFromServer(srv *Server, state *darwinMenuBarState) {
 
 	var items []menuBarItem
 	for _, grp := range groups {
-		items = append(items, toMenuBarItem(grp.Root))
+		items = append(items, toMenuBarItem(srv, grp.Root))
 		for _, fork := range grp.Forks {
-			items = append(items, toMenuBarItem(fork))
+			items = append(items, toMenuBarItem(srv, fork))
 		}
 	}
 
