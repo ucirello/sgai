@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -979,6 +978,15 @@ type workspaceGroup struct {
 	Forks []workspaceInfo
 }
 
+type scannedAttachedWorkspace struct {
+	directory    string
+	resolvedDir  string
+	dirName      string
+	hasWorkspace bool
+	kind         workspaceKind
+	rootDir      string
+}
+
 type workspaceKind string
 
 const (
@@ -996,21 +1004,71 @@ func classifyWorkspace(dir string) workspaceKind {
 	if !info.IsDir() {
 		return workspaceFork
 	}
-	cmd := exec.Command("jj", "workspace", "list")
-	cmd.Dir = dir
-	output, errExec := cmd.Output()
-	if errExec != nil {
-		return workspaceStandalone
+	count, errCount := workspaceCount(dir)
+	if errCount != nil {
+		return workspaceRoot
 	}
-	trimmed := strings.TrimSpace(string(output))
-	if trimmed == "" {
-		return workspaceStandalone
+	if count > 1 {
+		return workspaceRoot
 	}
-	lines := strings.Split(trimmed, "\n")
-	if len(lines) > 1 {
+	if hasHistoricalWorkspaceChildren(dir) {
 		return workspaceRoot
 	}
 	return workspaceStandalone
+}
+
+func workspaceCount(dir string) (int, error) {
+	cmd := exec.Command("jj", "workspace", "list")
+	cmd.Dir = dir
+	output, errOutput := cmd.Output()
+	if errOutput != nil {
+		return 0, errOutput
+	}
+	trimmed := strings.TrimSpace(string(output))
+	if trimmed == "" {
+		return 0, nil
+	}
+	return len(strings.Split(trimmed, "\n")), nil
+}
+
+func hasHistoricalWorkspaceChildren(dir string) bool {
+	cmd := exec.Command("jj", "op", "log")
+	cmd.Dir = dir
+	output, errOutput := cmd.Output()
+	if errOutput != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		if historicalWorkspaceName(line, "add workspace '") != "" {
+			return true
+		}
+		if historicalWorkspaceName(line, "create initial working-copy commit in workspace ") != "" {
+			return true
+		}
+		if historicalWorkspaceName(line, "forget workspace ") != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func historicalWorkspaceName(line, prefix string) string {
+	idx := strings.Index(line, prefix)
+	if idx == -1 {
+		return ""
+	}
+	name := strings.TrimSpace(line[idx+len(prefix):])
+	if strings.HasPrefix(prefix, "add workspace '") {
+		endIdx := strings.Index(name, "'")
+		if endIdx == -1 {
+			return ""
+		}
+		name = name[:endIdx]
+	}
+	if name == "" || name == "default" {
+		return ""
+	}
+	return name
 }
 
 func (s *Server) classifyWorkspaceCached(dir string) workspaceKind {
@@ -1163,75 +1221,57 @@ func resolveSymlinks(path string) string {
 
 func (s *Server) loadPinnedProjects() error {
 	log.Println("pinned repositories file path:", s.pinnedFilePath())
-	data, errRead := os.ReadFile(s.pinnedFilePath())
-	if errRead != nil {
-		if os.IsNotExist(errRead) {
-			return nil
-		}
-		return fmt.Errorf("reading pinned projects: %w", errRead)
+	existing, pruned, errLoad := loadPersistedDirectorySet(
+		s.pinnedFilePath(),
+		"pinned projects",
+		"pruning stale pinned path:",
+		"warning: cannot verify pinned path:",
+	)
+	if errLoad != nil {
+		return errLoad
 	}
-	var dirs []string
-	if errJSON := json.Unmarshal(data, &dirs); errJSON != nil {
-		return fmt.Errorf("parsing pinned projects: %w", errJSON)
+	if existing == nil {
+		return nil
 	}
-	existing := make(map[string]bool, len(dirs))
-	for _, d := range dirs {
-		if _, errStat := os.Stat(d); errStat == nil {
-			existing[resolveSymlinks(d)] = true
-		} else if os.IsNotExist(errStat) {
-			log.Println("pruning stale pinned path:", d)
-		} else {
-			log.Println("warning: cannot verify pinned path:", d, errStat)
-			existing[resolveSymlinks(d)] = true
-		}
+	if !pruned {
+		s.mu.Lock()
+		s.pinnedDirs = existing
+		s.mu.Unlock()
+		return nil
 	}
-	s.mu.Lock()
-	s.pinnedDirs = existing
-	s.mu.Unlock()
-	if len(existing) < len(dirs) {
-		return s.savePinnedProjects()
+	state := s.currentWorkspaceListState()
+	state.pinnedDirs = existing
+	if errSave := s.saveWorkspaceListState(state, false, true); errSave != nil {
+		return errSave
 	}
+	s.commitWorkspaceListState(state)
 	return nil
 }
 
 func (s *Server) savePinnedProjects() error {
-	s.mu.Lock()
-	dirs := slices.Collect(maps.Keys(s.pinnedDirs))
-	s.mu.Unlock()
-	if dirs == nil {
-		dirs = []string{}
-	}
-	slices.Sort(dirs)
-	if errDir := os.MkdirAll(s.pinnedConfigDir, 0o755); errDir != nil {
-		return fmt.Errorf("creating pin config directory: %w", errDir)
-	}
-	data, errJSON := json.Marshal(dirs)
-	if errJSON != nil {
-		return fmt.Errorf("encoding pinned projects: %w", errJSON)
-	}
-	if errWrite := os.WriteFile(s.pinnedFilePath(), data, 0o644); errWrite != nil {
-		return fmt.Errorf("writing pinned projects: %w", errWrite)
-	}
-	return nil
+	state := s.currentWorkspaceListState()
+	return s.saveWorkspaceListState(state, false, true)
 }
 
 func (s *Server) isPinned(dir string) bool {
-	canonical := resolveSymlinks(dir)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.pinnedDirs[canonical]
+	return directorySetContains(s.pinnedDirs, dir)
 }
 
 func (s *Server) togglePin(dir string) error {
 	canonical := resolveSymlinks(dir)
-	s.mu.Lock()
-	if s.pinnedDirs[canonical] {
-		delete(s.pinnedDirs, canonical)
+	state := s.currentWorkspaceListState()
+	if state.pinnedDirs[canonical] {
+		delete(state.pinnedDirs, canonical)
 	} else {
-		s.pinnedDirs[canonical] = true
+		state.pinnedDirs[canonical] = true
 	}
-	s.mu.Unlock()
-	return s.savePinnedProjects()
+	if errSave := s.saveWorkspaceListState(state, false, true); errSave != nil {
+		return errSave
+	}
+	s.commitWorkspaceListState(state)
+	return nil
 }
 
 func (s *Server) scanWorkspaceGroups() ([]workspaceGroup, error) {
@@ -1242,11 +1282,9 @@ func (s *Server) scanWorkspaceGroups() ([]workspaceGroup, error) {
 		if cached, ok := s.workspaceScanCache.get("scan"); ok {
 			return cached, nil
 		}
-		result, err := s.doScanWorkspaceGroups()
-		if err == nil {
-			s.workspaceScanCache.set("scan", result)
-		}
-		return result, err
+		result := s.doScanWorkspaceGroups()
+		s.workspaceScanCache.set("scan", result)
+		return result, nil
 	})
 }
 
@@ -1254,39 +1292,48 @@ func (s *Server) invalidateWorkspaceScanCache() {
 	s.workspaceScanCache.delete("scan")
 }
 
-func (s *Server) doScanWorkspaceGroups() ([]workspaceGroup, error) {
-	s.mu.Lock()
-	externalDirsCopy := maps.Clone(s.externalDirs)
-	s.mu.Unlock()
-
-	if len(externalDirsCopy) == 0 {
-		return nil, nil
+func (s *Server) doScanWorkspaceGroups() []workspaceGroup {
+	state := s.currentWorkspaceListState()
+	if len(state.externalDirs) == 0 {
+		return nil
 	}
 
-	type attachedWorkspace struct {
-		directory    string
-		resolvedDir  string
-		dirName      string
-		hasWorkspace bool
-		kind         workspaceKind
-	}
-
-	attached := make([]attachedWorkspace, 0, len(externalDirsCopy))
-	for dir := range externalDirsCopy {
+	attached := make([]scannedAttachedWorkspace, 0, len(state.externalDirs))
+	var missingDirs []string
+	for dir := range state.externalDirs {
 		if _, errStat := os.Stat(dir); errStat != nil {
-			return nil, fmt.Errorf("stat attached workspace: %w", errStat)
+			if os.IsNotExist(errStat) {
+				missingDirs = append(missingDirs, resolveSymlinks(dir))
+				continue
+			}
+			log.Println("warning: skipping attached workspace:", dir, errStat)
+			continue
 		}
 		resolvedDir := resolveSymlinks(dir)
-		attached = append(attached, attachedWorkspace{
+		kind := s.classifyWorkspaceCached(dir)
+		rootDir := ""
+		if kind == workspaceFork {
+			rootDir = resolveSymlinks(getRootWorkspacePath(dir))
+		}
+		attached = append(attached, scannedAttachedWorkspace{
 			directory:    dir,
 			resolvedDir:  resolvedDir,
 			dirName:      filepath.Base(dir),
 			hasWorkspace: hassgaiDirectory(dir),
-			kind:         s.classifyWorkspaceCached(dir),
+			kind:         kind,
+			rootDir:      rootDir,
 		})
 	}
 
-	slices.SortFunc(attached, func(a, b attachedWorkspace) int {
+	if len(missingDirs) > 0 {
+		s.pruneMissingAttachedDirs(state, missingDirs)
+	}
+
+	return s.groupAttachedWorkspaces(attached)
+}
+
+func (s *Server) groupAttachedWorkspaces(attached []scannedAttachedWorkspace) []workspaceGroup {
+	slices.SortFunc(attached, func(a, b scannedAttachedWorkspace) int {
 		return strings.Compare(strings.ToLower(a.dirName), strings.ToLower(b.dirName))
 	})
 
@@ -1305,19 +1352,18 @@ func (s *Server) doScanWorkspaceGroups() ([]workspaceGroup, error) {
 	for _, ws := range attached {
 		switch ws.kind {
 		case workspaceFork:
-			rootPath := resolveSymlinks(getRootWorkspacePath(ws.directory))
-			if rootPath == "" || !externalDirsCopy[rootPath] {
+			if ws.rootDir == "" {
 				standaloneGroups = append(standaloneGroups, workspaceGroup{
 					Root: s.createWorkspaceInfo(ws.directory, ws.dirName, false, ws.hasWorkspace, true),
 				})
 				continue
 			}
-			grp, exists := rootMap[rootPath]
+			grp, exists := rootMap[ws.rootDir]
 			if !exists {
-				grp = &workspaceGroup{
-					Root: s.createWorkspaceInfo(rootPath, filepath.Base(rootPath), true, hassgaiDirectory(rootPath), true),
-				}
-				rootMap[rootPath] = grp
+				standaloneGroups = append(standaloneGroups, workspaceGroup{
+					Root: s.createWorkspaceInfo(ws.directory, ws.dirName, false, ws.hasWorkspace, true),
+				})
+				continue
 			}
 			grp.Forks = append(grp.Forks, s.createWorkspaceInfo(ws.directory, ws.dirName, false, ws.hasWorkspace, true))
 		case workspaceStandalone:
@@ -1325,16 +1371,6 @@ func (s *Server) doScanWorkspaceGroups() ([]workspaceGroup, error) {
 				Root: s.createWorkspaceInfo(ws.directory, ws.dirName, false, ws.hasWorkspace, true),
 			})
 		}
-	}
-
-	for resolvedDir, grp := range rootMap {
-		if len(grp.Forks) > 0 {
-			continue
-		}
-		standaloneGroups = append(standaloneGroups, workspaceGroup{
-			Root: s.createWorkspaceInfo(grp.Root.Directory, grp.Root.DirName, false, grp.Root.HasWorkspace, true),
-		})
-		delete(rootMap, resolvedDir)
 	}
 
 	var groups []workspaceGroup
@@ -1347,7 +1383,42 @@ func (s *Server) doScanWorkspaceGroups() ([]workspaceGroup, error) {
 		return strings.Compare(strings.ToLower(a.Root.DirName), strings.ToLower(b.Root.DirName))
 	})
 
-	return groups, nil
+	return groups
+}
+
+func (s *Server) pruneMissingAttachedDirs(state workspaceListState, missingDirs []string) workspaceListState {
+	if len(missingDirs) == 0 {
+		return state
+	}
+	nextState := workspaceListState{
+		externalDirs: maps.Clone(state.externalDirs),
+		pinnedDirs:   maps.Clone(state.pinnedDirs),
+	}
+	changed := false
+	for _, dir := range missingDirs {
+		if nextState.externalDirs[dir] {
+			delete(nextState.externalDirs, dir)
+			changed = true
+		}
+		if nextState.pinnedDirs[dir] {
+			delete(nextState.pinnedDirs, dir)
+			changed = true
+		}
+	}
+	if !changed {
+		return state
+	}
+	if errSave := s.saveWorkspaceListState(nextState, true, true); errSave != nil {
+		log.Println("warning: failed to prune missing attached workspace state:", errSave)
+		return state
+	}
+	s.commitWorkspaceListState(nextState)
+	s.invalidateWorkspaceScanCache()
+	for _, dir := range missingDirs {
+		s.classifyCache.delete(dir)
+	}
+	s.notifyStateChange()
+	return nextState
 }
 
 func (s *Server) resolveWorkspaceNameToPath(workspaceName string) string {
@@ -1355,23 +1426,36 @@ func (s *Server) resolveWorkspaceNameToPath(workspaceName string) string {
 		return ""
 	}
 
-	groups, err := s.scanWorkspaceGroups()
-	if err != nil {
+	paths := s.resolveWorkspaceNameToPaths(workspaceName)
+	if len(paths) == 0 {
 		return ""
 	}
+	return paths[0]
+}
 
+func (s *Server) resolveWorkspaceNameToPaths(workspaceName string) []string {
+	if workspaceName == "" {
+		return nil
+	}
+
+	groups, err := s.scanWorkspaceGroups()
+	if err != nil {
+		return nil
+	}
+
+	var paths []string
 	for _, grp := range groups {
 		if grp.Root.DirName == workspaceName {
-			return grp.Root.Directory
+			paths = append(paths, grp.Root.Directory)
 		}
 		for _, fork := range grp.Forks {
 			if fork.DirName == workspaceName {
-				return fork.Directory
+				paths = append(paths, fork.Directory)
 			}
 		}
 	}
 
-	return ""
+	return paths
 }
 
 type modelStatusDisplay struct {

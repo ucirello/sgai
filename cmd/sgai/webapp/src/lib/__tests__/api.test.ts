@@ -187,10 +187,6 @@ describe("API URL construction patterns", () => {
     expect(`/api/v1/workspaces/${encodeURIComponent("ws-1")}/delete`).toBe("/api/v1/workspaces/ws-1/delete");
   });
 
-  it("constructs correct delete-fork URL", () => {
-    expect(`/api/v1/workspaces/${encodeURIComponent("ws-1")}/delete-fork`).toBe("/api/v1/workspaces/ws-1/delete-fork");
-  });
-
   it("constructs correct open-editor URL", () => {
     expect(`/api/v1/workspaces/${encodeURIComponent("ws-1")}/open-editor`).toBe("/api/v1/workspaces/ws-1/open-editor");
   });
@@ -232,12 +228,12 @@ describe("API URL construction patterns", () => {
     expect(JSON.stringify({ name: "ws-1" })).toBe('{"name":"ws-1"}');
   });
 
-  it("constructs request body for deleteFork", () => {
-    expect(JSON.stringify({ forkDir: "/path", confirm: true })).toBe('{"forkDir":"/path","confirm":true}');
-  });
-
   it("constructs request body for deleteWorkspace", () => {
     expect(JSON.stringify({ confirm: true })).toBe('{"confirm":true}');
+  });
+
+  it("constructs request body for deleteWorkspace with an explicit operation", () => {
+    expect(JSON.stringify({ confirm: true, operation: "detach" })).toBe('{"confirm":true,"operation":"detach"}');
   });
 
   it("constructs request body for steer", () => {

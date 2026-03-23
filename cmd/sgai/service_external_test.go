@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"maps"
 	"os"
 	"os/exec"
@@ -62,6 +63,72 @@ func TestLoadExternalDirs(t *testing.T) {
 
 		err := server.loadExternalDirs()
 		assert.Error(t, err)
+	})
+
+	t.Run("keepsUnreadableAttachedWorkspace", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("skipping permission test as root")
+		}
+
+		server, _ := setupTestServer(t)
+		configDir := t.TempDir()
+		server.externalConfigDir = configDir
+
+		validDir := filepath.Join(t.TempDir(), "valid-ws")
+		require.NoError(t, os.MkdirAll(validDir, 0o755))
+
+		lockedParent := filepath.Join(t.TempDir(), "locked-parent")
+		lockedDir := filepath.Join(lockedParent, "locked-ws")
+		require.NoError(t, os.MkdirAll(lockedDir, 0o755))
+
+		data, errJSON := json.Marshal([]string{validDir, lockedDir})
+		require.NoError(t, errJSON)
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "external.json"), data, 0o644))
+
+		require.NoError(t, os.Chmod(lockedParent, 0o000))
+		defer func() {
+			require.NoError(t, os.Chmod(lockedParent, 0o755))
+		}()
+
+		_, errStat := os.Stat(lockedDir)
+		require.Error(t, errStat)
+		require.False(t, os.IsNotExist(errStat))
+
+		require.NoError(t, server.loadExternalDirs())
+
+		loaded := externalDirsSnapshotForTest(server)
+		assert.True(t, loaded[resolveSymlinks(validDir)])
+		assert.True(t, loaded[resolveSymlinks(lockedDir)])
+		assert.Contains(t, readJSONPathList(t, filepath.Join(configDir, "external.json")), resolveSymlinks(lockedDir))
+	})
+
+	t.Run("prunedStateDoesNotCommitWhenPersistFails", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("skipping permission test as root")
+		}
+
+		server, _ := setupTestServer(t)
+		configDir := t.TempDir()
+		server.externalConfigDir = configDir
+
+		validDir := filepath.Join(t.TempDir(), "valid-ws")
+		require.NoError(t, os.MkdirAll(validDir, 0o755))
+		missingDir := filepath.Join(t.TempDir(), "missing-ws")
+
+		data, errJSON := json.Marshal([]string{validDir, missingDir})
+		require.NoError(t, errJSON)
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "external.json"), data, 0o644))
+
+		require.NoError(t, os.Chmod(configDir, 0o500))
+		defer func() {
+			require.NoError(t, os.Chmod(configDir, 0o700))
+		}()
+
+		errLoad := server.loadExternalDirs()
+		require.Error(t, errLoad)
+
+		assert.Empty(t, externalDirsSnapshotForTest(server))
+		assert.ElementsMatch(t, []string{resolveSymlinks(validDir), resolveSymlinks(missingDir)}, readJSONPathList(t, filepath.Join(configDir, "external.json")))
 	})
 }
 
@@ -190,6 +257,29 @@ func TestAttachExternalWorkspaceService(t *testing.T) {
 	}
 }
 
+func TestAttachExternalWorkspaceServiceAllowsDuplicateBasenames(t *testing.T) {
+	rootDir := t.TempDir()
+	server := NewServer(rootDir, serverPaths{}, "")
+	server.externalConfigDir = t.TempDir()
+
+	baseDir := t.TempDir()
+	firstDir := filepath.Join(baseDir, "first", "shared-ws")
+	secondDir := filepath.Join(baseDir, "second", "shared-ws")
+	require.NoError(t, os.MkdirAll(firstDir, 0o755))
+	require.NoError(t, os.MkdirAll(secondDir, 0o755))
+
+	firstResult, errAttachFirst := server.attachExternalWorkspaceService(firstDir)
+	require.NoError(t, errAttachFirst)
+	secondResult, errAttachSecond := server.attachExternalWorkspaceService(secondDir)
+	require.NoError(t, errAttachSecond)
+
+	assert.Equal(t, "shared-ws", firstResult.Name)
+	assert.Equal(t, "shared-ws", secondResult.Name)
+	loaded := loadExternalDirsForTest(t, server.externalConfigDir)
+	assert.True(t, loaded[resolveSymlinks(firstDir)])
+	assert.True(t, loaded[resolveSymlinks(secondDir)])
+}
+
 func TestDetachExternalWorkspaceService(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -303,7 +393,7 @@ func TestDetachExternalWorkspaceServiceRestoresStateOnSaveFailure(t *testing.T) 
 
 	_, errDetach := server.detachExternalWorkspaceService(externalPath)
 	require.Error(t, errDetach)
-	assert.Contains(t, errDetach.Error(), "saving external dirs")
+	assert.Contains(t, errDetach.Error(), "saving workspace lists")
 	assert.Equal(t, want, externalDirsSnapshotForTest(server))
 	assert.True(t, server.isExternalWorkspace(externalPath))
 }
@@ -369,7 +459,7 @@ func TestDeleteExternalForkService(t *testing.T) {
 				require.NoError(t, os.MkdirAll(filepath.Join(forkPath, ".sgai"), 0755))
 			},
 			wantErr:     true,
-			errContains: "could not determine root workspace for fork",
+			errContains: "workspace operation is not allowed",
 		},
 	}
 
@@ -527,7 +617,7 @@ func TestClassifyWorkspace(t *testing.T) {
 				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".jj", "repo"), 0755))
 				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
 			},
-			expected: workspaceStandalone,
+			expected: workspaceRoot,
 		},
 		{
 			name: "classifyForkWorkspace",

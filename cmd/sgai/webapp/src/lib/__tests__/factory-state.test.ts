@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
-import { resetFactoryStateStore, triggerFactoryRefresh } from "@/lib/factory-state";
+import { waitFor } from "@testing-library/dom";
+import { resetFactoryStateStore, triggerFactoryRefresh } from "../factory-state";
 
 const mockFetch = mock(() =>
   Promise.resolve({
@@ -8,6 +9,8 @@ const mockFetch = mock(() =>
     json: () => Promise.resolve({ workspaces: [] }),
   } as Response)
 );
+
+const REFRESH_TIMEOUT_MS = 5000;
 
 beforeEach(() => {
   globalThis.fetch = mockFetch as unknown as typeof fetch;
@@ -45,31 +48,32 @@ describe("factory-state store", () => {
 
     it("calls fetch to /api/v1/state", async () => {
       triggerFactoryRefresh();
-      await new Promise((resolve) => setTimeout(resolve, 400));
-      const stateCalls = mockFetch.mock.calls.filter(
-        (call) => (call[0] as string) === "/api/v1/state"
-      );
-      expect(stateCalls.length).toBeGreaterThan(0);
+      await waitFor(() => {
+        const stateCalls = mockFetch.mock.calls.filter(
+          (call) => (call[0] as string) === "/api/v1/state"
+        );
+        expect(stateCalls.length).toBeGreaterThan(0);
+      }, { timeout: REFRESH_TIMEOUT_MS });
     });
   });
 
   describe("useFactoryState", () => {
     it("exports useFactoryState function", async () => {
-      const mod = await import("@/lib/factory-state");
+      const mod = await import("../factory-state");
       expect(typeof mod.useFactoryState).toBe("function");
     });
   });
 
   describe("FetchStatus type", () => {
     it("exports FetchStatus type (verified by TypeScript compilation)", () => {
-      const status: import("@/lib/factory-state").FetchStatus = "idle";
+      const status: import("../factory-state").FetchStatus = "idle";
       expect(status).toBe("idle");
     });
   });
 
   describe("FactoryStateSnapshot type", () => {
     it("has correct shape", () => {
-      const snapshot: import("@/lib/factory-state").FactoryStateSnapshot = {
+      const snapshot: import("../factory-state").FactoryStateSnapshot = {
         workspaces: [],
         fetchStatus: "idle",
         lastFetchedAt: null,
@@ -85,7 +89,9 @@ describe("factory-state store", () => {
       mockFetch.mockImplementation(() => Promise.reject(new Error("Network error")));
 
       expect(() => triggerFactoryRefresh()).not.toThrow();
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      await waitFor(() => {
+        expect(mockFetch.mock.calls.length).toBeGreaterThan(0);
+      }, { timeout: REFRESH_TIMEOUT_MS });
     });
 
     it("handles non-ok response gracefully", async () => {
@@ -98,7 +104,9 @@ describe("factory-state store", () => {
       );
 
       expect(() => triggerFactoryRefresh()).not.toThrow();
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      await waitFor(() => {
+        expect(mockFetch.mock.calls.length).toBeGreaterThan(0);
+      }, { timeout: REFRESH_TIMEOUT_MS });
     });
   });
 });

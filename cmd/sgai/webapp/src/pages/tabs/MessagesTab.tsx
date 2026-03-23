@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { useFactoryState, triggerFactoryRefresh } from "@/lib/factory-state";
 import { api } from "@/lib/api";
+import { resolveWorkspaceByIdentity } from "@/lib/workspace-identity";
 import { cn } from "@/lib/utils";
 import { Trash2 } from "lucide-react";
 import { useTransition, useState, useCallback } from "react";
@@ -11,6 +12,7 @@ import type { ApiMessageEntry } from "@/types";
 
 interface MessagesTabProps {
   workspaceName: string;
+  workspaceDir?: string;
 }
 
 function MessagesTabSkeleton() {
@@ -83,9 +85,9 @@ function MessageItem({ message, workspaceName, onDelete, isDeleting }: MessageIt
   );
 }
 
-export function MessagesTab({ workspaceName }: MessagesTabProps) {
+export function MessagesTab({ workspaceName, workspaceDir }: MessagesTabProps) {
   const { workspaces, fetchStatus } = useFactoryState();
-  const workspace = workspaces.find((ws) => ws.name === workspaceName);
+  const workspace = resolveWorkspaceByIdentity(workspaces, workspaceName, workspaceDir);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();

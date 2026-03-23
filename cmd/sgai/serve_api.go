@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"maps"
 	"net/http"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"slices"
@@ -158,6 +158,7 @@ type apiWorkspaceFullState struct {
 	IsRoot            bool                        `json:"isRoot"`
 	IsFork            bool                        `json:"isFork"`
 	IsExternal        bool                        `json:"isExternal"`
+	External          bool                        `json:"external"`
 	HasSGAI           bool                        `json:"hasSgai"`
 	Status            string                      `json:"status"`
 	BadgeClass        string                      `json:"badgeClass"`
@@ -192,6 +193,7 @@ type apiWorkspaceFullState struct {
 	PendingQuestion   *apiPendingQuestionResponse `json:"pendingQuestion,omitempty"`
 	Actions           []apiActionEntry            `json:"actions,omitempty"`
 	ActionConfigError string                      `json:"actionConfigError,omitempty"`
+	RepositoryAction  apiRepositoryAction         `json:"repositoryAction"`
 }
 
 func (s *Server) handleAPIState(w http.ResponseWriter, _ *http.Request) {
@@ -347,6 +349,7 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 	}
 
 	actionState := loadActionsForAPI(ws.Directory)
+	repositoryAction := s.workspaceActionPolicy(ws.Directory)
 
 	full := apiWorkspaceFullState{
 		Name:              ws.DirName,
@@ -358,6 +361,7 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 		IsRoot:            ws.IsRoot,
 		IsFork:            kind == workspaceFork,
 		IsExternal:        ws.External,
+		External:          ws.External,
 		HasSGAI:           ws.HasWorkspace,
 		Status:            status,
 		BadgeClass:        badgeClass,
@@ -391,6 +395,7 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 		PendingQuestion:   pendingQuestion,
 		Actions:           actionState.Actions,
 		ActionConfigError: actionState.ConfigError,
+		RepositoryAction:  repositoryAction.api(ws.DirName),
 	}
 
 	if ws.IsRoot {
@@ -938,6 +943,81 @@ func (s *Server) resolveWorkspaceFromPath(w http.ResponseWriter, r *http.Request
 		return "", false
 	}
 	return workspacePath, true
+}
+
+func (s *Server) resolveWorkspaceForAction(workspaceName, workspaceDir string) (string, int, string) {
+	if workspaceName == "" {
+		return "", http.StatusBadRequest, "workspace name is required"
+	}
+
+	if workspaceDir == "" {
+		matches := s.resolveWorkspaceNameToPaths(workspaceName)
+		switch len(matches) {
+		case 0:
+			return "", http.StatusNotFound, "workspace not found"
+		case 1:
+			return matches[0], 0, ""
+		default:
+			return "", http.StatusConflict, "workspace name is ambiguous; supply workspaceDir"
+		}
+	}
+
+	if !filepath.IsAbs(workspaceDir) {
+		return "", http.StatusBadRequest, "workspaceDir must be an absolute path"
+	}
+
+	workspacePath := s.resolveWorkspaceDirToPath(workspaceDir)
+	if workspacePath == "" {
+		return "", http.StatusNotFound, "workspace not found"
+	}
+	if filepath.Base(workspacePath) != workspaceName {
+		return "", http.StatusBadRequest, "workspaceDir does not match workspace name"
+	}
+	return workspacePath, 0, ""
+}
+
+func (s *Server) resolveWorkspaceDirToPath(workspaceDir string) string {
+	wantedPath := resolveSymlinks(workspaceDir)
+	if wantedPath == "" {
+		return ""
+	}
+
+	groups, errScan := s.scanWorkspaceGroups()
+	if errScan != nil {
+		return ""
+	}
+
+	for _, grp := range groups {
+		if sameWorkspacePath(grp.Root.Directory, wantedPath) {
+			return grp.Root.Directory
+		}
+		for _, fork := range grp.Forks {
+			if sameWorkspacePath(fork.Directory, wantedPath) {
+				return fork.Directory
+			}
+		}
+	}
+
+	return ""
+}
+
+func sameWorkspacePath(leftPath, rightPath string) bool {
+	leftCandidates := workspacePathCandidates(leftPath)
+	rightCandidates := workspacePathCandidates(rightPath)
+	if len(leftCandidates) == 0 || len(rightCandidates) == 0 {
+		return false
+	}
+
+	rightSet := make(map[string]bool, len(rightCandidates))
+	for _, candidate := range rightCandidates {
+		rightSet[candidate] = true
+	}
+	for _, candidate := range leftCandidates {
+		if rightSet[candidate] {
+			return true
+		}
+	}
+	return false
 }
 
 type apiModelStatusEntry struct {
@@ -1492,8 +1572,9 @@ func (s *Server) handleAPIForkWorkspace(w http.ResponseWriter, r *http.Request) 
 }
 
 type apiDeleteForkRequest struct {
-	ForkDir string `json:"forkDir"`
-	Confirm bool   `json:"confirm"`
+	ForkDir      string `json:"forkDir"`
+	WorkspaceDir string `json:"workspaceDir,omitempty"`
+	Confirm      bool   `json:"confirm"`
 }
 
 type apiDeleteForkResponse struct {
@@ -1502,20 +1583,21 @@ type apiDeleteForkResponse struct {
 }
 
 func (s *Server) handleAPIDeleteFork(w http.ResponseWriter, r *http.Request) {
-	workspacePath, ok := s.resolveWorkspaceFromPath(w, r)
-	if !ok {
+	var req apiDeleteForkRequest
+	if errDecode := json.NewDecoder(r.Body).Decode(&req); errDecode != nil && !errors.Is(errDecode, io.EOF) {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	workspacePath, statusCode, errMessage := s.resolveWorkspaceForAction(r.PathValue("name"), req.WorkspaceDir)
+	if statusCode != 0 {
+		http.Error(w, errMessage, statusCode)
 		return
 	}
 
 	rootPath := s.resolveRootForDeleteFork(workspacePath)
 	if rootPath == "" {
 		http.Error(w, "workspace is not a root or fork", http.StatusBadRequest)
-		return
-	}
-
-	var req apiDeleteForkRequest
-	if errDecode := json.NewDecoder(r.Body).Decode(&req); errDecode != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 
@@ -1530,6 +1612,11 @@ func (s *Server) handleAPIDeleteFork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if _, errStat := os.Stat(forkDir); errStat != nil {
+		http.Error(w, "fork workspace not found", http.StatusBadRequest)
+		return
+	}
+
 	if s.classifyWorkspaceCached(forkDir) != workspaceFork {
 		http.Error(w, "fork workspace not found", http.StatusBadRequest)
 		return
@@ -1540,31 +1627,13 @@ func (s *Server) handleAPIDeleteFork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	forkName := filepath.Base(forkDir)
-
-	s.stopSession(forkDir)
-
-	forgetCmd := exec.Command("jj", "workspace", "forget", forkName)
-	forgetCmd.Dir = rootPath
-	if _, errForget := forgetCmd.CombinedOutput(); errForget != nil {
-		http.Error(w, "failed to forget fork workspace", http.StatusInternalServerError)
+	result, errAction := s.executeWorkspaceAction(forkDir, workspaceOperationDelete)
+	if errAction != nil {
+		http.Error(w, errAction.Error(), statusForWorkspaceActionError(errAction))
 		return
 	}
 
-	if errRemove := os.RemoveAll(forkDir); errRemove != nil {
-		http.Error(w, "failed to remove fork directory", http.StatusInternalServerError)
-		return
-	}
-
-	s.invalidateWorkspaceScanCache()
-	s.classifyCache.delete(rootPath)
-	s.classifyCache.delete(forkDir)
-	s.notifyStateChange()
-
-	writeJSON(w, apiDeleteForkResponse{
-		Deleted: true,
-		Message: "fork deleted successfully",
-	})
+	writeJSON(w, apiDeleteForkResponse{Deleted: result.Deleted, Message: result.Message})
 }
 
 func (s *Server) resolveRootForDeleteFork(workspacePath string) string {
@@ -1581,11 +1650,17 @@ func (s *Server) resolveRootForDeleteFork(workspacePath string) string {
 
 func (s *Server) resolveForkDir(requestForkDir, workspacePath, rootPath string) string {
 	if requestForkDir != "" {
-		validated, errValidate := s.validateDirectory(requestForkDir)
-		if errValidate != nil {
+		if !filepath.IsAbs(requestForkDir) {
 			return ""
 		}
-		return validated
+		absPath, errAbs := filepath.Abs(requestForkDir)
+		if errAbs != nil {
+			return ""
+		}
+		if _, errStat := os.Stat(absPath); errStat != nil {
+			return ""
+		}
+		return filepath.Clean(absPath)
 	}
 	if workspacePath != rootPath {
 		return workspacePath
@@ -1594,23 +1669,27 @@ func (s *Server) resolveForkDir(requestForkDir, workspacePath, rootPath string) 
 }
 
 type apiDeleteWorkspaceRequest struct {
-	Confirm bool `json:"confirm"`
+	Confirm      bool   `json:"confirm"`
+	Operation    string `json:"operation,omitempty"`
+	WorkspaceDir string `json:"workspaceDir,omitempty"`
 }
 
 type apiDeleteWorkspaceResponse struct {
-	Deleted bool   `json:"deleted"`
-	Message string `json:"message"`
+	Deleted  bool   `json:"deleted"`
+	Detached bool   `json:"detached"`
+	Message  string `json:"message"`
 }
 
 func (s *Server) handleAPIDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
-	workspacePath, ok := s.resolveWorkspaceFromPath(w, r)
-	if !ok {
+	var req apiDeleteWorkspaceRequest
+	if errDecode := json.NewDecoder(r.Body).Decode(&req); errDecode != nil && !errors.Is(errDecode, io.EOF) {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	var req apiDeleteWorkspaceRequest
-	if errDecode := json.NewDecoder(r.Body).Decode(&req); errDecode != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	workspacePath, statusCode, errMessage := s.resolveWorkspaceForAction(r.PathValue("name"), req.WorkspaceDir)
+	if statusCode != 0 {
+		http.Error(w, errMessage, statusCode)
 		return
 	}
 
@@ -1624,49 +1703,19 @@ func (s *Server) handleAPIDeleteWorkspace(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	kind := s.classifyWorkspaceCached(workspacePath)
-	external := s.isExternalWorkspace(workspacePath)
-
-	if external {
-		switch kind {
-		case workspaceFork:
-			result, errDelete := s.deleteExternalForkService(workspacePath)
-			if errDelete != nil {
-				http.Error(w, errDelete.Error(), http.StatusInternalServerError)
-				return
-			}
-			writeJSON(w, apiDeleteWorkspaceResponse(result))
-		default:
-			s.stopSession(workspacePath)
-			result, errDetach := s.detachExternalWorkspaceService(workspacePath)
-			if errDetach != nil {
-				http.Error(w, errDetach.Error(), http.StatusInternalServerError)
-				return
-			}
-			writeJSON(w, apiDeleteWorkspaceResponse{Deleted: result.Detached, Message: result.Message})
-		}
+	_, op, errResolve := s.resolveWorkspaceOperation(workspacePath, req.Operation)
+	if errResolve != nil {
+		http.Error(w, errResolve.Error(), statusForWorkspaceActionError(errResolve))
 		return
 	}
 
-	switch kind {
-	case workspaceRoot:
-		http.Error(w, "cannot delete a root workspace that has forks", http.StatusBadRequest)
+	result, errAction := s.executeWorkspaceAction(workspacePath, op)
+	if errAction != nil {
+		http.Error(w, errAction.Error(), statusForWorkspaceActionError(errAction))
 		return
-	case workspaceFork:
-		result, errDelete := s.deleteForkByPathService(workspacePath)
-		if errDelete != nil {
-			http.Error(w, errDelete.Error(), http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, apiDeleteWorkspaceResponse(result))
-	default:
-		result, errDelete := s.deleteWorkspaceService(workspacePath)
-		if errDelete != nil {
-			http.Error(w, errDelete.Error(), http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, apiDeleteWorkspaceResponse(result))
 	}
+
+	writeJSON(w, apiDeleteWorkspaceResponse{Deleted: result.Deleted, Detached: result.Detached, Message: result.Message})
 }
 
 type apiGoalResponse struct {
@@ -2241,13 +2290,23 @@ func (s *Server) handleAPIDetachWorkspace(w http.ResponseWriter, r *http.Request
 
 	result, errDetach := s.detachExternalWorkspaceService(req.Path)
 	if errDetach != nil {
-		statusCode := http.StatusInternalServerError
-		if errors.Is(errDetach, errNotAttached) {
-			statusCode = http.StatusNotFound
-		}
+		statusCode := statusForWorkspaceActionError(errDetach)
 		http.Error(w, errDetach.Error(), statusCode)
 		return
 	}
 
 	writeJSON(w, apiDetachWorkspaceResponse(result))
+}
+
+func statusForWorkspaceActionError(err error) int {
+	switch {
+	case errors.Is(err, errNotAttached):
+		return http.StatusNotFound
+	case errors.Is(err, errWorkspaceActionInvalidOperation), errors.Is(err, errWorkspaceActionOperationRequired):
+		return http.StatusBadRequest
+	case errors.Is(err, errWorkspaceActionRunning), errors.Is(err, errWorkspaceActionForksAttached), errors.Is(err, errWorkspaceActionNotAllowed):
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
 }

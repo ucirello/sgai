@@ -1,7 +1,6 @@
-import { useState, useTransition, useMemo, useCallback, type MouseEvent } from "react";
+import { useState, useMemo, useCallback, type MouseEvent } from "react";
 import { useNavigate } from "react-router";
-import { Mail, SquarePen, ExternalLink, Trash2, Square } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { Mail, SquarePen, ExternalLink, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -10,27 +9,23 @@ import { Select, SelectOption } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import {
-  AlertDialog,
-  AlertDialogTrigger,
-  AlertDialogContent,
-  AlertDialogHeader,
-  AlertDialogFooter,
-  AlertDialogTitle,
-  AlertDialogDescription,
-  AlertDialogAction,
-  AlertDialogCancel,
-} from "@/components/ui/alert-dialog";
 import { PromptHistory } from "@/components/PromptHistory";
 import { ActionBar } from "@/components/ActionBar";
+import { WorkspaceRepositoryAction } from "@/components/WorkspaceRepositoryAction";
 import { api } from "@/lib/api";
-import { useFactoryState, triggerFactoryRefresh } from "@/lib/factory-state";
-import { getRepositoryTitle } from "@/lib/repository-title";
+import { useFactoryState } from "@/lib/factory-state";
+import {
+  buildWorkspaceNameDisambiguators,
+  buildWorkspacePath,
+  getWorkspaceDisplayLabel,
+  resolveWorkspaceByIdentity,
+} from "@/lib/workspace-identity";
 import { useAdhocRun } from "@/hooks/useAdhocRun";
-import type { ApiForkEntry, ApiActionEntry } from "@/types";
+import type { ApiForkEntry, ApiActionEntry, ApiWorkspaceEntry } from "@/types";
 
 interface ForksTabProps {
   workspaceName: string;
+  workspaceDir?: string;
   actions?: ApiActionEntry[];
   actionConfigError?: string;
   onActionClick?: (action: ApiActionEntry, variables: Record<string, string>, forkName: string) => void;
@@ -68,62 +63,63 @@ function StatusDot({ running, needsInput }: { running: boolean; needsInput: bool
 
 interface CompactForkRowProps {
   fork: ApiForkEntry;
-  rootName: string;
+  forkWorkspace?: ApiWorkspaceEntry;
   needsInput: boolean;
+  workspaceNameDisambiguators: Map<string, string>;
   actions?: ApiActionEntry[];
   isActionRunning: boolean;
   onActionClick?: (action: ApiActionEntry, variables: Record<string, string>, forkName: string) => void;
 }
 
-function CompactForkRow({ fork, rootName, needsInput, actions, isActionRunning, onActionClick }: CompactForkRowProps) {
+function CompactForkRow({
+  fork,
+  forkWorkspace,
+  needsInput,
+  workspaceNameDisambiguators,
+  actions,
+  isActionRunning,
+  onActionClick,
+}: CompactForkRowProps) {
   const navigate = useNavigate();
   const [actionError, setActionError] = useState<string | null>(null);
-  const [isActionPending, startActionTransition] = useTransition();
-  const forkLabel = getRepositoryTitle(fork);
+  const [isActionPending, setIsActionPending] = useState(false);
+  const forkIdentity = forkWorkspace
+    ? { ...forkWorkspace, ...fork }
+    : { ...fork, title: fork.title ?? "", computedTitle: fork.computedTitle ?? "" };
+  const forkLabel = getWorkspaceDisplayLabel(forkIdentity, workspaceNameDisambiguators);
   const showTechnicalName = forkLabel !== fork.name;
   const respondLabel = `Respond to fork ${forkLabel}`;
   const openEditorLabel = `Open fork ${forkLabel} in Editor`;
   const openInSgaiLabel = `Open fork ${forkLabel} in sgai`;
-  const deleteForkLabel = `Delete fork ${forkLabel}`;
 
   const handleOpenEditor = useCallback((event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
     if (isActionPending) return;
     setActionError(null);
-    startActionTransition(async () => {
+    setIsActionPending(true);
+    void (async () => {
       try {
         await api.workspaces.openEditor(fork.name);
       } catch (err) {
         setActionError(err instanceof Error ? err.message : "Failed to open editor");
+      } finally {
+        setIsActionPending(false);
       }
-    });
+    })();
   }, [fork.name, isActionPending]);
-
-  const handleDeleteConfirmed = useCallback(() => {
-    if (isActionPending) return;
-    setActionError(null);
-    startActionTransition(async () => {
-      try {
-        await api.workspaces.deleteFork(rootName, fork.dir);
-        triggerFactoryRefresh();
-      } catch (err) {
-        setActionError(err instanceof Error ? err.message : "Failed to delete fork");
-      }
-    });
-  }, [fork.dir, rootName, isActionPending]);
 
   const handleRespond = useCallback((event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    navigate(`/workspaces/${encodeURIComponent(fork.name)}/respond`);
-  }, [fork.name, navigate]);
+    navigate(buildWorkspacePath(forkIdentity, "respond"));
+  }, [forkIdentity, navigate]);
 
   const handleOpenInSgai = useCallback((event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    navigate(`/workspaces/${encodeURIComponent(fork.name)}/progress`);
-  }, [fork.name, navigate]);
+    navigate(buildWorkspacePath(forkIdentity, "progress"));
+  }, [forkIdentity, navigate]);
 
   return (
     <div className="border rounded-md overflow-hidden">
@@ -195,46 +191,15 @@ function CompactForkRow({ fork, rootName, needsInput, actions, isActionRunning, 
                 <ExternalLink className="h-3.5 w-3.5" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>{openInSgaiLabel}</TooltipContent>
-          </Tooltip>
-
-          <AlertDialog>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <AlertDialogTrigger asChild>
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="ghost"
-                    className="h-7 w-7 text-destructive hover:text-destructive"
-                    disabled={isActionPending}
-                    aria-label={deleteForkLabel}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </AlertDialogTrigger>
-              </TooltipTrigger>
-              <TooltipContent>{deleteForkLabel}</TooltipContent>
+              <TooltipContent>{openInSgaiLabel}</TooltipContent>
             </Tooltip>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Delete fork</AlertDialogTitle>
-                <AlertDialogDescription>
-                  This will permanently delete &lsquo;{forkLabel}&rsquo; from disk. This action cannot be undone.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  onClick={handleDeleteConfirmed}
-                  disabled={isActionPending}
-                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                >
-                  Delete
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+          {forkWorkspace ? (
+            <WorkspaceRepositoryAction
+              workspace={forkWorkspace}
+              context="fork-row"
+              triggerLabelSuffix={workspaceNameDisambiguators.get(forkWorkspace.dir)}
+            />
+          ) : null}
         </div>
 
         {actions && actions.length > 0 && (
@@ -392,19 +357,31 @@ function InlineRunBox({ workspaceName }: { workspaceName: string }) {
   );
 }
 
-export function ForksTab({ workspaceName, actions, actionConfigError, onActionClick, isActionRunning = false }: ForksTabProps) {
+export function ForksTab({ workspaceName, workspaceDir, actions, actionConfigError, onActionClick, isActionRunning = false }: ForksTabProps) {
   const navigate = useNavigate();
   const { workspaces: allWorkspaces, fetchStatus } = useFactoryState();
+  const workspace = resolveWorkspaceByIdentity(allWorkspaces, workspaceName, workspaceDir);
+  const workspaceNameDisambiguators = useMemo(() => {
+    return buildWorkspaceNameDisambiguators(allWorkspaces);
+  }, [allWorkspaces]);
   const handleCreateFork = useCallback(() => {
-    navigate(`/workspaces/${encodeURIComponent(workspaceName)}/progress`);
-  }, [navigate, workspaceName]);
+    if (workspace) {
+      navigate(buildWorkspacePath(workspace, "progress"));
+    }
+  }, [navigate, workspace]);
 
-  const workspace = allWorkspaces.find((ws) => ws.name === workspaceName);
+  const forkWorkspaceLookup = useMemo(() => {
+    const lookup = new Map<string, ApiWorkspaceEntry>();
+    for (const currentWorkspace of allWorkspaces) {
+      lookup.set(currentWorkspace.dir, currentWorkspace);
+    }
+    return lookup;
+  }, [allWorkspaces]);
 
   const needsInputMap = useMemo(() => {
     const map: Record<string, boolean> = {};
     for (const ws of allWorkspaces) {
-      map[ws.name] = ws.needsInput;
+      map[ws.dir] = ws.needsInput;
     }
     return map;
   }, [allWorkspaces]);
@@ -424,7 +401,7 @@ export function ForksTab({ workspaceName, actions, actionConfigError, onActionCl
 
   const forks = workspace.forks ?? [];
   const hasActionBar = Boolean((actions && actions.length > 0) || actionConfigError?.trim());
-  const workspaceLabel = getRepositoryTitle(workspace);
+  const workspaceLabel = getWorkspaceDisplayLabel(workspace, workspaceNameDisambiguators);
 
   return (
     <div className="space-y-4">
@@ -450,10 +427,11 @@ export function ForksTab({ workspaceName, actions, actionConfigError, onActionCl
         <div className="space-y-1.5">
           {forks.map((fork) => (
             <CompactForkRow
-              key={fork.name}
+              key={fork.dir}
               fork={fork}
-              rootName={workspaceName}
-              needsInput={needsInputMap[fork.name] ?? false}
+              forkWorkspace={forkWorkspaceLookup.get(fork.dir)}
+              needsInput={needsInputMap[fork.dir] ?? fork.needsInput ?? false}
+              workspaceNameDisambiguators={workspaceNameDisambiguators}
               actions={actions}
               isActionRunning={isActionRunning}
               onActionClick={onActionClick}

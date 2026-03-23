@@ -160,9 +160,10 @@ func TestDeleteWorkspaceService(t *testing.T) {
 				require.NoError(t, initializeWorkspace(workspacePath))
 				return workspacePath
 			},
-			wantErr: false,
+			wantErr:     true,
+			errContains: "workspace operation is not allowed",
 			validate: func(t *testing.T, workspacePath string) { //nolint:thelper
-				assert.NoDirExists(t, workspacePath)
+				assert.DirExists(t, workspacePath)
 			},
 		},
 		{
@@ -170,7 +171,8 @@ func TestDeleteWorkspaceService(t *testing.T) {
 			setupFunc: func(_ *testing.T, rootDir string) string {
 				return filepath.Join(rootDir, "non-existent-workspace")
 			},
-			wantErr: false,
+			wantErr:     true,
+			errContains: "workspace operation is not allowed",
 			validate: func(_ *testing.T, _ string) {
 			},
 		},
@@ -958,9 +960,10 @@ func TestDeleteWorkspaceServiceSuccess(t *testing.T) {
 	server.mu.Unlock()
 
 	result, err := server.deleteWorkspaceService(workspacePath)
-	require.NoError(t, err)
-	assert.True(t, result.Deleted)
+	require.Error(t, err)
+	assert.Empty(t, result.Message)
+	assert.False(t, result.Deleted)
 
 	_, errStat := os.Stat(workspacePath)
-	assert.True(t, os.IsNotExist(errStat))
+	assert.NoError(t, errStat)
 }

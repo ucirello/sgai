@@ -1245,8 +1245,7 @@ func TestDoScanWorkspaceGroupsWithAttachedExternal(t *testing.T) {
 	require.NoError(t, initializeWorkspace(externalDir))
 	server.externalDirs[resolveSymlinks(externalDir)] = true
 
-	groups, errScan := server.doScanWorkspaceGroups()
-	require.NoError(t, errScan)
+	groups := server.doScanWorkspaceGroups()
 	require.Len(t, groups, 1)
 	assert.Equal(t, filepath.Base(externalDir), groups[0].Root.DirName)
 	assert.Equal(t, resolveSymlinks(externalDir), groups[0].Root.Directory)
@@ -1273,17 +1272,16 @@ func createForkFixture(t *testing.T, rootDir, forkDir string) {
 }
 
 func TestDoScanWorkspaceGroupsAttachedForkRules(t *testing.T) {
-	t.Run("unattachedForkLeavesRootStandalone", func(t *testing.T) {
+	t.Run("unattachedForkKeepsRootIdentity", func(t *testing.T) {
 		server, _ := setupTestServer(t)
 		rootDir := t.TempDir()
 		forkDir := t.TempDir()
 		createForkFixture(t, rootDir, forkDir)
 		attachWorkspaceFixture(t, server, rootDir, workspaceRoot)
 
-		groups, errScan := server.doScanWorkspaceGroups()
-		require.NoError(t, errScan)
+		groups := server.doScanWorkspaceGroups()
 		require.Len(t, groups, 1)
-		assert.False(t, groups[0].Root.IsRoot)
+		assert.True(t, groups[0].Root.IsRoot)
 		assert.Equal(t, resolveSymlinks(rootDir), groups[0].Root.Directory)
 		assert.Empty(t, groups[0].Forks)
 	})
@@ -1296,15 +1294,14 @@ func TestDoScanWorkspaceGroupsAttachedForkRules(t *testing.T) {
 		attachWorkspaceFixture(t, server, rootDir, workspaceRoot)
 		attachWorkspaceFixture(t, server, forkDir, workspaceFork)
 
-		groups, errScan := server.doScanWorkspaceGroups()
-		require.NoError(t, errScan)
+		groups := server.doScanWorkspaceGroups()
 		require.Len(t, groups, 1)
 		assert.True(t, groups[0].Root.IsRoot)
 		require.Len(t, groups[0].Forks, 1)
 		assert.Equal(t, resolveSymlinks(forkDir), groups[0].Forks[0].Directory)
 	})
 
-	t.Run("detachingLastForkDemotesRoot", func(t *testing.T) {
+	t.Run("detachingLastForkKeepsRootIdentity", func(t *testing.T) {
 		server, _ := setupTestServer(t)
 		rootDir := t.TempDir()
 		forkDir := t.TempDir()
@@ -1325,10 +1322,31 @@ func TestDoScanWorkspaceGroupsAttachedForkRules(t *testing.T) {
 		groups, errScan = server.scanWorkspaceGroups()
 		require.NoError(t, errScan)
 		require.Len(t, groups, 1)
-		assert.False(t, groups[0].Root.IsRoot)
+		assert.True(t, groups[0].Root.IsRoot)
 		assert.Equal(t, resolveSymlinks(rootDir), groups[0].Root.Directory)
 		assert.Empty(t, groups[0].Forks)
 	})
+}
+
+func TestGroupAttachedWorkspacesDoesNotEmitPhantomRootAfterPrune(t *testing.T) {
+	server, _ := setupTestServer(t)
+	forkDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(forkDir, ".sgai"), 0o755))
+
+	missingRootDir := filepath.Join(t.TempDir(), "missing-root")
+	groups := server.groupAttachedWorkspaces([]scannedAttachedWorkspace{{
+		directory:    forkDir,
+		resolvedDir:  resolveSymlinks(forkDir),
+		dirName:      filepath.Base(forkDir),
+		hasWorkspace: true,
+		kind:         workspaceFork,
+		rootDir:      resolveSymlinks(missingRootDir),
+	}})
+
+	require.Len(t, groups, 1)
+	assert.Equal(t, resolveSymlinks(forkDir), resolveSymlinks(groups[0].Root.Directory))
+	assert.False(t, groups[0].Root.IsRoot)
+	assert.Empty(t, groups[0].Forks)
 }
 
 func TestScanWorkspaceGroupsEmpty(t *testing.T) {
@@ -1879,6 +1897,32 @@ func TestLoadPinnedProjectsPrunesStale(t *testing.T) {
 	resolvedValidDir := resolveSymlinks(validDir)
 	assert.True(t, srv.pinnedDirs[resolvedValidDir])
 	assert.False(t, srv.pinnedDirs["/nonexistent/path/12345"])
+}
+
+func TestLoadPinnedProjectsPrunedStateDoesNotCommitWhenPersistFails(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("skipping permission test as root")
+	}
+
+	srv, _ := setupTestServer(t)
+	configDir := t.TempDir()
+	srv.pinnedConfigDir = configDir
+
+	validDir := t.TempDir()
+	missingDir := filepath.Join(t.TempDir(), "missing-pinned")
+	data, errMarshal := json.Marshal([]string{validDir, missingDir})
+	require.NoError(t, errMarshal)
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "pinned.json"), data, 0o644))
+
+	require.NoError(t, os.Chmod(configDir, 0o500))
+	defer func() {
+		require.NoError(t, os.Chmod(configDir, 0o700))
+	}()
+
+	errLoad := srv.loadPinnedProjects()
+	require.Error(t, errLoad)
+	assert.Empty(t, srv.pinnedDirs)
+	assert.ElementsMatch(t, []string{resolveSymlinks(validDir), resolveSymlinks(missingDir)}, readJSONPathList(t, filepath.Join(configDir, "pinned.json")))
 }
 
 func TestLoadPinnedProjectsInvalidJSON(t *testing.T) {
@@ -2917,8 +2961,7 @@ func TestDoScanWorkspaceGroups(t *testing.T) {
 	wsDir := setupTestWorkspace(t, rootDir, "ws1")
 	require.NoError(t, os.MkdirAll(filepath.Join(wsDir, ".jj"), 0755))
 
-	groups, err := server.doScanWorkspaceGroups()
-	assert.NoError(t, err)
+	groups := server.doScanWorkspaceGroups()
 	assert.GreaterOrEqual(t, len(groups), 0)
 }
 
@@ -2934,8 +2977,7 @@ func TestDoScanWorkspaceGroupsWithExternal(t *testing.T) {
 
 	_ = server.loadExternalDirs()
 
-	groups, err := server.doScanWorkspaceGroups()
-	assert.NoError(t, err)
+	groups := server.doScanWorkspaceGroups()
 	assert.GreaterOrEqual(t, len(groups), 0)
 }
 
@@ -2974,8 +3016,7 @@ func TestGetRootWorkspacePathWithJJDir(t *testing.T) {
 
 func TestDoScanWorkspaceGroupsEmpty(t *testing.T) {
 	server, _ := setupTestServer(t)
-	groups, err := server.doScanWorkspaceGroups()
-	assert.NoError(t, err)
+	groups := server.doScanWorkspaceGroups()
 	assert.Empty(t, groups)
 }
 
