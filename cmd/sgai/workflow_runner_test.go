@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -282,7 +285,8 @@ func TestResolveRetrospectiveDirResuming(t *testing.T) {
 	goalPath := filepath.Join(dir, "GOAL.md")
 	require.NoError(t, os.WriteFile(goalPath, []byte("# Test Goal"), 0644))
 
-	result := resolveRetrospectiveDir(true, dir, filepath.Join(dir, ".sgai", "retrospectives"), pmPath, stateJSONPath, goalPath)
+	result, errResolve := resolveRetrospectiveDir(true, dir, filepath.Join(dir, ".sgai", "retrospectives"), pmPath, stateJSONPath, goalPath)
+	require.NoError(t, errResolve)
 	assert.Equal(t, retroDir, result)
 }
 
@@ -296,7 +300,8 @@ func TestResolveRetrospectiveDirNewSession(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0o755))
 	require.NoError(t, os.WriteFile(goalPath, []byte("# Test Goal"), 0o644))
 
-	retroDir := resolveRetrospectiveDir(false, dir, retrospectivesBaseDir, pmPath, stateJSONPath, goalPath)
+	retroDir, errResolve := resolveRetrospectiveDir(false, dir, retrospectivesBaseDir, pmPath, stateJSONPath, goalPath)
+	require.NoError(t, errResolve)
 	assert.NotEmpty(t, retroDir)
 	assert.DirExists(t, retroDir)
 
@@ -307,6 +312,172 @@ func TestResolveRetrospectiveDirNewSession(t *testing.T) {
 
 	_, errStatState := os.Stat(stateJSONPath)
 	assert.True(t, os.IsNotExist(errStatState))
+}
+
+func TestPrepareRetrospectiveDirFallsBackToFreshSessionOnResumeError(t *testing.T) {
+	testCases := []struct {
+		name                   string
+		writeProjectManagement func(*testing.T, string, string)
+		wantLogContains        string
+	}{
+		{
+			name: "emptyRetrospectiveSession",
+			writeProjectManagement: func(t *testing.T, _, pmPath string) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(pmPath, []byte("---\nRetrospective Session: \n---\n"), 0o644))
+			},
+			wantLogContains: "empty Retrospective Session in PROJECT_MANAGEMENT.md",
+		},
+		{
+			name: "missingRetrospectiveSession",
+			writeProjectManagement: func(t *testing.T, _, pmPath string) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(pmPath, []byte("---\n---\n"), 0o644))
+			},
+			wantLogContains: "missing Retrospective Session in PROJECT_MANAGEMENT.md",
+		},
+		{
+			name: "missingClosingFrontmatterDelimiter",
+			writeProjectManagement: func(t *testing.T, _, pmPath string) {
+				t.Helper()
+				content := "---\nRetrospective Session: .sgai/retrospectives/2026-03-06-12-00.malformed\n## Content\n"
+				require.NoError(t, os.WriteFile(pmPath, []byte(content), 0o644))
+			},
+			wantLogContains: "missing closing frontmatter delimiter in PROJECT_MANAGEMENT.md",
+		},
+		{
+			name: "malformedClosingFrontmatterDelimiter",
+			writeProjectManagement: func(t *testing.T, _, pmPath string) {
+				t.Helper()
+				content := "---\nRetrospective Session: .sgai/retrospectives/2026-03-06-12-00.malformed\n----\n"
+				require.NoError(t, os.WriteFile(pmPath, []byte(content), 0o644))
+			},
+			wantLogContains: "missing closing frontmatter delimiter in PROJECT_MANAGEMENT.md",
+		},
+		{
+			name: "unreadableProjectManagement",
+			writeProjectManagement: func(t *testing.T, _, pmPath string) {
+				t.Helper()
+				require.NoError(t, os.Mkdir(pmPath, 0o755))
+			},
+			wantLogContains: "read PROJECT_MANAGEMENT.md",
+		},
+		{
+			name: "missingRetrospectiveDirectory",
+			writeProjectManagement: func(t *testing.T, dir, pmPath string) {
+				t.Helper()
+				missingRetroDirRel := filepath.Join(".sgai", "retrospectives", "2026-03-06-12-00.missing")
+				pmContent := "---\nRetrospective Session: " + missingRetroDirRel + "\n---\n"
+				require.NoError(t, os.WriteFile(pmPath, []byte(pmContent), 0o644))
+				assert.NoDirExists(t, filepath.Join(dir, missingRetroDirRel))
+			},
+			wantLogContains: "retrospective directory from PROJECT_MANAGEMENT.md does not exist",
+		},
+		{
+			name: "retrospectiveSessionPointsToFile",
+			writeProjectManagement: func(t *testing.T, dir, pmPath string) {
+				t.Helper()
+				retrospectiveFileRel := filepath.Join(".sgai", "retrospectives", "2026-03-06-12-00.file")
+				retrospectiveFilePath := filepath.Join(dir, retrospectiveFileRel)
+				require.NoError(t, os.MkdirAll(filepath.Dir(retrospectiveFilePath), 0o755))
+				require.NoError(t, os.WriteFile(retrospectiveFilePath, []byte("not a directory"), 0o644))
+				pmContent := "---\nRetrospective Session: " + retrospectiveFileRel + "\n---\n"
+				require.NoError(t, os.WriteFile(pmPath, []byte(pmContent), 0o644))
+			},
+			wantLogContains: "retrospective directory from PROJECT_MANAGEMENT.md is not a directory",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			retrospectivesBaseDir := filepath.Join(dir, ".sgai", "retrospectives")
+			pmPath := filepath.Join(dir, ".sgai", "PROJECT_MANAGEMENT.md")
+			stateJSONPath := filepath.Join(dir, ".sgai", "state.json")
+			goalPath := filepath.Join(dir, "GOAL.md")
+
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0o755))
+			require.NoError(t, os.WriteFile(goalPath, []byte("# Test Goal"), 0o644))
+			require.NoError(t, os.WriteFile(stateJSONPath, []byte(`{"status":"working"}`), 0o644))
+			tc.writeProjectManagement(t, dir, pmPath)
+
+			var logOutput bytes.Buffer
+			originalWriter := log.Writer()
+			log.SetOutput(&logOutput)
+			t.Cleanup(func() {
+				log.SetOutput(originalWriter)
+			})
+
+			retroDir, resuming := prepareRetrospectiveDir(true, dir, retrospectivesBaseDir, pmPath, stateJSONPath, goalPath)
+
+			assert.False(t, resuming)
+			assert.NotEmpty(t, retroDir)
+			assert.DirExists(t, retroDir)
+			assert.FileExists(t, filepath.Join(retroDir, "GOAL.md"))
+
+			retroDirRel, errRel := filepath.Rel(dir, retroDir)
+			require.NoError(t, errRel)
+
+			pmContent, errRead := os.ReadFile(pmPath)
+			require.NoError(t, errRead)
+			assert.Contains(t, string(pmContent), "Retrospective Session: "+retroDirRel)
+			assert.Contains(t, logOutput.String(), tc.wantLogContains)
+
+			_, errStatState := os.Stat(stateJSONPath)
+			assert.True(t, os.IsNotExist(errStatState))
+		})
+	}
+}
+
+func TestPrepareRetrospectiveDirDoesNotRetryFreshSessionFailure(t *testing.T) {
+	dir := t.TempDir()
+	retrospectivesBaseDir := filepath.Join(dir, ".sgai", "retrospectives")
+	pmPath := filepath.Join(dir, ".sgai", "PROJECT_MANAGEMENT.md")
+	stateJSONPath := filepath.Join(dir, ".sgai", "state.json")
+	goalPath := filepath.Join(dir, "missing-goal.md")
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0o755))
+
+	var logOutput bytes.Buffer
+	originalWriter := log.Writer()
+	log.SetOutput(&logOutput)
+	t.Cleanup(func() {
+		log.SetOutput(originalWriter)
+	})
+
+	retroDir, resuming := prepareRetrospectiveDir(false, dir, retrospectivesBaseDir, pmPath, stateJSONPath, goalPath)
+
+	assert.Empty(t, retroDir)
+	assert.False(t, resuming)
+	assert.NotContains(t, logOutput.String(), "[sgai] warning:")
+
+	entries, errReadDir := os.ReadDir(retrospectivesBaseDir)
+	require.NoError(t, errReadDir)
+	assert.Len(t, entries, 1)
+}
+
+func TestResolveRetrospectiveDirNewSessionErrorsReturnInsteadOfFatal(t *testing.T) {
+	if os.Getenv("SGAI_HELPER_RETRO_DIR_NEW_SESSION_ERROR") == "1" {
+		dir := t.TempDir()
+		retrospectivesBaseDir := filepath.Join(dir, "blocked")
+		pmPath := filepath.Join(dir, ".sgai", "PROJECT_MANAGEMENT.md")
+		stateJSONPath := filepath.Join(dir, ".sgai", "state.json")
+		goalPath := filepath.Join(dir, "GOAL.md")
+
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0o755))
+		require.NoError(t, os.WriteFile(goalPath, []byte("# Test Goal"), 0o644))
+		require.NoError(t, os.WriteFile(retrospectivesBaseDir, []byte("blocked"), 0o644))
+
+		retroDir, errResolve := resolveRetrospectiveDir(false, dir, retrospectivesBaseDir, pmPath, stateJSONPath, goalPath)
+		require.Empty(t, retroDir)
+		require.ErrorContains(t, errResolve, "failed to create retrospective directory")
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run", "^TestResolveRetrospectiveDirNewSessionErrorsReturnInsteadOfFatal$")
+	cmd.Env = append(os.Environ(), "SGAI_HELPER_RETRO_DIR_NEW_SESSION_ERROR=1")
+	output, errRun := cmd.CombinedOutput()
+	require.NoError(t, errRun, "subprocess output:\n%s", string(output))
 }
 
 func TestHandleWorkingLoop(t *testing.T) {

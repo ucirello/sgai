@@ -1755,34 +1755,41 @@ func canResumeWorkflow(wfState state.Workflow, currentGoalChecksum string) bool 
 
 // extractRetrospectiveDirFromProjectManagement parses the PROJECT_MANAGEMENT.md
 // frontmatter to extract the Retrospective Session path.
-func extractRetrospectiveDirFromProjectManagement(pmPath string) string {
+func extractRetrospectiveDirFromProjectManagement(pmPath string) (string, error) {
 	const headerPrefix = "Retrospective Session: "
 
-	content, err := os.ReadFile(pmPath)
-	if err != nil {
-		return ""
+	content, errRead := os.ReadFile(pmPath)
+	if errRead != nil {
+		return "", fmt.Errorf("read PROJECT_MANAGEMENT.md: %w", errRead)
 	}
 
 	lines := linesWithTrailingEmpty(string(content))
-	if len(lines) < 3 {
-		return ""
+	if len(lines) == 0 {
+		return "", fmt.Errorf("missing frontmatter header in PROJECT_MANAGEMENT.md")
 	}
 
-	if !strings.HasPrefix(lines[0], "---") {
-		return ""
+	if strings.TrimSpace(lines[0]) != "---" {
+		return "", fmt.Errorf("missing frontmatter header in PROJECT_MANAGEMENT.md")
 	}
 
-	for i := 1; i < len(lines); i++ {
-		line := lines[i]
-		if strings.HasPrefix(line, "---") {
-			break
-		}
+	closingDelimiterIdx := slices.IndexFunc(lines[1:], func(line string) bool {
+		return strings.TrimSpace(line) == "---"
+	})
+	if closingDelimiterIdx < 0 {
+		return "", fmt.Errorf("missing closing frontmatter delimiter in PROJECT_MANAGEMENT.md")
+	}
+
+	for _, line := range lines[1 : 1+closingDelimiterIdx] {
 		if after, ok := strings.CutPrefix(line, headerPrefix); ok {
-			return after
+			after = strings.TrimSpace(after)
+			if after == "" {
+				return "", fmt.Errorf("empty Retrospective Session in PROJECT_MANAGEMENT.md")
+			}
+			return after, nil
 		}
 	}
 
-	return ""
+	return "", fmt.Errorf("missing Retrospective Session in PROJECT_MANAGEMENT.md")
 }
 
 func copyFileAtomic(src, dst string) error {

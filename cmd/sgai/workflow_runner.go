@@ -312,7 +312,10 @@ func buildWorkflowRunner(dir string, mcpURL string, logWriter io.Writer, session
 
 	resuming := canResumeWorkflow(wfState, newChecksum)
 
-	retroDir := resolveRetrospectiveDir(resuming, dir, retrospectivesBaseDir, pmPath, stateJSONPath, goalPath)
+	retroDir, resuming := prepareRetrospectiveDir(resuming, dir, retrospectivesBaseDir, pmPath, stateJSONPath, goalPath)
+	if retroDir == "" {
+		return nil, func() {}, false
+	}
 
 	retroStdoutLog, retroStderrLog, errRetroLogs := openRetrospectiveLogs(retroDir)
 	if errRetroLogs != nil {
@@ -385,44 +388,72 @@ func computeLongestNameLen(agents []string) int {
 	return longest
 }
 
-func resolveRetrospectiveDir(resuming bool, dir, retrospectivesBaseDir, pmPath, stateJSONPath, goalPath string) string {
+func prepareRetrospectiveDir(resuming bool, dir, retrospectivesBaseDir, pmPath, stateJSONPath, goalPath string) (string, bool) {
+	retroDir, errResolve := resolveRetrospectiveDir(resuming, dir, retrospectivesBaseDir, pmPath, stateJSONPath, goalPath)
+	if errResolve == nil {
+		return retroDir, resuming
+	}
+	if !resuming {
+		log.Println("failed to create fresh retrospective directory:", errResolve)
+		return "", false
+	}
+
+	log.Println("[sgai] warning:", errResolve)
+
+	retroDir, errResolve = resolveRetrospectiveDir(false, dir, retrospectivesBaseDir, pmPath, stateJSONPath, goalPath)
+	if errResolve != nil {
+		log.Println("failed to create fresh retrospective directory:", errResolve)
+		return "", false
+	}
+
+	return retroDir, false
+}
+
+func resolveRetrospectiveDir(resuming bool, dir, retrospectivesBaseDir, pmPath, stateJSONPath, goalPath string) (string, error) {
 	if resuming {
-		retroDirRel := extractRetrospectiveDirFromProjectManagement(pmPath)
-		if retroDirRel == "" {
-			log.Fatalln("failed to read retrospective directory from PROJECT_MANAGEMENT.md during resume")
+		retroDirRel, errExtract := extractRetrospectiveDirFromProjectManagement(pmPath)
+		if errExtract != nil {
+			return "", fmt.Errorf("failed to read retrospective directory from PROJECT_MANAGEMENT.md during resume: %w", errExtract)
 		}
 		retroDir := filepath.Join(dir, retroDirRel)
-		if _, errStat := os.Stat(retroDir); os.IsNotExist(errStat) {
-			log.Fatalln("retrospective directory from PROJECT_MANAGEMENT.md does not exist:", retroDir)
+		fi, errStat := os.Stat(retroDir)
+		if errStat != nil {
+			if os.IsNotExist(errStat) {
+				return "", fmt.Errorf("retrospective directory from PROJECT_MANAGEMENT.md does not exist: %s", retroDir)
+			}
+			return "", fmt.Errorf("failed to stat retrospective directory from PROJECT_MANAGEMENT.md: %w", errStat)
 		}
-		return retroDir
+		if !fi.IsDir() {
+			return "", fmt.Errorf("retrospective directory from PROJECT_MANAGEMENT.md is not a directory: %s", retroDir)
+		}
+		return retroDir, nil
 	}
 
 	retroDir := filepath.Join(retrospectivesBaseDir, generateRetrospectiveDirName())
 	if errMkdir := os.MkdirAll(retroDir, 0755); errMkdir != nil {
-		log.Fatalln("failed to create retrospective directory:", errMkdir)
+		return "", fmt.Errorf("failed to create retrospective directory: %w", errMkdir)
 	}
 
 	retroDirRel, errRel := filepath.Rel(dir, retroDir)
 	if errRel != nil {
-		log.Fatalln("failed to compute relative retrospective directory path:", errRel)
+		return "", fmt.Errorf("failed to compute relative retrospective directory path: %w", errRel)
 	}
 
 	if errRemove := os.Remove(stateJSONPath); errRemove != nil && !os.IsNotExist(errRemove) {
-		log.Fatalln("failed to truncate state.json on startup:", errRemove)
+		return "", fmt.Errorf("failed to truncate state.json on startup: %w", errRemove)
 	}
 	if errRemove := os.Remove(pmPath); errRemove != nil && !os.IsNotExist(errRemove) {
-		log.Fatalln("failed to truncate PROJECT_MANAGEMENT.md on startup:", errRemove)
+		return "", fmt.Errorf("failed to truncate PROJECT_MANAGEMENT.md on startup: %w", errRemove)
 	}
 
 	if errUpdate := updateProjectManagementWithRetrospectiveDir(pmPath, retroDirRel); errUpdate != nil {
-		log.Fatalln("failed to update PROJECT_MANAGEMENT.md with retrospective directory:", errUpdate)
+		return "", fmt.Errorf("failed to update PROJECT_MANAGEMENT.md with retrospective directory: %w", errUpdate)
 	}
 
 	goalRetrospectivePath := filepath.Join(retroDir, "GOAL.md")
 	if errCopy := copyFileAtomic(goalPath, goalRetrospectivePath); errCopy != nil {
-		log.Fatalln("failed to copy GOAL.md to retrospective:", errCopy)
+		return "", fmt.Errorf("failed to copy GOAL.md to retrospective: %w", errCopy)
 	}
 
-	return retroDir
+	return retroDir, nil
 }
