@@ -1,5 +1,6 @@
 import { describe, it, expect } from "bun:test";
-import { Navigate } from "react-router";
+import { render, screen } from "@testing-library/react";
+import { Navigate, RouterProvider, createMemoryRouter } from "react-router";
 import { router } from "../router";
 
 describe("router", () => {
@@ -18,5 +19,42 @@ describe("router", () => {
     const workspaceRoute = rootRoute.children?.find((route) => route.path === "workspaces/:name/*");
 
     expect(workspaceRoute).toBeTruthy();
+  });
+
+  it("defines custom error boundaries for the app shell and workspace routes", () => {
+    const rootRoute = router.routes[0];
+    const workspaceRoute = rootRoute.children?.find((route) => route.path === "workspaces/:name/*");
+
+    expect(rootRoute.errorElement).toBeTruthy();
+    expect(workspaceRoute?.errorElement).toBeTruthy();
+  });
+
+  it("renders a product-safe recovery UI instead of the default developer error page", async () => {
+    const rootRoute = router.routes[0];
+
+    function Boom() {
+      throw new Error("boom");
+    }
+
+    const memoryRouter = createMemoryRouter([
+      {
+        path: "/",
+        errorElement: rootRoute.errorElement,
+        children: [
+          {
+            path: "boom",
+            element: <Boom />,
+          },
+        ],
+      },
+    ], {
+      initialEntries: ["/boom"],
+    });
+
+    render(<RouterProvider router={memoryRouter} />);
+
+    expect(await screen.findByRole("heading", { name: "Something went wrong" })).toBeTruthy();
+    expect(screen.getByText(/The workspace view hit an unexpected error/i)).toBeTruthy();
+    expect(screen.queryByText("Unexpected Application Error!")).toBeNull();
   });
 });

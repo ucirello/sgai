@@ -1,3 +1,42 @@
+export type ApiRepositoryMode = "standalone" | "root" | "fork";
+
+export type ApiRepositoryActionEntryPoint = "choose" | "confirm" | "hidden";
+
+export type ApiRepositoryOperation = "detach" | "delete";
+
+export type ApiRepositoryActionIcon = "choose" | ApiRepositoryOperation;
+
+export type ApiRepositoryActionTone = "neutral" | "destructive";
+
+export interface ApiRepositoryActionOperationPresentation {
+  operation: ApiRepositoryOperation;
+  label: string;
+  icon: ApiRepositoryActionIcon;
+  tone: ApiRepositoryActionTone;
+}
+
+export interface ApiRepositoryActionPresentation {
+  detailTriggerLabel: string;
+  treeTriggerLabel: string;
+  forkRowTriggerLabel: string;
+  dialogTitle: string;
+  dialogDescription: string;
+  icon: ApiRepositoryActionIcon;
+  tone: ApiRepositoryActionTone;
+  operations: ApiRepositoryActionOperationPresentation[];
+}
+
+export interface ApiRepositoryAction {
+  repositoryMode: ApiRepositoryMode;
+  entryPoint: ApiRepositoryActionEntryPoint;
+  allowedOperations: ApiRepositoryOperation[];
+  defaultOperation?: ApiRepositoryOperation;
+  disabledReason?: string;
+  attachedForkCount: number;
+  running: boolean;
+  presentation: ApiRepositoryActionPresentation;
+}
+
 export interface ApiWorkspaceEntry {
   name: string;
   dir: string;
@@ -42,6 +81,7 @@ export interface ApiWorkspaceEntry {
   actions?: ApiActionEntry[];
   actionConfigError?: string;
   external?: boolean;
+  repositoryAction?: ApiRepositoryAction;
 }
 
 export interface ApiAgentSequenceEntry {
@@ -346,13 +386,9 @@ export interface ApiForkResponse {
   parent: string;
 }
 
-export interface ApiDeleteForkResponse {
-  deleted: boolean;
-  message: string;
-}
-
 export interface ApiDeleteWorkspaceResponse {
   deleted: boolean;
+  detached?: boolean;
   message: string;
 }
 

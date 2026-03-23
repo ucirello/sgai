@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"log"
 	"math/rand/v2"
 	"os"
 	"os/exec"
@@ -92,27 +91,15 @@ func (s *Server) forkWorkspaceService(workspacePath, goalContent string) (forkWo
 	s.classifyCache.delete(workspacePath)
 
 	forkCanonical := resolveSymlinks(forkPath)
-	if s.isExternalWorkspace(workspacePath) {
-		if errSave := s.saveExternalDirs(); errSave != nil {
-			return forkWorkspaceResult{}, failForkWorkspaceSetup(workspacePath, forkPath, "failed to save external dirs", errSave)
-		}
-		s.mu.Lock()
-		s.externalDirs[forkCanonical] = true
-		s.mu.Unlock()
+	state := s.currentWorkspaceListState()
+	if state.externalDirs[resolveSymlinks(workspacePath)] {
+		state.externalDirs[forkCanonical] = true
 	}
-
-	if errSave := s.savePinnedProjects(); errSave != nil {
-		if s.isExternalWorkspace(workspacePath) {
-			s.mu.Lock()
-			delete(s.externalDirs, forkCanonical)
-			s.mu.Unlock()
-		}
-		return forkWorkspaceResult{}, failForkWorkspaceSetup(workspacePath, forkPath, "failed to persist pins", errSave)
+	state.pinnedDirs[forkCanonical] = true
+	if errSave := s.saveWorkspaceListState(state, true, true); errSave != nil {
+		return forkWorkspaceResult{}, failForkWorkspaceSetup(workspacePath, forkPath, "failed to persist workspace lists", errSave)
 	}
-
-	s.mu.Lock()
-	s.pinnedDirs[forkCanonical] = true
-	s.mu.Unlock()
+	s.commitWorkspaceListState(state)
 
 	s.notifyStateChange()
 
@@ -171,11 +158,7 @@ type deleteForkResult struct {
 }
 
 func (s *Server) deleteForkByPathService(forkDir string) (deleteForkResult, error) {
-	rootPath := resolveSymlinks(getRootWorkspacePath(forkDir))
-	if rootPath == "" {
-		return deleteForkResult{}, fmt.Errorf("could not determine root workspace for fork")
-	}
-	return s.deleteForkService(rootPath, forkDir, true)
+	return s.deleteForkWorkspaceService(forkDir)
 }
 
 func (s *Server) deleteForkService(workspacePath, forkDir string, confirm bool) (deleteForkResult, error) {
@@ -200,25 +183,7 @@ func (s *Server) deleteForkService(workspacePath, forkDir string, confirm bool) 
 		return deleteForkResult{}, fmt.Errorf("fork does not belong to root")
 	}
 
-	forkName := filepath.Base(validatedForkDir)
-	s.stopSession(validatedForkDir)
-
-	forgetCmd := exec.Command("jj", "workspace", "forget", forkName)
-	forgetCmd.Dir = workspacePath
-	if _, errForget := forgetCmd.CombinedOutput(); errForget != nil {
-		return deleteForkResult{}, fmt.Errorf("failed to forget fork workspace")
-	}
-
-	if errRemove := os.RemoveAll(validatedForkDir); errRemove != nil {
-		return deleteForkResult{}, fmt.Errorf("failed to remove fork directory")
-	}
-
-	s.invalidateWorkspaceScanCache()
-	s.classifyCache.delete(workspacePath)
-	s.classifyCache.delete(validatedForkDir)
-	s.notifyStateChange()
-
-	return deleteForkResult{Deleted: true, Message: "fork deleted successfully"}, nil
+	return s.deleteForkWorkspaceService(validatedForkDir)
 }
 
 type getGoalResult struct {
@@ -274,31 +239,17 @@ func (s *Server) togglePinService(workspacePath string) (togglePinResult, error)
 }
 
 type deleteWorkspaceResult struct {
-	Deleted bool
-	Message string
+	Deleted  bool
+	Detached bool
+	Message  string
 }
 
 func (s *Server) deleteWorkspaceService(workspacePath string) (deleteWorkspaceResult, error) {
-	s.stopSession(workspacePath)
-
-	if errRemove := os.RemoveAll(workspacePath); errRemove != nil {
-		return deleteWorkspaceResult{}, fmt.Errorf("failed to remove workspace directory: %w", errRemove)
+	result, errDelete := s.executeWorkspaceAction(workspacePath, workspaceOperationDelete)
+	if errDelete != nil {
+		return deleteWorkspaceResult{}, errDelete
 	}
-
-	s.mu.Lock()
-	delete(s.pinnedDirs, resolveSymlinks(workspacePath))
-	delete(s.sessions, workspacePath)
-	delete(s.everStartedDirs, workspacePath)
-	s.mu.Unlock()
-	if errSave := s.savePinnedProjects(); errSave != nil {
-		log.Println("failed to persist pins:", errSave)
-	}
-
-	s.invalidateWorkspaceScanCache()
-	s.classifyCache.delete(workspacePath)
-	s.notifyStateChange()
-
-	return deleteWorkspaceResult{Deleted: true, Message: "workspace deleted successfully"}, nil
+	return deleteWorkspaceResult{Deleted: result.Deleted, Detached: result.Detached, Message: result.Message}, nil
 }
 
 type deleteMessageResult struct {

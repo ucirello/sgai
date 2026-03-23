@@ -24,12 +24,12 @@ import type {
   ApiSteerResponse,
   ApiTogglePinResponse,
   ApiOpenEditorResponse,
-  ApiDeleteForkResponse,
   ApiDeleteWorkspaceResponse,
   ApiDeleteMessageResponse,
   ApiAttachWorkspaceResponse,
   ApiDetachWorkspaceResponse,
   ApiBrowseDirectoriesResponse,
+  ApiRepositoryOperation,
 } from "../types";
 
 class ApiError extends Error {
@@ -152,15 +152,17 @@ export const api = {
         `/api/v1/workspaces/${encodeURIComponent(name)}/open-editor/project-management`,
         { method: "POST" },
       ),
-    deleteFork: (name: string, forkDir: string) =>
-      fetchJSON<ApiDeleteForkResponse>(
-        `/api/v1/workspaces/${encodeURIComponent(name)}/delete-fork`,
-        { method: "POST", body: JSON.stringify({ forkDir, confirm: true }) },
-      ),
-    deleteWorkspace: (name: string) =>
+    deleteWorkspace: (name: string, operation?: ApiRepositoryOperation, workspaceDir?: string) =>
       fetchJSON<ApiDeleteWorkspaceResponse>(
         `/api/v1/workspaces/${encodeURIComponent(name)}/delete`,
-        { method: "POST", body: JSON.stringify({ confirm: true }) },
+        {
+          method: "POST",
+          body: JSON.stringify({
+            confirm: true,
+            ...(operation ? { operation } : {}),
+            ...(workspaceDir ? { workspaceDir } : {}),
+          }),
+        },
       ),
     deleteMessage: (name: string, messageId: number) =>
       fetchJSON<ApiDeleteMessageResponse>(

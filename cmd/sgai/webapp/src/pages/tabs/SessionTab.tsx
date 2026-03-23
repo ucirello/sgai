@@ -9,10 +9,12 @@ import { MarkdownContent } from "@/components/MarkdownContent";
 import { ChevronRight } from "lucide-react";
 import { api } from "@/lib/api";
 import { useFactoryState, triggerFactoryRefresh } from "@/lib/factory-state";
+import { resolveWorkspaceByIdentity } from "@/lib/workspace-identity";
 import type { ApiAgentCost, ApiDollarBreakdown, ApiStepCost, ApiTodoEntry, ApiSessionCost, ApiTokenUsage } from "@/types";
 
 interface SessionTabProps {
   workspaceName: string;
+  workspaceDir?: string;
   pmContent?: string;
   hasProjectMgmt?: boolean;
 }
@@ -252,7 +254,7 @@ function TasksSection({ projectTodos, agentTodos }: { projectTodos: ApiTodoEntry
   );
 }
 
-export function SessionTab({ workspaceName, pmContent, hasProjectMgmt }: SessionTabProps) {
+export function SessionTab({ workspaceName, workspaceDir, pmContent, hasProjectMgmt }: SessionTabProps) {
   const [steerMessage, setSteerMessage] = useState("");
   const [steerError, setSteerError] = useState<string | null>(null);
   const [steerSuccess, setSteerSuccess] = useState(false);
@@ -261,7 +263,7 @@ export function SessionTab({ workspaceName, pmContent, hasProjectMgmt }: Session
   const [isPmOpenPending, startPmOpenTransition] = useTransition();
 
   const { workspaces } = useFactoryState();
-  const workspace = workspaces.find((ws) => ws.name === workspaceName);
+  const workspace = resolveWorkspaceByIdentity(workspaces, workspaceName, workspaceDir);
 
   const agentSequence = workspace?.agentSequence ?? [];
   const cost = workspace?.cost;

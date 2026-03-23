@@ -11,9 +11,13 @@ beforeEach(() => {
   document.body.style.pointerEvents = "auto";
 });
 
-const createMockWorkspace = (overrides: Record<string, unknown> = {}) => ({
-  name: "workspace",
-  dir: "/path/to/workspace",
+const createRepositoryAction = (overrides: Record<string, unknown> = {}) => ({
+  repositoryMode: "standalone",
+  entryPoint: "confirm",
+  allowedOperations: ["detach"],
+  defaultOperation: "detach",
+  disabledReason: "",
+  attachedForkCount: 0,
   running: false,
   needsInput: false,
   inProgress: false,
@@ -53,70 +57,225 @@ const createMockWorkspace = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-const mockWorkspaces = [
-  createMockWorkspace({
-    name: "workspace-1",
-    dir: "/path/to/workspace-1",
-    title: "Workspace One Title",
-  }),
-  createMockWorkspace({
-    name: "workspace-2",
-    dir: "/path/to/workspace-2",
-    running: true,
-    inProgress: true,
-    pinned: true,
-    isRoot: true,
-    title: "Workspace Two Title",
-    currentAgent: "coordinator",
-    currentModel: "opencode/glm-5",
-    task: "Working on task",
-    totalExecTime: "1m 30s",
-    forks: [
-      {
-        name: "workspace-2-fork-1",
-        dir: "/path/to/workspace-2-fork-1",
-        running: false,
-        needsInput: true,
-        inProgress: false,
-        pinned: false,
-        title: "Workspace Two Fork Title",
-      },
-    ],
-  }),
-  createMockWorkspace({
-    name: "workspace-3",
-    dir: "/path/to/workspace-3",
-    needsInput: true,
-    inProgress: true,
-    computedTitle: "Needs Input Fallback Title",
-    external: true,
-  }),
-  createMockWorkspace({
-    name: "root-unpinned",
-    dir: "/path/to/root-unpinned",
-    isRoot: true,
-    pinned: false,
-    title: "Unpinned Root Title",
-    forks: [
-      {
-        name: "orphan-pinned-fork",
-        dir: "/path/to/orphan-pinned-fork",
-        running: false,
-        needsInput: false,
-        inProgress: false,
-        pinned: true,
-        title: "Orphan Pinned Fork Title",
-      },
-    ],
-  }),
-  createMockWorkspace({
-    name: "orphan-pinned-fork",
-    dir: "/path/to/orphan-pinned-fork",
-    isFork: true,
-    pinned: true,
-    title: "Orphan Pinned Fork Title",
-  }),
-];
+const createRepositoryPresentation = (
+  workspaceName: string,
+  action: {
+    repositoryMode: string;
+    entryPoint: string;
+    allowedOperations: string[];
+    defaultOperation?: string;
+  },
+) => {
+  const operationLabel = (operation: string) => operation === "delete" ? "Delete" : "Detach";
+  const operationTone = (operation: string) => operation === "delete" ? "destructive" : "neutral";
+
+  if (action.entryPoint === "choose") {
+    const repositoryNoun = action.repositoryMode === "fork" ? "fork" : "workspace";
+    const subject = action.repositoryMode === "fork" ? `fork ${workspaceName}` : workspaceName;
+
+    return {
+      detailTriggerLabel: "Choose action",
+      treeTriggerLabel: `Choose action for ${subject}`,
+      forkRowTriggerLabel: `Choose action for ${subject}`,
+      dialogTitle: action.repositoryMode === "fork" ? "Choose fork action" : "Choose workspace action",
+      dialogDescription: `Choose what to do with ${repositoryNoun} '${workspaceName}'. ${action.allowedOperations.map((operation) => operation === "delete"
+        ? `Delete permanently removes the ${repositoryNoun} from disk.`
+        : `Detach removes the ${repositoryNoun} from the SGAI workspace list and keeps the files on disk.`).join(" ")}`,
+      icon: "choose",
+      tone: "neutral",
+      operations: action.allowedOperations.map((operation) => ({
+        operation,
+        label: operationLabel(operation),
+        icon: operation,
+        tone: operationTone(operation),
+      })),
+    };
+  }
+
+  const confirmOperation = action.defaultOperation ?? action.allowedOperations[0] ?? "detach";
+
+  return {
+    detailTriggerLabel: operationLabel(confirmOperation),
+    treeTriggerLabel: `${operationLabel(confirmOperation)} ${workspaceName}`,
+    forkRowTriggerLabel: `${operationLabel(confirmOperation)} ${workspaceName}`,
+    dialogTitle: confirmOperation === "delete" ? "Delete workspace" : "Detach workspace",
+    dialogDescription: confirmOperation === "delete"
+      ? `This will permanently delete '${workspaceName}' from disk. This action cannot be undone.`
+      : `This will remove '${workspaceName}' from the SGAI workspace list. The files on disk will NOT be deleted.`,
+    icon: confirmOperation,
+    tone: operationTone(confirmOperation),
+    operations: action.allowedOperations.map((operation) => ({
+      operation,
+      label: operationLabel(operation),
+      icon: operation,
+      tone: operationTone(operation),
+    })),
+  };
+};
+
+const createMockWorkspace = (overrides: Record<string, unknown> = {}) => (
+  (() => {
+    const repositoryActionOverrides = typeof overrides === "object" && overrides !== null && "repositoryAction" in overrides
+      ? overrides.repositoryAction as Record<string, unknown>
+      : undefined;
+    const hasPresentationOverride = Boolean(repositoryActionOverrides && "presentation" in repositoryActionOverrides);
+    const workspace = {
+      name: "workspace",
+      dir: "/path/to/workspace",
+      running: false,
+      needsInput: false,
+      inProgress: false,
+      pinned: false,
+      isRoot: false,
+      isFork: false,
+      title: "",
+      computedTitle: "",
+      status: "",
+      badgeClass: "",
+      badgeText: "",
+      hasSgai: true,
+      hasEditedGoal: false,
+      interactiveAuto: false,
+      continuousMode: false,
+      currentAgent: "",
+      currentModel: "",
+      task: "",
+      goalContent: "",
+      rawGoalContent: "",
+      pmContent: "",
+      hasProjectMgmt: false,
+      svgHash: "",
+      totalExecTime: "",
+      latestProgress: "",
+      humanMessage: "",
+      agentSequence: [],
+      cost: { totalCost: 0, totalTokens: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 }, byAgent: [] },
+      modelStatuses: [],
+      agentModels: [],
+      events: [],
+      messages: [],
+      projectTodos: [],
+      agentTodos: [],
+      log: [],
+      external: false,
+      repositoryAction: createRepositoryAction(),
+      ...overrides,
+    };
+
+    workspace.repositoryAction = hasPresentationOverride
+      ? workspace.repositoryAction
+      : {
+        ...workspace.repositoryAction,
+        presentation: createRepositoryPresentation(workspace.name, workspace.repositoryAction),
+      };
+
+    return workspace;
+  })());
+
+function createDefaultMockWorkspaces() {
+  return [
+    createMockWorkspace({
+      name: "workspace-1",
+      dir: "/path/to/workspace-1",
+      title: "Workspace One Title",
+    }),
+    createMockWorkspace({
+      name: "workspace-2",
+      dir: "/path/to/workspace-2",
+      running: true,
+      inProgress: true,
+      pinned: true,
+      isRoot: true,
+      title: "Workspace Two Title",
+      currentAgent: "coordinator",
+      currentModel: "opencode/glm-5",
+      task: "Working on task",
+      totalExecTime: "1m 30s",
+      repositoryAction: createRepositoryAction({
+        repositoryMode: "root",
+        entryPoint: "hidden",
+        allowedOperations: [],
+        defaultOperation: "",
+        disabledReason: "running",
+        attachedForkCount: 1,
+        running: true,
+      }),
+      forks: [
+        {
+          name: "workspace-2-fork-1",
+          dir: "/path/to/workspace-2-fork-1",
+          running: false,
+          needsInput: true,
+          inProgress: false,
+          pinned: false,
+          title: "Workspace Two Fork Title",
+        },
+      ],
+    }),
+    createMockWorkspace({
+      name: "workspace-2-fork-1",
+      dir: "/path/to/workspace-2-fork-1",
+      needsInput: true,
+      isFork: true,
+      title: "Workspace Two Fork Title",
+      repositoryAction: createRepositoryAction({
+        repositoryMode: "fork",
+        entryPoint: "choose",
+        allowedOperations: ["detach", "delete"],
+        defaultOperation: "",
+      }),
+    }),
+    createMockWorkspace({
+      name: "workspace-3",
+      dir: "/path/to/workspace-3",
+      needsInput: true,
+      inProgress: true,
+      computedTitle: "Needs Input Fallback Title",
+      external: true,
+    }),
+    createMockWorkspace({
+      name: "root-unpinned",
+      dir: "/path/to/root-unpinned",
+      isRoot: true,
+      pinned: false,
+      title: "Unpinned Root Title",
+      repositoryAction: createRepositoryAction({
+        repositoryMode: "root",
+        entryPoint: "hidden",
+        allowedOperations: [],
+        defaultOperation: "",
+        disabledReason: "forks-attached",
+        attachedForkCount: 1,
+      }),
+      forks: [
+        {
+          name: "orphan-pinned-fork",
+          dir: "/path/to/orphan-pinned-fork",
+          running: false,
+          needsInput: false,
+          inProgress: false,
+          pinned: true,
+          title: "Orphan Pinned Fork Title",
+        },
+      ],
+    }),
+    createMockWorkspace({
+      name: "orphan-pinned-fork",
+      dir: "/path/to/orphan-pinned-fork",
+      isFork: true,
+      pinned: true,
+      title: "Orphan Pinned Fork Title",
+      repositoryAction: createRepositoryAction({
+        repositoryMode: "fork",
+        entryPoint: "choose",
+        allowedOperations: ["detach", "delete"],
+        defaultOperation: "",
+      }),
+    }),
+  ];
+}
+
+let mockWorkspaces = createDefaultMockWorkspaces();
 
 mock.module("@/lib/factory-state", () => ({
   useFactoryState: () => ({
@@ -127,13 +286,11 @@ mock.module("@/lib/factory-state", () => ({
   triggerFactoryRefresh: mock(() => {}),
 }));
 
-const mockDeleteFork = mock(() => Promise.resolve({ deleted: true }));
 const mockDeleteWorkspace = mock(() => Promise.resolve({ deleted: true }));
 
 mock.module("@/lib/api", () => ({
   api: {
     workspaces: {
-      deleteFork: mockDeleteFork,
       deleteWorkspace: mockDeleteWorkspace,
     },
   },
@@ -180,8 +337,8 @@ function renderDashboard(initialRoute = "/") {
 
 describe("Dashboard", () => {
   beforeEach(() => {
-    mockDeleteFork.mockClear();
     mockDeleteWorkspace.mockClear();
+    mockWorkspaces = createDefaultMockWorkspaces();
   });
 
   afterEach(() => {
@@ -315,16 +472,16 @@ describe("Dashboard", () => {
   });
 
   describe("workspace actions", () => {
-    it("shows delete button on workspace hover", async () => {
+    it("shows detach button on detach-only workspaces", async () => {
       renderDashboard();
 
       await waitFor(() => {
-        const deleteButtons = screen.queryAllByLabelText("Delete workspace Workspace One Title");
-        expect(deleteButtons.length).toBeGreaterThan(0);
+        const detachButtons = screen.queryAllByLabelText("Detach workspace-1");
+        expect(detachButtons.length).toBeGreaterThan(0);
       });
     });
 
-    it("opens delete confirmation dialog", async () => {
+    it("opens detach confirmation dialog for detach-only workspaces", async () => {
       const user = userEvent.setup();
       renderDashboard();
 
@@ -333,15 +490,125 @@ describe("Dashboard", () => {
         expect(ws1Elements.length).toBeGreaterThan(0);
       });
 
-      const deleteButtons = screen.getAllByLabelText("Delete workspace Workspace One Title");
-      await user.click(deleteButtons[0]);
+      const detachButtons = screen.getAllByLabelText("Detach workspace-1");
+      await user.click(detachButtons[0]);
 
       await waitFor(() => {
         const alertDialogs = screen.queryAllByRole("alertdialog");
         expect(alertDialogs.length).toBeGreaterThan(0);
-        
-        const deleteWorkspaceElements = screen.queryAllByText(/Delete workspace/);
-        expect(deleteWorkspaceElements.length).toBeGreaterThan(0);
+
+        const detachWorkspaceElements = screen.queryAllByText(/Detach workspace/);
+        expect(detachWorkspaceElements.length).toBeGreaterThan(0);
+        expect(screen.queryAllByText(/will NOT be deleted/i).length).toBeGreaterThan(0);
+      });
+    });
+
+    it("does not show hidden actions for pinned roots with attached forks", async () => {
+      renderDashboard();
+
+      await waitFor(() => {
+        expect(screen.queryByLabelText("Delete workspace-2")).toBeNull();
+        expect(screen.queryByLabelText("Detach workspace-2")).toBeNull();
+        expect(screen.queryByLabelText("Choose action for workspace-2")).toBeNull();
+      });
+    });
+
+    it("does not show tree actions for running repositories", async () => {
+      mockWorkspaces = [
+        createMockWorkspace({
+          name: "running-ws",
+          dir: "/path/to/running-ws",
+          running: true,
+          title: "Running Workspace",
+          repositoryAction: createRepositoryAction({
+            entryPoint: "hidden",
+            allowedOperations: [],
+            defaultOperation: "",
+            disabledReason: "running",
+            running: true,
+          }),
+        }),
+      ];
+
+      renderDashboard();
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Running Workspace").length).toBeGreaterThan(0);
+      });
+
+      expect(screen.queryByLabelText("Detach running-ws")).toBeNull();
+      expect(screen.queryByLabelText("Delete running-ws")).toBeNull();
+      expect(screen.queryByLabelText("Choose action for running-ws")).toBeNull();
+      expect(screen.queryByLabelText("Choose action for fork running-ws")).toBeNull();
+    });
+
+    it("renders duplicate-name workspaces as separate tree rows", async () => {
+      mockWorkspaces = [
+        createMockWorkspace({
+          name: "shared-ws",
+          dir: "/tmp/first-parent/shared-ws",
+          title: "shared-ws",
+          computedTitle: "",
+        }),
+        createMockWorkspace({
+          name: "shared-ws",
+          dir: "/tmp/second-parent/shared-ws",
+          title: "shared-ws",
+          computedTitle: "",
+        }),
+      ];
+
+      renderDashboard();
+
+      await waitFor(() => {
+        expect(screen.getByText("shared-ws · first-parent")).toBeTruthy();
+        expect(screen.getByText("shared-ws · second-parent")).toBeTruthy();
+      });
+    });
+
+    it("targets the correct duplicate-name workspace when deleting from the tree", async () => {
+      const user = userEvent.setup();
+
+      mockWorkspaces = [
+        createMockWorkspace({
+          name: "shared-ws",
+          dir: "/tmp/first-parent/shared-ws",
+          title: "shared-ws",
+          computedTitle: "",
+          repositoryAction: createRepositoryAction({
+            repositoryMode: "standalone",
+            entryPoint: "confirm",
+            allowedOperations: ["delete"],
+            defaultOperation: "delete",
+          }),
+        }),
+        createMockWorkspace({
+          name: "shared-ws",
+          dir: "/tmp/second-parent/shared-ws",
+          title: "shared-ws",
+          computedTitle: "",
+          repositoryAction: createRepositoryAction({
+            repositoryMode: "standalone",
+            entryPoint: "confirm",
+            allowedOperations: ["delete"],
+            defaultOperation: "delete",
+          }),
+        }),
+      ];
+
+      renderDashboard();
+
+      await waitFor(() => {
+        expect(screen.getByText("shared-ws · second-parent")).toBeTruthy();
+      });
+
+      await user.click(screen.getByLabelText("Delete shared-ws · second-parent"));
+
+      const dialog = await screen.findByRole("alertdialog");
+      await user.click(within(dialog).getByRole("button", { name: /^Delete$/ }));
+
+      await waitFor(() => {
+        expect(mockDeleteWorkspace).toHaveBeenCalledWith("shared-ws", "delete", "/tmp/second-parent/shared-ws");
       });
     });
   });
@@ -400,7 +667,7 @@ describe("Dashboard", () => {
   });
 
   describe("fork vs workspace deletion", () => {
-    it("opens the fork deletion confirmation dialog", async () => {
+    it("opens the fork detach-or-delete dialog", async () => {
       const user = userEvent.setup();
       renderDashboard();
 
@@ -417,31 +684,133 @@ describe("Dashboard", () => {
         expect(forkElements.length).toBeGreaterThan(0);
       });
 
-      const deleteForkButtons = screen.getAllByLabelText("Delete fork Workspace Two Fork Title");
-      expect(deleteForkButtons.length).toBeGreaterThan(0);
-      await user.click(deleteForkButtons[0]);
+      const forkActionButtons = screen.getAllByLabelText(/Choose action for fork workspace-2-fork-1/);
+      expect(forkActionButtons.length).toBeGreaterThan(0);
+      await user.click(forkActionButtons[0]);
 
       await waitFor(() => {
-        const confirmButtons = screen.queryAllByRole("button", { name: "Delete fork" });
+        const confirmButtons = screen.queryAllByRole("button", { name: /^Delete$/ });
         expect(confirmButtons.length).toBeGreaterThan(0);
+        const detachButtons = screen.queryAllByRole("button", { name: /^Detach$/ });
+        expect(detachButtons.length).toBeGreaterThan(0);
       });
 
       const dialogs = screen.getAllByRole("alertdialog");
       const dialog = dialogs[dialogs.length - 1];
-      expect(within(dialog).getByRole("heading", { name: "Delete fork" })).toBeTruthy();
-      expect(within(dialog).getByText(/This will permanently delete 'Workspace Two Fork Title' from disk/i)).toBeTruthy();
+      expect(within(dialog).getByText("Choose fork action")).toBeTruthy();
+      expect(within(dialog).getByText(/Choose what to do with fork 'workspace-2-fork-1'/i)).toBeTruthy();
+      expect(within(dialog).getByText(/Delete permanently removes the fork from disk/i)).toBeTruthy();
     });
 
-    it("shows delete button for standalone workspaces", async () => {
+    it("detaches fork rows through the workspace action endpoint", async () => {
+      const user = userEvent.setup();
       renderDashboard();
 
       await waitFor(() => {
-        const ws1Elements = screen.queryAllByText("Workspace One Title");
-        expect(ws1Elements.length).toBeGreaterThan(0);
+        const expandButtons = screen.queryAllByRole("button", { name: /forks for /i });
+        expect(expandButtons.length).toBeGreaterThan(0);
       });
 
-      const deleteButtons = screen.getAllByLabelText("Delete workspace Workspace One Title");
-      expect(deleteButtons.length).toBeGreaterThan(0);
+      const expandButtons = screen.getAllByRole("button", { name: /forks for /i });
+      await user.click(expandButtons[0]);
+
+      await waitFor(() => {
+        const forkElements = screen.queryAllByText("Workspace Two Fork Title");
+        expect(forkElements.length).toBeGreaterThan(0);
+      });
+
+      const forkActionButtons = screen.getAllByLabelText(/Choose action for fork workspace-2-fork-1/);
+      await user.click(forkActionButtons[0]);
+      await user.click(screen.getByRole("button", { name: /^Detach$/ }));
+
+      await waitFor(() => {
+        expect(mockDeleteWorkspace).toHaveBeenCalledWith("workspace-2-fork-1", "detach", "/path/to/workspace-2-fork-1");
+      });
+    });
+
+    it("keeps the root visible and turns it into detach-only after deleting the last fork", async () => {
+      const user = userEvent.setup();
+
+      mockWorkspaces = [
+        createMockWorkspace({
+          name: "root-ws",
+          dir: "/path/to/root-ws",
+          isRoot: true,
+          title: "Root Workspace",
+          repositoryAction: createRepositoryAction({
+            repositoryMode: "root",
+            entryPoint: "hidden",
+            allowedOperations: [],
+            defaultOperation: "",
+            attachedForkCount: 1,
+          }),
+          forks: [
+            {
+              name: "root-ws-fork-1",
+              dir: "/path/to/root-ws-fork-1",
+              running: false,
+              needsInput: false,
+              inProgress: false,
+              pinned: false,
+              title: "Last Fork",
+            },
+          ],
+        }),
+        createMockWorkspace({
+          name: "root-ws-fork-1",
+          dir: "/path/to/root-ws-fork-1",
+          isFork: true,
+          title: "Last Fork",
+          repositoryAction: createRepositoryAction({
+            repositoryMode: "fork",
+            entryPoint: "choose",
+            allowedOperations: ["detach", "delete"],
+            defaultOperation: "",
+          }),
+        }),
+      ];
+
+      mockDeleteWorkspace.mockImplementation(async (name, operation) => {
+        expect(name).toBe("root-ws-fork-1");
+        expect(operation).toBe("delete");
+        mockWorkspaces = [
+          createMockWorkspace({
+            name: "root-ws",
+            dir: "/path/to/root-ws",
+            isRoot: true,
+            title: "Root Workspace",
+            repositoryAction: createRepositoryAction({
+              repositoryMode: "root",
+              entryPoint: "confirm",
+              allowedOperations: ["detach"],
+              defaultOperation: "detach",
+              attachedForkCount: 0,
+            }),
+            forks: [],
+          }),
+        ];
+        return { deleted: true };
+      });
+
+      renderDashboard("/workspaces/root-ws-fork-1/progress");
+
+      await user.click(screen.getByRole("button", { name: "Choose action for fork root-ws-fork-1" }));
+      await user.click(await screen.findByRole("button", { name: /^Delete$/ }));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("redirect-target").textContent).toBe("Redirected to forks");
+        expect(screen.getByText("Root Workspace")).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Detach root-ws" })).toBeTruthy();
+      });
+    });
+
+    it("shows detach button for standalone workspaces", async () => {
+      renderDashboard();
+
+      await waitFor(() => {
+        const detachButtons = screen.queryAllByLabelText("Detach workspace-1");
+        expect(detachButtons.length).toBeGreaterThan(0);
+      });
     });
   });
 
@@ -460,17 +829,17 @@ describe("Dashboard", () => {
       renderDashboard();
 
       await waitFor(() => {
-        const detachButtons = screen.queryAllByLabelText("Detach Needs Input Fallback Title");
+        const detachButtons = screen.queryAllByLabelText("Detach workspace-3");
         expect(detachButtons.length).toBeGreaterThan(0);
       });
 
-      const detachButtons = screen.getAllByLabelText("Detach Needs Input Fallback Title");
+      const detachButtons = screen.getAllByLabelText("Detach workspace-3");
       await user.click(detachButtons[0]);
 
       await waitFor(() => {
         expect(screen.getByText("Detach workspace")).toBeTruthy();
-        expect(screen.getByText(/This will remove 'Needs Input Fallback Title' from the interface\./)).toBeTruthy();
-        expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
+        expect(screen.getByText(/This will remove 'workspace-3' from the SGAI workspace list\./)).toBeTruthy();
+        expect(screen.getByRole("button", { name: /^Detach$/ })).toBeTruthy();
       });
     });
 
@@ -697,7 +1066,9 @@ describe("Dashboard", () => {
 
       const forkLink = screen.getByRole("link", { name: /workspace two fork title/i });
 
-      expect(forkLink.getAttribute("href")).toBe("/workspaces/workspace-2-fork-1/progress");
+      expect(forkLink.getAttribute("href")).toBe(
+        "/workspaces/workspace-2-fork-1/progress?workspaceDir=%2Fpath%2Fto%2Fworkspace-2-fork-1"
+      );
       act(() => {
         forkLink.focus();
       });
@@ -711,7 +1082,7 @@ describe("Dashboard", () => {
   });
 
   describe("fork deletion redirect", () => {
-    it("keeps fork deletion affordances on nested fork rows", async () => {
+    it("keeps fork action affordances on nested fork rows", async () => {
       const user = userEvent.setup();
       renderDashboard();
 
@@ -728,17 +1099,20 @@ describe("Dashboard", () => {
         expect(forkElements.length).toBeGreaterThan(0);
       });
 
-      const deleteForkButtons = screen.getAllByLabelText("Delete fork Workspace Two Fork Title");
-      await user.click(deleteForkButtons[0]);
+      const forkActionButtons = screen.getAllByLabelText(/Choose action for fork workspace-2-fork-1/);
+      await user.click(forkActionButtons[0]);
 
       await waitFor(() => {
-        const confirmButtons = screen.queryAllByRole("button", { name: "Delete fork" });
+        const confirmButtons = screen.queryAllByRole("button", { name: /^Delete$/ });
         expect(confirmButtons.length).toBeGreaterThan(0);
+        const detachButtons = screen.queryAllByRole("button", { name: /^Detach$/ });
+        expect(detachButtons.length).toBeGreaterThan(0);
       });
 
       const dialogs = screen.getAllByRole("alertdialog");
       const dialog = dialogs[dialogs.length - 1];
-      expect(within(dialog).getByRole("button", { name: "Delete fork" })).toBeTruthy();
+      expect(within(dialog).getByRole("button", { name: /^Delete$/ })).toBeTruthy();
+      expect(within(dialog).getByRole("button", { name: /^Detach$/ })).toBeTruthy();
       expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeTruthy();
     });
   });

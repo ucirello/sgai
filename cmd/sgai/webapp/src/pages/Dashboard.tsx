@@ -1,22 +1,11 @@
-import { useState, useEffect, useCallback, useMemo, useTransition, type ReactNode, type CSSProperties } from "react";
-import { useParams, useNavigate, Link } from "react-router";
+import { useState, useEffect, useCallback, useMemo, type ReactNode, type CSSProperties } from "react";
+import { useParams, useNavigate, Link, useSearchParams } from "react-router";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import {
-  AlertDialog,
-  AlertDialogTrigger,
-  AlertDialogContent,
-  AlertDialogHeader,
-  AlertDialogFooter,
-  AlertDialogTitle,
-  AlertDialogDescription,
-  AlertDialogAction,
-  AlertDialogCancel,
-} from "@/components/ui/alert-dialog";
 import sgaiLogo from "@/assets/sgai-logo.svg";
 import {
   Sidebar,
@@ -31,18 +20,23 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { Loader2, Inbox, Trash2, Link as LinkIcon } from "lucide-react";
-import { useFactoryState, triggerFactoryRefresh } from "@/lib/factory-state";
+import { Loader2, Inbox, Link as LinkIcon } from "lucide-react";
+import { WorkspaceRepositoryAction } from "@/components/WorkspaceRepositoryAction";
+import { useFactoryState } from "@/lib/factory-state";
 import { useSidebarResize } from "@/hooks/useSidebarResize";
 import { cn } from "@/lib/utils";
-import { api } from "@/lib/api";
-import { getRepositoryTitle } from "@/lib/repository-title";
-import { getWorkspaceDeletionCopy } from "@/lib/workspace-delete-copy";
 import type { ApiWorkspaceEntry } from "@/lib/factory-state";
+import {
+  getWorkspaceBaseLabel,
+  buildWorkspaceNameDisambiguators,
+  buildWorkspacePath,
+  getWorkspaceDirFromSearchParams,
+  getWorkspaceDisplayLabel,
+  isSameWorkspace,
+  resolveWorkspaceByIdentity,
+} from "@/lib/workspace-identity";
 
 type ForkEntry = NonNullable<ApiWorkspaceEntry["forks"]>[number];
-
-type RepositoryTitleSource = Pick<ApiWorkspaceEntry, "name" | "title" | "computedTitle">;
 
 function workspaceToForkEntry(ws: ApiWorkspaceEntry): ForkEntry {
   return {
@@ -57,117 +51,19 @@ function workspaceToForkEntry(ws: ApiWorkspaceEntry): ForkEntry {
   };
 }
 
-function getSidebarRepositoryTitle(source: RepositoryTitleSource | null | undefined): string {
-  const computedTitle = source?.computedTitle?.trim();
+const tooltipMetadataClassName = "mt-1 text-xs text-background";
 
-  if (computedTitle) {
-    return computedTitle;
-  }
-
-  return getRepositoryTitle(source);
-}
-
-function getOrphanPinnedForkDisplayLabel(rootLabel: string, forkLabel: string): string {
-  if (forkLabel.startsWith(`${rootLabel}/`)) {
+function getOrphanPinnedForkDisplayLabel(
+  rootLabel: string,
+  forkLabel: string,
+  rootBaseLabel: string,
+  forkBaseLabel: string,
+): string {
+  if (forkBaseLabel.startsWith(`${rootBaseLabel}/`)) {
     return forkLabel;
   }
 
   return `${rootLabel}/${forkLabel}`;
-}
-
-const tooltipMetadataClassName = "mt-1 text-xs text-background";
-
-interface DeleteWorkspaceDialogProps {
-  workspaceName: string;
-  workspaceLabel: string;
-  isExternal: boolean;
-  isFork: boolean;
-  selectedName: string | undefined;
-  rootName?: string;
-}
-
-function DeleteWorkspaceDialog({
-  workspaceName,
-  workspaceLabel,
-  isExternal,
-  isFork,
-  selectedName,
-  rootName,
-}: DeleteWorkspaceDialogProps) {
-  const navigate = useNavigate();
-  const [open, setOpen] = useState(false);
-  const [isDeleting, startDeleteTransition] = useTransition();
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-
-  const handleDelete = useCallback(() => {
-    setDeleteError(null);
-    startDeleteTransition(async () => {
-      try {
-        if (isFork) {
-          await api.workspaces.deleteFork(workspaceName, "");
-        } else {
-          await api.workspaces.deleteWorkspace(workspaceName);
-        }
-        triggerFactoryRefresh();
-        setOpen(false);
-        if (isFork && rootName) {
-          navigate(`/workspaces/${encodeURIComponent(rootName)}/forks`);
-        } else if (selectedName === workspaceName) {
-          navigate("/");
-        }
-      } catch (err) {
-        setDeleteError(err instanceof Error ? err.message : "Failed to delete workspace");
-      }
-    });
-  }, [isFork, workspaceName, selectedName, rootName, navigate]);
-
-  const handleOpenChange = useCallback((nextOpen: boolean) => {
-    setOpen(nextOpen);
-    if (!nextOpen) {
-      setDeleteError(null);
-    }
-  }, []);
-
-  const deletionCopy = getWorkspaceDeletionCopy({
-    workspaceLabel,
-    isExternal,
-    isFork,
-  });
-
-  return (
-    <AlertDialog open={open} onOpenChange={handleOpenChange}>
-      <AlertDialogTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={(e) => { e.stopPropagation(); }}
-          className="opacity-0 group-hover/row:opacity-100 focus:opacity-100 h-6 w-6 p-0.5 rounded hover:bg-destructive/20 transition-opacity shrink-0"
-          aria-label={deletionCopy.triggerLabel}
-        >
-          <Trash2 className="h-3 w-3 text-muted-foreground hover:text-destructive" />
-        </Button>
-      </AlertDialogTrigger>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{deletionCopy.dialogTitle}</AlertDialogTitle>
-          <AlertDialogDescription>{deletionCopy.dialogDescription}</AlertDialogDescription>
-        </AlertDialogHeader>
-        {deleteError && (
-          <p className="text-sm text-destructive" role="alert">{deleteError}</p>
-        )}
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={handleDelete}
-            disabled={isDeleting}
-            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-          >
-            {isDeleting ? deletionCopy.pendingText : deletionCopy.confirmText}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  );
 }
 
 function WorkspaceTreeSkeleton() {
@@ -230,16 +126,34 @@ function WorkspaceIndicators({ workspace }: WorkspaceIndicatorsProps) {
 
 interface ForkItemProps {
   fork: ForkEntry;
-  selectedName: string | undefined;
+  selectedWorkspace: ApiWorkspaceEntry | null;
   workspaceLookup: Map<string, ApiWorkspaceEntry>;
-  rootName?: string;
+  rootWorkspace?: Pick<ApiWorkspaceEntry, "name" | "dir">;
+  workspaceNameDisambiguators: Map<string, string>;
 }
 
-function ForkItem({ fork, selectedName, workspaceLookup, rootName }: ForkItemProps) {
-  const forkSelected = fork.name === selectedName;
-  const forkFullEntry = workspaceLookup.get(fork.name);
-  const forkLabel = getSidebarRepositoryTitle(forkFullEntry ?? fork);
+function ForkItem({
+  fork,
+  selectedWorkspace,
+  workspaceLookup,
+  rootWorkspace,
+  workspaceNameDisambiguators,
+}: ForkItemProps) {
+  const navigate = useNavigate();
+  const forkSelected = isSameWorkspace(fork, selectedWorkspace);
+  const forkFullEntry = workspaceLookup.get(fork.dir);
+  const forkLabelSource = {
+    ...(forkFullEntry ?? fork),
+    title: fork.title || forkFullEntry?.title || "",
+    computedTitle: fork.computedTitle || forkFullEntry?.computedTitle || "",
+  };
+  const forkLabel = getWorkspaceDisplayLabel(forkLabelSource, workspaceNameDisambiguators);
   const showTechnicalName = forkLabel !== fork.name;
+  const handleActionCompleted = useCallback(() => {
+    if (isSameWorkspace(fork, selectedWorkspace) && rootWorkspace) {
+      navigate(buildWorkspacePath(rootWorkspace, "forks"));
+    }
+  }, [fork, navigate, rootWorkspace, selectedWorkspace]);
 
   return (
     <SidebarMenuItem>
@@ -254,7 +168,7 @@ function ForkItem({ fork, selectedName, workspaceLookup, rootName }: ForkItemPro
             )}
           >
             <TooltipTrigger asChild>
-              <Link to={`/workspaces/${encodeURIComponent(fork.name)}/progress`}>
+              <Link to={buildWorkspacePath(forkFullEntry ?? fork, "progress")}>
                 <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
                   {forkLabel}
                 </span>
@@ -271,14 +185,14 @@ function ForkItem({ fork, selectedName, workspaceLookup, rootName }: ForkItemPro
             </div>
           </TooltipContent>
         </Tooltip>
-        <DeleteWorkspaceDialog
-          workspaceName={fork.name}
-          workspaceLabel={forkLabel}
-          isExternal={false}
-          isFork
-          selectedName={selectedName}
-          rootName={rootName}
-        />
+        {forkFullEntry ? (
+          <WorkspaceRepositoryAction
+            workspace={forkFullEntry}
+            context="tree"
+            triggerLabelSuffix={workspaceNameDisambiguators.get(forkFullEntry.dir)}
+            onCompleted={handleActionCompleted}
+          />
+        ) : null}
       </div>
     </SidebarMenuItem>
   );
@@ -286,16 +200,23 @@ function ForkItem({ fork, selectedName, workspaceLookup, rootName }: ForkItemPro
 
 interface WorkspaceTreeItemProps {
   workspace: ApiWorkspaceEntry;
-  selectedName: string | undefined;
+  selectedWorkspace: ApiWorkspaceEntry | null;
   workspaceLookup: Map<string, ApiWorkspaceEntry>;
+  workspaceNameDisambiguators: Map<string, string>;
 }
 
-function WorkspaceTreeItem({ workspace, selectedName, workspaceLookup }: WorkspaceTreeItemProps) {
-  const fullWorkspace = workspaceLookup.get(workspace.name);
+function WorkspaceTreeItem({
+  workspace,
+  selectedWorkspace,
+  workspaceLookup,
+  workspaceNameDisambiguators,
+}: WorkspaceTreeItemProps) {
+  const navigate = useNavigate();
+  const fullWorkspace = workspaceLookup.get(workspace.dir);
   const forks = fullWorkspace?.forks || workspace.forks || [];
   const hasForks = forks.length > 0;
-  const isSelected = workspace.name === selectedName;
-  const hasForkSelected = forks.some((f) => f.name === selectedName);
+  const isSelected = isSameWorkspace(workspace, selectedWorkspace);
+  const hasForkSelected = forks.some((fork) => isSameWorkspace(fork, selectedWorkspace));
   const [expanded, setExpanded] = useState(() => isSelected || hasForkSelected);
 
   useEffect(() => {
@@ -304,10 +225,13 @@ function WorkspaceTreeItem({ workspace, selectedName, workspaceLookup }: Workspa
     }
   }, [isSelected, hasForkSelected]);
 
-  const isRoot = fullWorkspace?.isRoot ?? workspace.isRoot;
-  const showDelete = !isRoot || !hasForks;
-  const displayText = getSidebarRepositoryTitle(fullWorkspace ?? workspace);
+  const displayText = getWorkspaceDisplayLabel(fullWorkspace ?? workspace, workspaceNameDisambiguators);
   const showTechnicalName = displayText !== workspace.name;
+  const handleActionCompleted = useCallback(() => {
+    if (isSameWorkspace(workspace, selectedWorkspace)) {
+      navigate("/");
+    }
+  }, [navigate, selectedWorkspace, workspace]);
 
   return (
     <SidebarMenuItem className="mb-0.5">
@@ -336,7 +260,7 @@ function WorkspaceTreeItem({ workspace, selectedName, workspaceLookup }: Workspa
             )}
           >
             <TooltipTrigger asChild>
-              <Link to={`/workspaces/${encodeURIComponent(workspace.name)}/progress`}>
+              <Link to={buildWorkspacePath(fullWorkspace ?? workspace, "progress")}>
                 <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
                   {displayText}
                 </span>
@@ -353,15 +277,12 @@ function WorkspaceTreeItem({ workspace, selectedName, workspaceLookup }: Workspa
             </div>
           </TooltipContent>
         </Tooltip>
-        {showDelete && (
-          <DeleteWorkspaceDialog
-            workspaceName={workspace.name}
-            workspaceLabel={displayText}
-            isExternal={workspace.external ?? false}
-            isFork={workspace.isFork}
-            selectedName={selectedName}
-          />
-        )}
+        <WorkspaceRepositoryAction
+          workspace={fullWorkspace ?? workspace}
+          context="tree"
+          triggerLabelSuffix={workspaceNameDisambiguators.get((fullWorkspace ?? workspace).dir)}
+          onCompleted={handleActionCompleted}
+        />
       </div>
 
       {hasForks && expanded && (
@@ -369,11 +290,12 @@ function WorkspaceTreeItem({ workspace, selectedName, workspaceLookup }: Workspa
           <SidebarMenu>
             {forks.map((fork) => (
               <ForkItem
-                key={fork.name}
+                key={fork.dir}
                 fork={fork}
-                selectedName={selectedName}
+                selectedWorkspace={selectedWorkspace}
                 workspaceLookup={workspaceLookup}
-                rootName={workspace.name}
+                rootWorkspace={fullWorkspace ?? workspace}
+                workspaceNameDisambiguators={workspaceNameDisambiguators}
               />
             ))}
           </SidebarMenu>
@@ -385,14 +307,20 @@ function WorkspaceTreeItem({ workspace, selectedName, workspaceLookup }: Workspa
 
 interface InProgressItemProps {
   workspace: ApiWorkspaceEntry;
-  selectedName: string | undefined;
+  selectedWorkspace: ApiWorkspaceEntry | null;
   workspaceLookup: Map<string, ApiWorkspaceEntry>;
+  workspaceNameDisambiguators: Map<string, string>;
 }
 
-function InProgressItem({ workspace, selectedName, workspaceLookup }: InProgressItemProps) {
-  const isSelected = workspace.name === selectedName;
-  const fullWorkspace = workspaceLookup.get(workspace.name);
-  const displayText = getSidebarRepositoryTitle(fullWorkspace ?? workspace);
+function InProgressItem({
+  workspace,
+  selectedWorkspace,
+  workspaceLookup,
+  workspaceNameDisambiguators,
+}: InProgressItemProps) {
+  const isSelected = isSameWorkspace(workspace, selectedWorkspace);
+  const fullWorkspace = workspaceLookup.get(workspace.dir);
+  const displayText = getWorkspaceDisplayLabel(fullWorkspace ?? workspace, workspaceNameDisambiguators);
   const showTechnicalName = displayText !== workspace.name;
 
   return (
@@ -408,12 +336,7 @@ function InProgressItem({ workspace, selectedName, workspaceLookup }: InProgress
           )}
         >
           <TooltipTrigger asChild>
-            <Link
-              to={workspace.needsInput
-                ? `/workspaces/${encodeURIComponent(workspace.name)}/respond`
-                : `/workspaces/${encodeURIComponent(workspace.name)}/progress`
-              }
-            >
+            <Link to={buildWorkspacePath(fullWorkspace ?? workspace, workspace.needsInput ? "respond" : "progress")}>
               <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
                 {displayText}
               </span>
@@ -436,15 +359,23 @@ function InProgressItem({ workspace, selectedName, workspaceLookup }: InProgress
 
 interface PinnedTreeItemProps {
   workspace: ApiWorkspaceEntry;
-  selectedName: string | undefined;
+  selectedWorkspace: ApiWorkspaceEntry | null;
   workspaceLookup: Map<string, ApiWorkspaceEntry>;
   pinnedForks: ForkEntry[];
+  workspaceNameDisambiguators: Map<string, string>;
 }
 
-function PinnedTreeItem({ workspace, selectedName, workspaceLookup, pinnedForks }: PinnedTreeItemProps) {
-  const fullWorkspace = workspaceLookup.get(workspace.name);
-  const isSelected = workspace.name === selectedName;
-  const hasForkSelected = pinnedForks.some((f) => f.name === selectedName);
+function PinnedTreeItem({
+  workspace,
+  selectedWorkspace,
+  workspaceLookup,
+  pinnedForks,
+  workspaceNameDisambiguators,
+}: PinnedTreeItemProps) {
+  const navigate = useNavigate();
+  const fullWorkspace = workspaceLookup.get(workspace.dir);
+  const isSelected = isSameWorkspace(workspace, selectedWorkspace);
+  const hasForkSelected = pinnedForks.some((fork) => isSameWorkspace(fork, selectedWorkspace));
   const [expanded, setExpanded] = useState(() => isSelected || hasForkSelected);
 
   useEffect(() => {
@@ -453,8 +384,13 @@ function PinnedTreeItem({ workspace, selectedName, workspaceLookup, pinnedForks 
     }
   }, [isSelected, hasForkSelected]);
 
-  const displayText = getSidebarRepositoryTitle(fullWorkspace ?? workspace);
+  const displayText = getWorkspaceDisplayLabel(fullWorkspace ?? workspace, workspaceNameDisambiguators);
   const showTechnicalName = displayText !== workspace.name;
+  const handleActionCompleted = useCallback(() => {
+    if (isSameWorkspace(workspace, selectedWorkspace)) {
+      navigate("/");
+    }
+  }, [navigate, selectedWorkspace, workspace]);
 
   return (
     <SidebarMenuItem className="mb-0.5">
@@ -483,7 +419,7 @@ function PinnedTreeItem({ workspace, selectedName, workspaceLookup, pinnedForks 
             )}
           >
             <TooltipTrigger asChild>
-              <Link to={`/workspaces/${encodeURIComponent(workspace.name)}/progress`}>
+              <Link to={buildWorkspacePath(fullWorkspace ?? workspace, "progress")}>
                 <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
                   {displayText}
                 </span>
@@ -500,12 +436,11 @@ function PinnedTreeItem({ workspace, selectedName, workspaceLookup, pinnedForks 
             </div>
           </TooltipContent>
         </Tooltip>
-        <DeleteWorkspaceDialog
-          workspaceName={workspace.name}
-          workspaceLabel={displayText}
-          isExternal={workspace.external ?? false}
-          isFork={workspace.isFork}
-          selectedName={selectedName}
+        <WorkspaceRepositoryAction
+          workspace={fullWorkspace ?? workspace}
+          context="tree"
+          triggerLabelSuffix={workspaceNameDisambiguators.get((fullWorkspace ?? workspace).dir)}
+          onCompleted={handleActionCompleted}
         />
       </div>
 
@@ -514,11 +449,12 @@ function PinnedTreeItem({ workspace, selectedName, workspaceLookup, pinnedForks 
           <SidebarMenu>
             {pinnedForks.map((fork) => (
               <ForkItem
-                key={fork.name}
+                key={fork.dir}
                 fork={fork}
-                selectedName={selectedName}
+                selectedWorkspace={selectedWorkspace}
                 workspaceLookup={workspaceLookup}
-                rootName={workspace.name}
+                rootWorkspace={fullWorkspace ?? workspace}
+                workspaceNameDisambiguators={workspaceNameDisambiguators}
               />
             ))}
           </SidebarMenu>
@@ -530,19 +466,37 @@ function PinnedTreeItem({ workspace, selectedName, workspaceLookup, pinnedForks 
 
 interface OrphanPinnedForkItemProps {
   fork: ApiWorkspaceEntry;
-  rootName: string;
-  selectedName: string | undefined;
+  rootWorkspace: Pick<ApiWorkspaceEntry, "name" | "dir">;
+  selectedWorkspace: ApiWorkspaceEntry | null;
   workspaceLookup: Map<string, ApiWorkspaceEntry>;
+  workspaceNameDisambiguators: Map<string, string>;
 }
 
-function OrphanPinnedForkItem({ fork, rootName, selectedName, workspaceLookup }: OrphanPinnedForkItemProps) {
-  const forkSelected = fork.name === selectedName;
-  const forkFullEntry = workspaceLookup.get(fork.name);
-  const rootEntry = workspaceLookup.get(rootName);
-  const rootLabel = getSidebarRepositoryTitle(rootEntry ?? { name: rootName });
-  const forkLabel = getSidebarRepositoryTitle(forkFullEntry ?? fork);
-  const displayLabel = getOrphanPinnedForkDisplayLabel(rootLabel, forkLabel);
+function OrphanPinnedForkItem({
+  fork,
+  rootWorkspace,
+  selectedWorkspace,
+  workspaceLookup,
+  workspaceNameDisambiguators,
+}: OrphanPinnedForkItemProps) {
+  const navigate = useNavigate();
+  const forkSelected = isSameWorkspace(fork, selectedWorkspace);
+  const forkFullEntry = workspaceLookup.get(fork.dir);
+  const rootEntry = workspaceLookup.get(rootWorkspace.dir);
+  const fallbackRootWorkspace = { ...rootWorkspace, title: "", computedTitle: "" };
+  const rootWorkspaceLabelSource = rootEntry ?? fallbackRootWorkspace;
+  const forkWorkspaceLabelSource = forkFullEntry ?? fork;
+  const rootLabel = getWorkspaceDisplayLabel(rootWorkspaceLabelSource, workspaceNameDisambiguators);
+  const forkLabel = getWorkspaceDisplayLabel(forkWorkspaceLabelSource, workspaceNameDisambiguators);
+  const rootBaseLabel = getWorkspaceBaseLabel(rootWorkspaceLabelSource);
+  const forkBaseLabel = getWorkspaceBaseLabel(forkWorkspaceLabelSource);
+  const displayLabel = getOrphanPinnedForkDisplayLabel(rootLabel, forkLabel, rootBaseLabel, forkBaseLabel);
   const showTechnicalName = forkLabel !== fork.name;
+  const handleActionCompleted = useCallback(() => {
+    if (isSameWorkspace(fork, selectedWorkspace)) {
+      navigate(buildWorkspacePath(rootWorkspace, "forks"));
+    }
+  }, [fork, navigate, rootWorkspace, selectedWorkspace]);
 
   return (
     <SidebarMenuItem>
@@ -558,7 +512,7 @@ function OrphanPinnedForkItem({ fork, rootName, selectedName, workspaceLookup }:
             )}
           >
             <TooltipTrigger asChild>
-              <Link to={`/workspaces/${encodeURIComponent(fork.name)}/progress`}>
+              <Link to={buildWorkspacePath(forkFullEntry ?? fork, "progress")}>
                 <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
                   {displayLabel}
                 </span>
@@ -576,14 +530,14 @@ function OrphanPinnedForkItem({ fork, rootName, selectedName, workspaceLookup }:
             </div>
           </TooltipContent>
         </Tooltip>
-        <DeleteWorkspaceDialog
-          workspaceName={fork.name}
-          workspaceLabel={forkLabel}
-          isExternal={false}
-          isFork
-          selectedName={selectedName}
-          rootName={rootName}
-        />
+        {forkFullEntry ? (
+          <WorkspaceRepositoryAction
+            workspace={forkFullEntry}
+            context="tree"
+            triggerLabelSuffix={workspaceNameDisambiguators.get(forkFullEntry.dir)}
+            onCompleted={handleActionCompleted}
+          />
+        ) : null}
       </div>
     </SidebarMenuItem>
   );
@@ -591,12 +545,19 @@ function OrphanPinnedForkItem({ fork, rootName, selectedName, workspaceLookup }:
 
 interface PinnedSectionProps {
   workspaces: ApiWorkspaceEntry[];
-  selectedName: string | undefined;
+  selectedWorkspace: ApiWorkspaceEntry | null;
   workspaceLookup: Map<string, ApiWorkspaceEntry>;
-  forkParentLookup: Map<string, string>;
+  forkParentLookup: Map<string, ApiWorkspaceEntry>;
+  workspaceNameDisambiguators: Map<string, string>;
 }
 
-function PinnedSection({ workspaces, selectedName, workspaceLookup, forkParentLookup }: PinnedSectionProps) {
+function PinnedSection({
+  workspaces,
+  selectedWorkspace,
+  workspaceLookup,
+  forkParentLookup,
+  workspaceNameDisambiguators,
+}: PinnedSectionProps) {
   const pinned = useMemo(() => {
     return workspaces.filter((w) => w.pinned);
   }, [workspaces]);
@@ -604,19 +565,22 @@ function PinnedSection({ workspaces, selectedName, workspaceLookup, forkParentLo
   const pinnedRootsAndForks = useMemo(() => {
     const pinnedForks = pinned.filter((w) => w.isFork);
     const pinnedRoots = pinned.filter((w) => !w.isFork);
-    const pinnedRootNames = new Set(pinnedRoots.map((r) => r.name));
+    const pinnedRootDirs = new Set(pinnedRoots.map((root) => root.dir));
 
     const forkGroups = new Map<string, ForkEntry[]>();
-    const orphanForks: Array<{ fork: ApiWorkspaceEntry; rootName: string }> = [];
+    const orphanForks: Array<{ fork: ApiWorkspaceEntry; rootWorkspace: Pick<ApiWorkspaceEntry, "name" | "dir"> }> = [];
 
     for (const fork of pinnedForks) {
-      const parentName = forkParentLookup.get(fork.name);
-      if (parentName && pinnedRootNames.has(parentName)) {
-        const existing = forkGroups.get(parentName) || [];
+      const parentWorkspace = forkParentLookup.get(fork.dir);
+      if (parentWorkspace && pinnedRootDirs.has(parentWorkspace.dir)) {
+        const existing = forkGroups.get(parentWorkspace.dir) || [];
         existing.push(workspaceToForkEntry(fork));
-        forkGroups.set(parentName, existing);
+        forkGroups.set(parentWorkspace.dir, existing);
       } else {
-        orphanForks.push({ fork, rootName: parentName || fork.name });
+        orphanForks.push({
+          fork,
+          rootWorkspace: parentWorkspace ?? { name: fork.name, dir: fork.dir },
+        });
       }
     }
 
@@ -632,20 +596,22 @@ function PinnedSection({ workspaces, selectedName, workspaceLookup, forkParentLo
       <SidebarMenu>
         {pinnedRoots.map((root) => (
           <PinnedTreeItem
-            key={root.name}
+            key={root.dir}
             workspace={root}
-            selectedName={selectedName}
+            selectedWorkspace={selectedWorkspace}
             workspaceLookup={workspaceLookup}
-            pinnedForks={forkGroups.get(root.name) || []}
+            pinnedForks={forkGroups.get(root.dir) || []}
+            workspaceNameDisambiguators={workspaceNameDisambiguators}
           />
         ))}
-        {orphanForks.map(({ fork, rootName }) => (
+        {orphanForks.map(({ fork, rootWorkspace }) => (
           <OrphanPinnedForkItem
-            key={fork.name}
+            key={fork.dir}
             fork={fork}
-            rootName={rootName}
-            selectedName={selectedName}
+            rootWorkspace={rootWorkspace}
+            selectedWorkspace={selectedWorkspace}
             workspaceLookup={workspaceLookup}
+            workspaceNameDisambiguators={workspaceNameDisambiguators}
           />
         ))}
       </SidebarMenu>
@@ -655,11 +621,17 @@ function PinnedSection({ workspaces, selectedName, workspaceLookup, forkParentLo
 
 interface InProgressSectionProps {
   workspaces: ApiWorkspaceEntry[];
-  selectedName: string | undefined;
+  selectedWorkspace: ApiWorkspaceEntry | null;
   workspaceLookup: Map<string, ApiWorkspaceEntry>;
+  workspaceNameDisambiguators: Map<string, string>;
 }
 
-function InProgressSection({ workspaces, selectedName, workspaceLookup }: InProgressSectionProps) {
+function InProgressSection({
+  workspaces,
+  selectedWorkspace,
+  workspaceLookup,
+  workspaceNameDisambiguators,
+}: InProgressSectionProps) {
   const inProgress = useMemo(() => {
     return workspaces.filter((w) => (w.inProgress || w.running) && !w.pinned);
   }, [workspaces]);
@@ -670,7 +642,13 @@ function InProgressSection({ workspaces, selectedName, workspaceLookup }: InProg
     <div className="mb-3 pb-2 border-b" role="region" aria-label="In progress">
       <SidebarMenu>
         {inProgress.map((w) => (
-          <InProgressItem key={w.name} workspace={w} selectedName={selectedName} workspaceLookup={workspaceLookup} />
+          <InProgressItem
+            key={w.dir}
+            workspace={w}
+            selectedWorkspace={selectedWorkspace}
+            workspaceLookup={workspaceLookup}
+            workspaceNameDisambiguators={workspaceNameDisambiguators}
+          />
         ))}
       </SidebarMenu>
     </div>
@@ -679,27 +657,28 @@ function InProgressSection({ workspaces, selectedName, workspaceLookup }: InProg
 
 interface WorkspaceListProps {
   workspaces: ApiWorkspaceEntry[];
-  selectedName: string | undefined;
+  selectedWorkspace: ApiWorkspaceEntry | null;
 }
 
-function WorkspaceList({ workspaces, selectedName }: WorkspaceListProps) {
+function WorkspaceList({ workspaces, selectedWorkspace }: WorkspaceListProps) {
+  const workspaceNameDisambiguators = useMemo(() => {
+    return buildWorkspaceNameDisambiguators(workspaces);
+  }, [workspaces]);
+
   const workspaceLookup = useMemo(() => {
     const map = new Map<string, ApiWorkspaceEntry>();
     for (const w of workspaces) {
-      const existing = map.get(w.name);
-      if (!existing || (w.isRoot && !existing.isRoot)) {
-        map.set(w.name, w);
-      }
+      map.set(w.dir, w);
     }
     return map;
   }, [workspaces]);
 
   const forkParentLookup = useMemo(() => {
-    const lookup = new Map<string, string>();
+    const lookup = new Map<string, ApiWorkspaceEntry>();
     for (const w of workspaces) {
       if (w.forks) {
         for (const fork of w.forks) {
-          lookup.set(fork.name, w.name);
+          lookup.set(fork.dir, w);
         }
       }
     }
@@ -707,30 +686,33 @@ function WorkspaceList({ workspaces, selectedName }: WorkspaceListProps) {
   }, [workspaces]);
 
   const deduplicatedWorkspaces = useMemo(() => {
-    return deduplicateWorkspacesByName(workspaces);
+    return deduplicateByDir(workspaces);
   }, [workspaces]);
 
   return (
     <>
       <PinnedSection
         workspaces={deduplicatedWorkspaces}
-        selectedName={selectedName}
+        selectedWorkspace={selectedWorkspace}
         workspaceLookup={workspaceLookup}
         forkParentLookup={forkParentLookup}
+        workspaceNameDisambiguators={workspaceNameDisambiguators}
       />
       <InProgressSection
         workspaces={deduplicatedWorkspaces}
-        selectedName={selectedName}
+        selectedWorkspace={selectedWorkspace}
         workspaceLookup={workspaceLookup}
+        workspaceNameDisambiguators={workspaceNameDisambiguators}
       />
       <SidebarMenu>
         {deduplicatedWorkspaces.length > 0 ? (
           deduplicatedWorkspaces.filter((w) => !w.isFork).map((workspace) => (
             <WorkspaceTreeItem
-              key={workspace.name}
+              key={workspace.dir}
               workspace={workspace}
-              selectedName={selectedName}
+              selectedWorkspace={selectedWorkspace}
               workspaceLookup={workspaceLookup}
+              workspaceNameDisambiguators={workspaceNameDisambiguators}
             />
           ))
         ) : (
@@ -743,28 +725,18 @@ function WorkspaceList({ workspaces, selectedName }: WorkspaceListProps) {
 
 interface WorkspaceStatusEntry {
   name: string;
+  dir: string;
   running: boolean;
   needsInput: boolean;
 }
 
-function deduplicateByName<T extends { name: string }>(workspaces: T[]): T[] {
+function deduplicateByDir<T extends { dir: string }>(workspaces: T[]): T[] {
   const seen = new Set<string>();
   return workspaces.filter((w) => {
-    if (seen.has(w.name)) return false;
-    seen.add(w.name);
+    if (seen.has(w.dir)) return false;
+    seen.add(w.dir);
     return true;
   });
-}
-
-function deduplicateWorkspacesByName(workspaces: ApiWorkspaceEntry[]): ApiWorkspaceEntry[] {
-  const map = new Map<string, ApiWorkspaceEntry>();
-  for (const w of workspaces) {
-    const existing = map.get(w.name);
-    if (!existing || (w.isRoot && !existing.isRoot)) {
-      map.set(w.name, w);
-    }
-  }
-  return Array.from(map.values());
 }
 
 function collectAllWorkspaces(workspaces: ApiWorkspaceEntry[]): WorkspaceStatusEntry[] {
@@ -777,7 +749,7 @@ function collectAllWorkspaces(workspaces: ApiWorkspaceEntry[]): WorkspaceStatusE
       }
     }
   }
-  return deduplicateByName(all);
+  return deduplicateByDir(all);
 }
 
 interface SidebarHeaderIndicatorsProps {
@@ -801,7 +773,7 @@ function SidebarHeaderIndicators({ workspaces }: SidebarHeaderIndicatorsProps) {
   const handleInboxClick = useCallback(() => {
     const firstNeedsInput = allWorkspaces.find((w) => w.needsInput);
     if (firstNeedsInput) {
-      navigate(`/workspaces/${encodeURIComponent(firstNeedsInput.name)}/respond`);
+      navigate(buildWorkspacePath(firstNeedsInput, "respond"));
     }
   }, [allWorkspaces, navigate]);
 
@@ -871,10 +843,19 @@ interface DashboardContentProps {
 
 function DashboardContent({ children, onSidebarResizeMouseDown }: DashboardContentProps): JSX.Element {
   const { name: selectedName } = useParams<{ name: string }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { setOpenMobile } = useSidebar();
 
   const { workspaces, fetchStatus } = useFactoryState();
+  const selectedWorkspaceDir = getWorkspaceDirFromSearchParams(searchParams);
+  const selectedWorkspace = useMemo(() => {
+    if (!selectedName) {
+      return null;
+    }
+
+    return resolveWorkspaceByIdentity(workspaces, selectedName, selectedWorkspaceDir);
+  }, [selectedName, selectedWorkspaceDir, workspaces]);
   const loading = fetchStatus === "fetching" && workspaces.length === 0;
   const error = fetchStatus === "error" && workspaces.length === 0
     ? new Error("Failed to load workspaces")
@@ -915,7 +896,7 @@ function DashboardContent({ children, onSidebarResizeMouseDown }: DashboardConte
             )}
 
             {!loading && !error && (
-              <WorkspaceList workspaces={workspaces} selectedName={selectedName} />
+              <WorkspaceList workspaces={workspaces} selectedWorkspace={selectedWorkspace} />
             )}
           </ScrollArea>
         </SidebarContent>

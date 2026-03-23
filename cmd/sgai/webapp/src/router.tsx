@@ -1,6 +1,7 @@
 import { Suspense, lazy } from "react";
 import { createBrowserRouter, Navigate } from "react-router";
 import { App } from "./App";
+import { AppRouteErrorBoundary } from "./components/AppRouteErrorBoundary";
 import { NotYetAvailable } from "./components/NotYetAvailable";
 import { Skeleton } from "./components/ui/skeleton";
 
@@ -110,14 +111,20 @@ function withDashboardSuspense(Component: React.ComponentType) {
   );
 }
 
+function createRouteErrorElement() {
+  return <AppRouteErrorBoundary />;
+}
+
 export const router = createBrowserRouter([
   {
     path: "/",
     element: <App />,
+    errorElement: createRouteErrorElement(),
     children: [
       {
         index: true,
         element: withDashboardSuspense(DashboardWithEmpty),
+        errorElement: createRouteErrorElement(),
       },
       {
         path: "trees",
@@ -167,10 +174,12 @@ export const router = createBrowserRouter([
       {
         path: "workspaces/:name/*",
         element: withDashboardSuspense(DashboardWithWorkspace),
+        errorElement: createRouteErrorElement(),
       },
       {
         path: "workspaces/:name",
         element: withDashboardSuspense(DashboardWithWorkspace),
+        errorElement: createRouteErrorElement(),
       },
       {
         path: "compose",

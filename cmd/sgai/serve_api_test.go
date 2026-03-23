@@ -3841,7 +3841,8 @@ func TestHandleAPIDeleteWorkspaceStandaloneDelete(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	var resp apiDeleteWorkspaceResponse
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
-	assert.True(t, resp.Deleted)
+	assert.False(t, resp.Deleted)
+	assert.True(t, resp.Detached)
 }
 
 func TestHandleAPIDetachWorkspaceNotAttached(t *testing.T) {
@@ -5666,11 +5667,11 @@ func TestDeleteWorkspaceServiceDirect(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0644))
 
 	result, err := server.deleteWorkspaceService(wsDir)
-	require.NoError(t, err)
-	assert.True(t, result.Deleted)
+	require.Error(t, err)
+	assert.False(t, result.Deleted)
 
 	_, errStat := os.Stat(wsDir)
-	assert.True(t, os.IsNotExist(errStat))
+	assert.NoError(t, errStat)
 }
 
 func TestDeleteMessageServiceDirect(t *testing.T) {
