@@ -1,160 +1,129 @@
 ---
 name: run-long-running-processes-in-tmux
-description: Guide for using tmux to manage detached sessions for long-running processes, including lifecycle management, cleanup, startup, verification, and output capture; When you need to run servers or long-running commands in the background, send commands to them, capture output, handle TTY requirements, or manage session lifecycle with error handling
+description: Use when you need a detached tmux process. Derive one deterministic session name from the absolute current working directory plus a purpose suffix, reuse the matching owned session before creating it, and only kill that session during explicit cleanup or when you verified it is broken.
 ---
 
 # Run Long Running Processes in Tmux
 
 ## Overview
 
-Tmux allows running processes in detached sessions, providing pseudo-terminals for processes requiring TTY, and tools to interact with them without attaching. Enhanced with complete session lifecycle management including cleanup, startup verification, and output capture.
+Tmux sessions are workspace-scoped infrastructure. Use one deterministic name per working-directory-and-purpose pair so you can find the same session again, reuse it, and avoid killing healthy long-running processes just because they already exist.
 
 ## When to Use
 
-Use when:
-- Running servers or daemons in background
-- Processes need TTY but you want detached execution
-- Need to send commands or signals to running processes
-- Capturing output from detached sessions
-- Managing long-running tasks in automation scripts
-- Testing server processes or managing background services
-- Need session cleanup and conflict resolution
+- Running a server, watcher, or other long-lived background process
+- Needing a detached process with a TTY
+- Reusing the same process across multiple iterations in one repository
+- Capturing output from a detached process
+- Sending commands into a running shell or process
+- Do **not** use generic names like `server`, `webserver`, `testserver`, or `appsession`
+- Do **not** default to kill-before-create
 
-## Core Pattern
+## Authoritative Naming Rule
 
-1. Cleanup existing sessions: tmux kill-session -t name 2>/dev/null || true
-2. Start detached session: tmux new-session -d -s name "command"
-3. Verify startup: tmux capture-pane -t name -S - -p | grep -q "expected_output"
-4. Interact: tmux send-keys -t name "command" C-m
-5. Capture: tmux capture-pane -t name -S - -p > file
-6. Monitor: tmux attach -t name (when needed)
+1. Start with the **absolute current working directory**.
+2. Replace each run of non-alphanumeric characters with `-`.
+3. Trim leading and trailing `-`.
+4. Normalize `<purpose>` to lowercase letters, numbers, and dashes only; replace runs of non-alphanumeric characters with `-`, then trim edge dashes.
+5. Append `--<purpose>`.
+6. Keep `<purpose>` short and stable: `web`, `api`, `worker`, `tests`, `docs`.
+
+Example:
+
+- Working directory: `/Users/ucirello/go/src/github.com/ucirello/slim-gray-i2e3`
+- Purpose: `web`
+- Session name: `Users-username-src-github-com-repo-slim-gray-i2e3--web`
+
+The exact deterministic name is the ownership boundary for this workflow. If that exact session already exists, treat it as the session you own for that workspace and purpose.
+
+## Process
+
+### Step 1: Derive the exact session name
+- [ ] Pick one stable purpose suffix and normalize it before building the final session name.
+- [ ] Derive the deterministic session name from the absolute current working directory plus `--<purpose>`.
+- [ ] Reuse that exact name consistently for the whole task.
+
+### Step 2: Reuse before create
+- [ ] Check whether the exact session already exists with `tmux has-session -t "$session_name"`.
+- [ ] If it exists, reuse it and inspect it with `tmux capture-pane` or `tmux attach`.
+- [ ] If it is missing, create it with `tmux new-session -d -s "$session_name" "command"`.
+
+### Step 3: Verify and interact
+- [ ] Verify startup or health with `tmux capture-pane`.
+- [ ] If inspection proves the exact session is broken or a fresh `tmux new-session` failed to start correctly, treat that proof as explicit recovery authorization: kill that exact session and recreate it once with the same deterministic name.
+- [ ] If the recreated session still fails inspection, stop and report the failure instead of silently looping.
+- [ ] Send commands with `tmux send-keys` when needed.
+- [ ] Capture pane output when logs matter.
+
+### Step 4: Clean up only when cleanup is explicit
+- [ ] Kill the session only during an explicit cleanup phase.
+- [ ] A healthy reused session stays alive.
+- [ ] Recreate only when you verified the existing session is broken and a fresh process is required.
+
+## Rules
+
+1. **Deterministic names only** - Session names come from the current working directory plus a normalized purpose suffix.
+2. **Reuse before create** - Check for the exact matching session first and reuse it when present.
+3. **No kill-before-create default** - Unconditional `tmux kill-session ... || true` is no longer the standard pattern.
+4. **One purpose per session** - Use separate suffixes for separate long-running roles.
 
 ## Quick Reference
 
-| Command | Purpose | Example |
-|---------|---------|---------|
-| kill-session -t name 2>/dev/null || true | Cleanup existing | tmux kill-session -t server 2>/dev/null || true |
-| new-session -d -s name "cmd" | Start detached | tmux new-session -d -s server "python -m http.server" |
-| capture-pane -t name -S - -p | Verify startup | tmux capture-pane -t server -S - -p | grep -q "Serving" |
-| send-keys -t name "cmd" C-m | Send command | tmux send-keys -t server "echo test" C-m |
-| capture-pane -t name -S - -p > file | Capture output | tmux capture-pane -t server -S - -p > log.txt |
-| attach -t name | Reattach | tmux attach -t server |
-| kill-session -t name | Stop session | tmux kill-session -t server |
+| Goal | Pattern |
+|---|---|
+| Derive session name | `workspace-slug--purpose` |
+| Check for reusable session | `tmux has-session -t "$session_name"` |
+| Create when missing | `tmux new-session -d -s "$session_name" "command"` |
+| Inspect output | `tmux capture-pane -t "$session_name" -S - -p` |
+| Send command | `tmux send-keys -t "$session_name" "command" C-m` |
+| Explicit cleanup | `tmux kill-session -t "$session_name"` |
 
-## Implementation
+## Rationalization Table
 
-### Session Lifecycle Management
+| Excuse | Reality |
+|---|---|
+| "Killing and recreating is cleaner." | The default is reuse-before-create. Restarting a healthy session throws away useful state and slows the next iteration. |
+| "`webserver` is easier to remember." | Generic names collide across repositories and break deterministic reuse. |
+| "Fresh is safer." | Safety means inspect first, then restart only if the session is missing or proven broken. |
+| "The existing session has the wrong name, but it's probably mine." | Ownership is the exact deterministic name. If you want reuse, use the authoritative name. |
 
-```bash
-# Complete lifecycle with error handling
-SESSION_NAME="myserver"
-COMMAND="python -m http.server 8000"
+## Red Flags - STOP
 
-# 1. Cleanup existing session
-tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
+- `tmux kill-session -t "$session_name" 2>/dev/null || true` before checking reuse
+- Session names like `server`, `webserver`, `testserver`, or `appsession`
+- Restarting a healthy session just because it already exists
+- Creating a second session for the same workspace and purpose instead of reusing the first
 
-# 2. Start new session
-tmux new-session -d -s "$SESSION_NAME" "$COMMAND"
+## Examples
 
-# 3. Wait for startup and verify
-sleep 2
-if ! tmux capture-pane -t "$SESSION_NAME" -S - -p | grep -q "Serving HTTP"; then
-    echo "Server failed to start properly"
-    tmux kill-session -t "$SESSION_NAME"
-    exit 1
-fi
-
-# 4. Capture initial output
-tmux capture-pane -t "$SESSION_NAME" -S - -p > startup.log
-
-# 5. Session is ready for interaction
-```
-
-### Starting Detached Sessions
+### Good Example
 
 ```bash
-# Basic detached session
-tmux new-session -d -s mysession "my_long_running_command"
+session_name="Users-username-src-github-com-repo-slim-gray-i2e3--web"
 
-# With working directory and logging
-tmux new-session -d -s appsession -c /path/to/dir "./run_app.sh >app.log 2>&1"
-
-# With session conflict handling
-if tmux has-session -t appsession 2>/dev/null; then
-    echo "Session already exists, cleaning up..."
-    tmux kill-session -t appsession
-fi
-tmux new-session -d -s appsession "./run_app.sh"
-```
-
-For processes requiring TTY, tmux provides PTYs automatically.
-
-### Session Verification
-
-```bash
-# Check if session exists
-if tmux has-session -t mysession 2>/dev/null; then
-    echo "Session is running"
+if tmux has-session -t "$session_name" 2>/dev/null; then
+  tmux capture-pane -t "$session_name" -S - -p
 else
-    echo "Session not found"
+  tmux new-session -d -s "$session_name" "bun run dev"
 fi
-
-# Verify process output
-tmux capture-pane -t mysession -S - -p | grep -q "expected_pattern"
-echo $?
-
-# Check session status
-tmux display-message -t mysession -p "#{session_name}: #{window_status}"
 ```
 
-### Sending Commands
+### Bad Example
 
 ```bash
-# Send command with enter
-tmux send-keys -t mysess:0.0 "cd /path/to/dir" C-m
-tmux send-keys -t mysess:0.0 "./run_my_task.sh --option" C-m
-
-# Send with delay for process readiness
-tmux send-keys -t server "status" C-m
-sleep 1
-tmux capture-pane -t server -S - -p | tail -5
+tmux kill-session -t webserver 2>/dev/null || true
+tmux new-session -d -s webserver "bun run dev"
 ```
 
-Note: Process must accept stdin as commands. May need delays for shell readiness.
+Why it is wrong: it uses a generic name and kills before checking whether a healthy reusable session already exists.
 
-### Capturing Output
+## Checklist
 
-```bash
-# Capture full history
-tmux capture-pane -t mysess:0.0 -S - -p > output.txt
+Before completing, verify:
 
-# Capture with verification
-OUTPUT=$(tmux capture-pane -t mysess:0.0 -S - -p)
-if echo "$OUTPUT" | grep -q "ERROR"; then
-    echo "Error detected in output"
-fi
-
-# Alternative with buffer
-tmux capture-pane -t mysess:0.0 -S -
-tmux save-buffer -b 0 output.txt
-
-# Real-time monitoring
-watch -n 5 'tmux capture-pane -t server -S - -p | tail -10'
-```
-
-Text only, may lose colors unless -e flag used.
-
-## Common Mistakes
-
-- Forgetting -d flag (attaches instead of detaching)
-- Wrong pane syntax (session:window.pane)
-- Assuming processes can receive commands if not shell-based
-- Not handling TTY requirements (tmux usually covers)
-- Losing sessions on reboot (use supervisors)
-- Not cleaning up existing sessions before starting new ones
-- Forgetting to verify session startup before proceeding
-- Not handling session conflicts in automation scripts
-
-## Real-World Impact
-
-Enables background execution of servers, automated testing, and remote process management without keeping terminals open. Enhanced lifecycle management reduces repetitive session management tasks and provides reliable server testing workflows with proper error handling and cleanup.
+- [ ] I used the deterministic current-directory-plus-purpose session name.
+- [ ] I normalized the purpose suffix before deriving the final session name.
+- [ ] I checked for an exact matching session before creating one.
+- [ ] I reused a healthy matching session instead of killing it.
+- [ ] I avoided generic session names.
+- [ ] I only killed the session during explicit cleanup or after proving it was broken.

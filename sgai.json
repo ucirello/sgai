@@ -15,7 +15,7 @@
     {
       "name": "Absorb Overlay Directory",
       "model": "openai/gpt-5.4",
-      "prompt": "run bash(`make absorb-sgai`)",
+      "script": "make absorb-sgai",
       "description": "Absorb sgai/ into cmd/sgai/skel/.sgai/"
     },
     {
