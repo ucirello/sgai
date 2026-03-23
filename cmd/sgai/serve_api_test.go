@@ -17,6 +17,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/adrg/xdg"
 	"github.com/sandgardenhq/sgai/pkg/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1370,7 +1371,7 @@ func TestReadGoalAndPMForAPI(t *testing.T) {
 func TestLoadWorkspaceState(t *testing.T) {
 	t.Run("nonExistentState", func(t *testing.T) {
 		rootDir := t.TempDir()
-		server := NewServer(rootDir)
+		server := NewServer(rootDir, serverPaths{}, "")
 		workDir := filepath.Join(rootDir, "ws")
 		require.NoError(t, os.MkdirAll(workDir, 0755))
 
@@ -1380,7 +1381,7 @@ func TestLoadWorkspaceState(t *testing.T) {
 
 	t.Run("existingState", func(t *testing.T) {
 		rootDir := t.TempDir()
-		server := NewServer(rootDir)
+		server := NewServer(rootDir, serverPaths{}, "")
 		workDir := filepath.Join(rootDir, "ws")
 		sgaiDir := filepath.Join(workDir, ".sgai")
 		require.NoError(t, os.MkdirAll(sgaiDir, 0755))
@@ -1401,7 +1402,7 @@ func TestLoadWorkspaceState(t *testing.T) {
 
 	t.Run("oversizedState", func(t *testing.T) {
 		rootDir := t.TempDir()
-		server := NewServer(rootDir)
+		server := NewServer(rootDir, serverPaths{}, "")
 		workDir := filepath.Join(rootDir, "ws")
 		sgaiDir := filepath.Join(workDir, ".sgai")
 		require.NoError(t, os.MkdirAll(sgaiDir, 0755))
@@ -1416,7 +1417,7 @@ func TestLoadWorkspaceState(t *testing.T) {
 
 func setupTestServer(t *testing.T) (*Server, string) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, resolveServerPaths(t.TempDir()), "")
 	testServersByRootDirMu.Lock()
 	testServersByRootDir[rootDir] = server
 	testServersByRootDir[resolveSymlinks(rootDir)] = server
@@ -1428,6 +1429,13 @@ func setupTestServer(t *testing.T) (*Server, string) {
 		testServersByRootDirMu.Unlock()
 	})
 	return server, rootDir
+}
+
+func TestSetupTestServerUsesIsolatedConfigDirs(t *testing.T) {
+	server, _ := setupTestServer(t)
+	productionPaths := resolveServerPaths(xdg.ConfigHome)
+	assert.NotEqual(t, productionPaths.pinnedConfigDir, server.pinnedConfigDir)
+	assert.NotEqual(t, productionPaths.externalConfigDir, server.externalConfigDir)
 }
 
 func setupTestWorkspace(t *testing.T, rootDir, name string) string {
@@ -6134,7 +6142,7 @@ func TestHandleAPIAttachWorkspaceAlreadyAttached(t *testing.T) {
 
 func TestHandleAPIAttachWorkspaceUnderRootDir(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 	server.externalConfigDir = t.TempDir()
 	subDir := filepath.Join(rootDir, "subproject")
 	require.NoError(t, os.MkdirAll(subDir, 0755))

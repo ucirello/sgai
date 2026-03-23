@@ -416,90 +416,6 @@ func TestWorkspaceDagAgentsNoGoalFile(t *testing.T) {
 	assert.Nil(t, result)
 }
 
-func TestServerLoadPinnedProjects(t *testing.T) {
-	t.Skip("Integration test - requires system-wide XDG config directory")
-	tests := []struct {
-		name        string
-		setupFunc   func(*testing.T, string) []string
-		expectCount int
-		expectError bool
-	}{
-		{
-			name: "validPinnedFile",
-			setupFunc: func(t *testing.T, rootDir string) []string {
-				pinnedFile := filepath.Join(rootDir, ".sgai", "pinned.json")
-				require.NoError(t, os.MkdirAll(filepath.Dir(pinnedFile), 0755))
-				workspaces := []string{
-					filepath.Join(rootDir, "workspace1"),
-					filepath.Join(rootDir, "workspace2"),
-				}
-				for _, ws := range workspaces {
-					require.NoError(t, os.MkdirAll(ws, 0755))
-				}
-				data, err := json.Marshal(workspaces)
-				require.NoError(t, err)
-				require.NoError(t, os.WriteFile(pinnedFile, data, 0644))
-				return workspaces
-			},
-			expectCount: 2,
-			expectError: false,
-		},
-		{
-			name: "emptyPinnedFile",
-			setupFunc: func(t *testing.T, rootDir string) []string {
-				pinnedFile := filepath.Join(rootDir, ".sgai", "pinned.json")
-				require.NoError(t, os.MkdirAll(filepath.Dir(pinnedFile), 0755))
-				require.NoError(t, os.WriteFile(pinnedFile, []byte("[]"), 0644))
-				return nil
-			},
-			expectCount: 0,
-			expectError: false,
-		},
-		{
-			name: "noPinnedFile",
-			setupFunc: func(_ *testing.T, _ string) []string {
-				return nil
-			},
-			expectCount: 0,
-			expectError: false,
-		},
-		{
-			name: "prunesStalePaths",
-			setupFunc: func(t *testing.T, rootDir string) []string {
-				pinnedFile := filepath.Join(rootDir, ".sgai", "pinned.json")
-				require.NoError(t, os.MkdirAll(filepath.Dir(pinnedFile), 0755))
-				workspaces := []string{
-					filepath.Join(rootDir, "workspace1"),
-					filepath.Join(rootDir, "nonexistent"),
-				}
-				require.NoError(t, os.MkdirAll(workspaces[0], 0755))
-				data, err := json.Marshal(workspaces)
-				require.NoError(t, err)
-				require.NoError(t, os.WriteFile(pinnedFile, data, 0644))
-				return []string{workspaces[0]}
-			},
-			expectCount: 1,
-			expectError: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rootDir := t.TempDir()
-			server := NewServer(rootDir)
-			tt.setupFunc(t, rootDir)
-
-			err := server.loadPinnedProjects()
-			if tt.expectError {
-				require.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.expectCount, len(server.pinnedDirs))
-		})
-	}
-}
-
 func TestRenderDotAsFallbackSVG(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -600,7 +516,7 @@ func TestResolveSymlinks(t *testing.T) {
 
 func TestPinnedFilePath(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 
 	result := server.pinnedFilePath()
 	assert.Contains(t, result, "pinned.json")
@@ -608,7 +524,7 @@ func TestPinnedFilePath(t *testing.T) {
 
 func TestWasEverStarted(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 
 	workspacePath := filepath.Join(rootDir, "test-workspace")
 	require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -624,7 +540,7 @@ func TestWasEverStarted(t *testing.T) {
 
 func TestCreateWorkspaceInfo(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 
 	workspacePath := filepath.Join(rootDir, "test-workspace")
 	require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -643,7 +559,7 @@ func TestCreateWorkspaceInfo(t *testing.T) {
 
 func TestResetHumanCommunicationNoSession(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 
 	workspacePath := filepath.Join(rootDir, "test-workspace")
 	require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -714,15 +630,68 @@ func TestPrepareAgentSequenceDisplay(t *testing.T) {
 
 func TestNewServerWithConfigExplicit(t *testing.T) {
 	dir := t.TempDir()
-	srv := NewServerWithConfig(dir, "echo")
+	configHome := t.TempDir()
+	paths := resolveServerPaths(configHome)
+	srv := NewServer(dir, paths, "echo")
 	assert.NotNil(t, srv)
-	assert.Contains(t, srv.rootDir, filepath.Base(dir))
+	assert.Equal(t, dir, srv.rootDir)
+	assert.Equal(t, filepath.Join(configHome, "sgai"), srv.pinnedConfigDir)
+	assert.Equal(t, filepath.Join(configHome, "sgai"), srv.externalConfigDir)
 }
 
 func TestNewServerWithConfigInvalidEditor(t *testing.T) {
 	dir := t.TempDir()
-	srv := NewServerWithConfig(dir, "nonexistent-editor-xyzzy")
+	paths := resolveServerPaths(t.TempDir())
+	srv := NewServer(dir, paths, "nonexistent-editor-xyzzy")
 	assert.NotNil(t, srv)
+}
+
+func TestNewServerUsesWorkspaceLocalConfigDirsByDefault(t *testing.T) {
+	rootDir := t.TempDir()
+	pinnedDir := filepath.Join(rootDir, "workspace1")
+	require.NoError(t, os.MkdirAll(pinnedDir, 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(rootDir, ".sgai"), 0o755))
+
+	data, errMarshal := json.Marshal([]string{pinnedDir})
+	require.NoError(t, errMarshal)
+	require.NoError(t, os.WriteFile(filepath.Join(rootDir, ".sgai", "pinned.json"), data, 0o644))
+
+	srv := NewServer(rootDir, serverPaths{}, "")
+	assert.Equal(t, filepath.Join(rootDir, ".sgai"), srv.pinnedConfigDir)
+	assert.Equal(t, filepath.Join(rootDir, ".sgai"), srv.externalConfigDir)
+
+	errLoad := srv.loadPinnedProjects()
+	require.NoError(t, errLoad)
+
+	assert.True(t, srv.pinnedDirs[resolveSymlinks(pinnedDir)])
+}
+
+func TestNewServerNormalizesWorkspaceLocalConfigDirsForRelativeRootDir(t *testing.T) {
+	cwd, errGetwd := os.Getwd()
+	require.NoError(t, errGetwd)
+
+	rootDir := t.TempDir()
+	relRootDir, errRel := filepath.Rel(cwd, rootDir)
+	require.NoError(t, errRel)
+	require.False(t, filepath.IsAbs(relRootDir))
+
+	srv := NewServer(relRootDir, serverPaths{}, "")
+
+	wantRootDir, errAbs := filepath.Abs(relRootDir)
+	require.NoError(t, errAbs)
+	wantConfigDir := filepath.Join(wantRootDir, ".sgai")
+
+	assert.Equal(t, wantRootDir, srv.rootDir)
+	assert.Equal(t, wantConfigDir, srv.pinnedConfigDir)
+	assert.Equal(t, wantConfigDir, srv.externalConfigDir)
+}
+
+func TestResolveServerPaths(t *testing.T) {
+	configHome := t.TempDir()
+	paths := resolveServerPaths(configHome)
+	want := filepath.Join(configHome, "sgai")
+	assert.Equal(t, want, paths.pinnedConfigDir)
+	assert.Equal(t, want, paths.externalConfigDir)
 }
 
 func TestAddGitExcludeNoGitDir(t *testing.T) {
@@ -1409,7 +1378,7 @@ func TestGatherSnippetsByLanguageWithSnippets(t *testing.T) {
 
 func TestResetHumanCommunicationWithNoCoordinator(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 
 	workspacePath := filepath.Join(rootDir, "test-workspace")
 	require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -2399,7 +2368,7 @@ retrospective: true
 
 func TestGetWorkflowSVGCached(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 
 	workspacePath := filepath.Join(rootDir, "test-workspace")
 	require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -2422,7 +2391,7 @@ flow: |
 
 func TestGetWorkflowSVGHashCached(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 
 	workspacePath := filepath.Join(rootDir, "test-workspace")
 	require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -2445,7 +2414,7 @@ flow: |
 
 func TestGetWorkflowSVGHashCachedEmpty(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 
 	workspacePath := filepath.Join(rootDir, "test-workspace")
 	require.NoError(t, os.MkdirAll(workspacePath, 0755))

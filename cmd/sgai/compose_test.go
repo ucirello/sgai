@@ -603,7 +603,7 @@ models:
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 			workspacePath := filepath.Join(rootDir, "test-workspace")
 			require.NoError(t, os.MkdirAll(workspacePath, 0755))
 			tt.setupFunc(t, workspacePath)

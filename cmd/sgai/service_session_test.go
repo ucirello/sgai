@@ -80,7 +80,7 @@ func TestStartSessionService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			server.shutdownCtx = ctx
@@ -142,7 +142,7 @@ func TestStopSessionService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
 			require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -195,7 +195,7 @@ func TestRespondService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
 			require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -263,7 +263,7 @@ func TestSteerService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
 			require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -313,7 +313,7 @@ func TestStartSessionServiceValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			server.shutdownCtx = ctx
@@ -343,7 +343,7 @@ func TestStartSessionServiceValidation(t *testing.T) {
 
 func TestStopSessionServiceIdempotency(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 
 	workspacePath := filepath.Join(rootDir, "test-workspace")
 	require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -408,7 +408,7 @@ func TestRespondServiceValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
 			require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -433,7 +433,7 @@ func TestRespondServiceValidation(t *testing.T) {
 func TestStartSessionServiceRootWorkspace(t *testing.T) {
 	t.Skip("Integration test - requires real jj repository with multiple workspaces")
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	server.shutdownCtx = ctx
@@ -451,7 +451,7 @@ func TestStartSessionServiceRootWorkspace(t *testing.T) {
 func TestStartSessionServiceStandaloneWorkspace(t *testing.T) {
 	t.Skip("Integration test - requires MCP server and agent coordination")
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	server.shutdownCtx = ctx
@@ -475,7 +475,7 @@ func TestStartSessionServiceStandaloneWorkspace(t *testing.T) {
 
 func TestRespondViaCoordinatorServiceNoQuestion(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 
 	workspacePath := filepath.Join(rootDir, "test-workspace")
 	require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -494,7 +494,7 @@ func TestRespondViaCoordinatorServiceNoQuestion(t *testing.T) {
 
 func TestRespondViaCoordinatorServiceEmptyResponse(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 
 	workspacePath := filepath.Join(rootDir, "test-workspace")
 	require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -516,7 +516,7 @@ func TestRespondViaCoordinatorServiceEmptyResponse(t *testing.T) {
 
 func TestRespondViaCoordinatorServiceWorkGateApproval(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 
 	workspacePath := filepath.Join(rootDir, "test-workspace")
 	require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -547,7 +547,7 @@ func TestRespondViaCoordinatorServiceWorkGateApproval(t *testing.T) {
 
 func TestRespondViaCoordinatorServiceRejectsStalePromptToken(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 	workspacePath := filepath.Join(rootDir, "test-workspace")
 	require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 

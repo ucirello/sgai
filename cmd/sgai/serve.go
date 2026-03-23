@@ -144,6 +144,11 @@ type editorOpener interface {
 	open(path string) error
 }
 
+type serverPaths struct {
+	pinnedConfigDir   string
+	externalConfigDir string
+}
+
 const defaultEditorPreset = "code"
 
 // editorPreset defines a preset editor configuration with its command template
@@ -261,20 +266,14 @@ type Server struct {
 	stateGeneration     uint64
 }
 
-// NewServer creates a new Server instance with the given root directory.
-// It converts rootDir to an absolute path to ensure consistent path comparisons
-// between cookie values (set via validateDirectory) and template values
-// (set via scanForProjects).
-func NewServer(rootDir string) *Server {
-	return NewServerWithConfig(rootDir, "")
-}
-
-// NewServerWithConfig creates a new Server with a specific editor configuration.
-func NewServerWithConfig(rootDir, editorConfig string) *Server {
+// NewServer creates a new Server with the supplied config paths and editor configuration.
+// NewServer fills any empty config path fields with the workspace-local rootDir/.sgai defaults before constructing the server.
+func NewServer(rootDir string, paths serverPaths, editorConfig string) *Server {
 	absRootDir, err := filepath.Abs(rootDir)
 	if err != nil {
 		absRootDir = rootDir
 	}
+	paths = normalizeServerPaths(absRootDir, paths)
 	editor := newConfigurableEditor(editorConfig)
 	editorAvail := isEditorAvailable(editor.command)
 	if !editorAvail {
@@ -288,9 +287,9 @@ func NewServerWithConfig(rootDir, editorConfig string) *Server {
 		sessions:           make(map[string]*session),
 		everStartedDirs:    make(map[string]bool),
 		pinnedDirs:         make(map[string]bool),
-		pinnedConfigDir:    filepath.Join(xdg.ConfigHome, "sgai"),
+		pinnedConfigDir:    paths.pinnedConfigDir,
 		externalDirs:       make(map[string]bool),
-		externalConfigDir:  filepath.Join(xdg.ConfigHome, "sgai"),
+		externalConfigDir:  paths.externalConfigDir,
 		adhocStates:        make(map[string]*adhocPromptState),
 		shutdownCtx:        context.Background(),
 		signals:            newSignalBroker(),
@@ -305,6 +304,33 @@ func NewServerWithConfig(rootDir, editorConfig string) *Server {
 		svgCache:           newTTLCache[string, string](10 * time.Second),
 		stateCache:         newTTLCache[string, apiFactoryState](30 * time.Second),
 	}
+}
+
+func resolveServerPaths(configHome string) serverPaths {
+	configDir := filepath.Join(configHome, "sgai")
+	return serverPaths{
+		pinnedConfigDir:   configDir,
+		externalConfigDir: configDir,
+	}
+}
+
+func workspaceServerPaths(rootDir string) serverPaths {
+	configDir := filepath.Join(rootDir, ".sgai")
+	return serverPaths{
+		pinnedConfigDir:   configDir,
+		externalConfigDir: configDir,
+	}
+}
+
+func normalizeServerPaths(rootDir string, paths serverPaths) serverPaths {
+	defaults := workspaceServerPaths(rootDir)
+	if paths.pinnedConfigDir == "" {
+		paths.pinnedConfigDir = defaults.pinnedConfigDir
+	}
+	if paths.externalConfigDir == "" {
+		paths.externalConfigDir = defaults.externalConfigDir
+	}
+	return paths
 }
 
 func (s *Server) notifyStateChange() {
@@ -560,7 +586,8 @@ func cmdServe(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	srv := NewServer(rootDir)
+	paths := resolveServerPaths(xdg.ConfigHome)
+	srv := NewServer(rootDir, paths, "")
 	srv.shutdownCtx = ctx
 	if err := srv.loadPinnedProjects(); err != nil {
 		log.Println("warning: failed to load pinned projects:", err)

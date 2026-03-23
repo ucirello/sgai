@@ -57,7 +57,7 @@ description: Agent 2 description
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
 			require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -75,7 +75,7 @@ description: Agent 2 description
 func newTestServerWithWorkspace(t *testing.T) (*Server, string) {
 	t.Helper()
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 	workspacePath := filepath.Join(rootDir, "test-workspace")
 	require.NoError(t, os.MkdirAll(workspacePath, 0755))
 	return server, workspacePath
@@ -146,7 +146,7 @@ description: A test skill
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
 			require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -225,7 +225,7 @@ package main`
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
 			require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -290,7 +290,7 @@ package main`
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
 			require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -308,7 +308,7 @@ package main`
 func TestListModelsService(t *testing.T) {
 	t.Skip("Integration test - requires opencode CLI to be installed")
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 
 	workspacePath := filepath.Join(rootDir, "test-workspace")
 	require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -321,7 +321,7 @@ func TestListModelsService(t *testing.T) {
 func TestListModelsServiceEmptyWorkspace(t *testing.T) {
 	t.Skip("Integration test - requires opencode CLI to be installed")
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 
 	result := server.listModelsService("non-existent-workspace")
 	assert.Empty(t, result.Models)

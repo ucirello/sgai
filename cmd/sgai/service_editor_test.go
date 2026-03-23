@@ -10,7 +10,7 @@ import (
 )
 
 func TestOpenEditorServiceEditorNotAvailable(t *testing.T) {
-	server := NewServer(t.TempDir())
+	server := NewServer(t.TempDir(), serverPaths{}, "")
 	server.editorAvailable = false
 	_, err := server.openEditorService(t.TempDir())
 	assert.Error(t, err)
@@ -18,7 +18,7 @@ func TestOpenEditorServiceEditorNotAvailable(t *testing.T) {
 }
 
 func TestOpenEditorFileServiceEditorNotAvailable(t *testing.T) {
-	server := NewServer(t.TempDir())
+	server := NewServer(t.TempDir(), serverPaths{}, "")
 	server.editorAvailable = false
 	_, err := server.openEditorFileService(t.TempDir(), "GOAL.md")
 	assert.Error(t, err)
@@ -27,7 +27,7 @@ func TestOpenEditorFileServiceEditorNotAvailable(t *testing.T) {
 
 func TestOpenEditorFileServiceFileNotFound(t *testing.T) {
 	dir := t.TempDir()
-	server := NewServer(t.TempDir())
+	server := NewServer(t.TempDir(), serverPaths{}, "")
 	server.editorAvailable = true
 	server.editor = newConfigurableEditor("echo")
 	_, err := server.openEditorFileService(dir, "nonexistent.md")
@@ -36,14 +36,14 @@ func TestOpenEditorFileServiceFileNotFound(t *testing.T) {
 }
 
 func TestOpenEditorGoalServiceDelegates(t *testing.T) {
-	server := NewServer(t.TempDir())
+	server := NewServer(t.TempDir(), serverPaths{}, "")
 	server.editorAvailable = false
 	_, err := server.openEditorGoalService(t.TempDir())
 	assert.Error(t, err)
 }
 
 func TestOpenEditorProjectManagementServiceDelegates(t *testing.T) {
-	server := NewServer(t.TempDir())
+	server := NewServer(t.TempDir(), serverPaths{}, "")
 	server.editorAvailable = false
 	_, err := server.openEditorProjectManagementService(t.TempDir())
 	assert.Error(t, err)
@@ -52,7 +52,7 @@ func TestOpenEditorProjectManagementServiceDelegates(t *testing.T) {
 func TestOpenEditorFileServiceSuccess(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("# Goal"), 0644))
-	server := NewServer(t.TempDir())
+	server := NewServer(t.TempDir(), serverPaths{}, "")
 	server.editorAvailable = true
 	server.editor = newConfigurableEditor("echo")
 	result, err := server.openEditorFileService(dir, "GOAL.md")
