@@ -181,6 +181,10 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ path }),
       }),
+    reset: (name: string) =>
+      fetchJSON<void>(`/api/v1/workspaces/${encodeURIComponent(name)}/reset`, {
+        method: "POST",
+      }),
   },
 
   browse: {

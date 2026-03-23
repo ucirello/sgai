@@ -1153,17 +1153,29 @@ func TestWorkspaceCoordinator(t *testing.T) {
 	assert.Equal(t, state.StatusComplete, wf.Status)
 }
 
+func TestWorkspaceCoordinatorPreservesWorkingStatusOnDisk(t *testing.T) {
+	srv, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, rootDir, "coord-working")
+
+	stoppedCoord := stopCachedSession(t, srv, wsDir, state.Workflow{Status: state.StatusComplete})
+	writeWorkflowStateToDisk(t, wsDir, state.Workflow{
+		Status: state.StatusWorking,
+		Task:   "resume me",
+	})
+
+	coord := srv.workspaceCoordinator(wsDir)
+	assert.NotNil(t, coord)
+	assert.NotSame(t, stoppedCoord, coord)
+	assert.Equal(t, state.StatusWorking, coord.State().Status)
+	assert.Equal(t, "resume me", coord.State().Task)
+	assert.Equal(t, state.StatusWorking, workflowStateFromDisk(t, wsDir).Status)
+}
+
 func TestWorkspaceCoordinatorNoState(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "coord-nostate")
 	coord := srv.workspaceCoordinator(wsDir)
 	assert.NotNil(t, coord)
-}
-
-func TestFlushGoalChecksumOnStopNoSession(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "flush-chksum")
-	srv.flushGoalChecksumOnStop(wsDir)
 }
 
 func TestStopSessionIdempotent(t *testing.T) {
@@ -1392,19 +1404,6 @@ func TestResetHumanCommunicationWithNoCoordinator(t *testing.T) {
 	server.mu.Unlock()
 
 	server.resetHumanCommunication(workspacePath)
-}
-
-func TestFlushGoalChecksumOnStopUpdatesChecksum(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Test"), 0644))
-	sp := filepath.Join(wsDir, ".sgai", "state.json")
-	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{})
-	require.NoError(t, errCoord)
-	server.flushGoalChecksumOnStop(wsDir)
-	coordAfter := server.workspaceCoordinator(wsDir)
-	wfState := coordAfter.State()
-	assert.NotEmpty(t, wfState.GoalChecksum)
 }
 
 func TestStopSessionWithRunningSessionMarksNotRunning(t *testing.T) {

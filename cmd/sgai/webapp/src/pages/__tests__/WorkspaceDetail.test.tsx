@@ -74,6 +74,7 @@ const mockForkTemplate = mock(() => Promise.resolve({ content: "# New task\n\nSh
 const mockFork = mock(() => Promise.resolve({ name: "test-workspace-fork" }));
 const mockTriggerFactoryRefresh = mock(() => {});
 const mockRespond = mock(() => Promise.resolve({ success: true }));
+const mockReset = mock(() => Promise.resolve());
 const mockNavigate = mock(() => {});
 const mockStartActionRun = mock(() => {});
 const mockStopActionRun = mock(() => {});
@@ -109,6 +110,7 @@ mock.module("@/lib/api", () => ({
       forkTemplate: mockForkTemplate,
       fork: mockFork,
       respond: mockRespond,
+      reset: mockReset,
     },
   },
   ApiError: class ApiError extends Error {
@@ -207,6 +209,7 @@ describe("WorkspaceDetail", () => {
     mockFork.mockClear();
     mockTriggerFactoryRefresh.mockClear();
     mockRespond.mockClear();
+    mockReset.mockClear();
     mockNavigate.mockClear();
     mockStartActionRun.mockClear();
     mockStopActionRun.mockClear();
@@ -1072,6 +1075,139 @@ describe("WorkspaceDetail", () => {
       await waitFor(() => {
         expect(mockTogglePin).toHaveBeenCalledWith("test-workspace");
         expect(mockTriggerFactoryRefresh).toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe("reset functionality", () => {
+    it("renders Reset as a destructive action when workspace is not running and not continuousMode", async () => {
+      renderWorkspaceDetail();
+
+      await waitFor(() => {
+        const resetButton = screen.getByRole("button", { name: "Reset" });
+        expect(resetButton.className.includes("bg-destructive")).toBe(true);
+        expect(resetButton.className.includes("text-white")).toBe(true);
+      });
+    });
+
+    it("hides Reset button when workspace is running", async () => {
+      mockWorkspaces[0] = createMockWorkspace({ running: true });
+
+      renderWorkspaceDetail();
+
+      await waitFor(() => {
+        expect(screen.queryByRole("button", { name: "Reset" })).toBeNull();
+      });
+    });
+
+    it("hides Reset button when continuousMode is active", async () => {
+      mockWorkspaces[0] = createMockWorkspace({ continuousMode: true });
+
+      renderWorkspaceDetail();
+
+      await waitFor(() => {
+        expect(screen.queryByRole("button", { name: "Reset" })).toBeNull();
+      });
+    });
+
+    it("opens confirmation dialog when Reset button is clicked", async () => {
+      const user = userEvent.setup();
+
+      renderWorkspaceDetail();
+
+      await waitFor(() => {
+        const resetButtons = screen.queryAllByRole("button", { name: "Reset" });
+        expect(resetButtons.length).toBeGreaterThan(0);
+      });
+
+      const resetButtons = screen.getAllByRole("button", { name: "Reset" });
+      await user.click(resetButtons[0]);
+
+      await waitFor(() => {
+        expect(screen.getByText("Reset workspace state?")).toBeTruthy();
+        expect(screen.getByText(/This will reset the workflow state/)).toBeTruthy();
+      });
+    });
+
+    it("calls reset API with correct workspace name when confirmed", async () => {
+      const user = userEvent.setup();
+
+      renderWorkspaceDetail();
+
+      await waitFor(() => {
+        const resetButtons = screen.queryAllByRole("button", { name: "Reset" });
+        expect(resetButtons.length).toBeGreaterThan(0);
+      });
+
+      const resetButtons = screen.getAllByRole("button", { name: "Reset" });
+      await user.click(resetButtons[0]);
+
+      await waitFor(() => {
+        expect(screen.getByText("Reset workspace state?")).toBeTruthy();
+      });
+
+      const confirmButtons = screen.getAllByRole("button", { name: "Reset" });
+      const confirmButton = confirmButtons.find(btn => btn.closest("[role='alertdialog']"));
+      await user.click(confirmButton!);
+
+      await waitFor(() => {
+        expect(mockReset).toHaveBeenCalledWith("test-workspace");
+      });
+    });
+
+    it("triggers factory refresh after reset", async () => {
+      const user = userEvent.setup();
+
+      renderWorkspaceDetail();
+
+      await waitFor(() => {
+        const resetButtons = screen.queryAllByRole("button", { name: "Reset" });
+        expect(resetButtons.length).toBeGreaterThan(0);
+      });
+
+      const resetButtons = screen.getAllByRole("button", { name: "Reset" });
+      await user.click(resetButtons[0]);
+
+      await waitFor(() => {
+        expect(screen.getByText("Reset workspace state?")).toBeTruthy();
+      });
+
+      const confirmButtons = screen.getAllByRole("button", { name: "Reset" });
+      const confirmButton = confirmButtons.find(btn => btn.closest("[role='alertdialog']"));
+      await user.click(confirmButton!);
+
+      await waitFor(() => {
+        expect(mockTriggerFactoryRefresh).toHaveBeenCalled();
+      });
+    });
+
+    it("shows error message when reset fails", async () => {
+      const user = userEvent.setup();
+      mockReset.mockImplementationOnce(() => Promise.reject(new Error("Failed to reset workspace")));
+
+      renderWorkspaceDetail();
+
+      await waitFor(() => {
+        const resetButtons = screen.queryAllByRole("button", { name: "Reset" });
+        expect(resetButtons.length).toBeGreaterThan(0);
+      });
+
+      const resetButtons = screen.getAllByRole("button", { name: "Reset" });
+      await user.click(resetButtons[0]);
+
+      await waitFor(() => {
+        expect(screen.getByText("Reset workspace state?")).toBeTruthy();
+      });
+
+      const confirmButtons = screen.getAllByRole("button", { name: "Reset" });
+      const confirmButton = confirmButtons.find(btn => btn.closest("[role='alertdialog']"));
+      await user.click(confirmButton!);
+
+      await waitFor(() => {
+        const errorElements = screen.queryAllByText(/Failed to reset workspace/);
+        expect(errorElements.length).toBeGreaterThan(0);
+        const errorAlert = errorElements.find(el => el.getAttribute("role") === "alert");
+        expect(errorAlert).toBeTruthy();
       });
     });
   });

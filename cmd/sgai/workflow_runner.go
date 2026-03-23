@@ -193,15 +193,9 @@ func (r *workflowRunner) runContinuous(ctx context.Context, continuousPrompt str
 			return
 		}
 
-		checksum, errChecksum := computeGoalChecksum(goalPath)
-		if errChecksum != nil {
-			log.Println("failed to compute GOAL.md checksum:", errChecksum)
-			return
-		}
-
 		autoDuration, cronExpr := readContinuousModeAutoCron(r.dir)
 
-		trigger := watchForTrigger(ctx, r.dir, r.coord, checksum, autoDuration, cronExpr)
+		trigger := watchForTrigger(ctx, r.dir, r.coord, autoDuration, cronExpr)
 		if trigger == triggerNone {
 			return
 		}
@@ -295,10 +289,6 @@ func buildWorkflowRunner(dir string, mcpURL string, logWriter io.Writer, session
 	}
 
 	wfState := coord.State()
-	newChecksum, errChecksum := computeGoalChecksum(goalPath)
-	if errChecksum != nil {
-		log.Fatalln("failed to compute GOAL.md checksum:", errChecksum)
-	}
 
 	dagAgents := flowDag.allAgents()
 	allAgents := buildAllAgents(dagAgents)
@@ -310,7 +300,7 @@ func buildWorkflowRunner(dir string, mcpURL string, logWriter io.Writer, session
 	pmPath := filepath.Join(dir, ".sgai", "PROJECT_MANAGEMENT.md")
 	retrospectivesBaseDir := filepath.Join(dir, ".sgai", "retrospectives")
 
-	resuming := canResumeWorkflow(wfState, newChecksum)
+	resuming := canResumeWorkflow(wfState)
 
 	retroDir, resuming := prepareRetrospectiveDir(resuming, dir, retrospectivesBaseDir, pmPath, stateJSONPath, goalPath)
 	if retroDir == "" {
@@ -341,7 +331,6 @@ func buildWorkflowRunner(dir string, mcpURL string, logWriter io.Writer, session
 		freshState := state.Workflow{
 			Status:          state.StatusWorking,
 			Messages:        []state.Message{},
-			GoalChecksum:    newChecksum,
 			VisitCounts:     initVisitCounts(allAgents),
 			InteractionMode: preservedMode,
 		}

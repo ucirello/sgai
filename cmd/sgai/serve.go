@@ -514,22 +514,7 @@ func (s *Server) stopSession(workspacePath string) {
 	}
 
 	s.resetHumanCommunication(workspacePath)
-	s.flushGoalChecksumOnStop(workspacePath)
 	s.notifyStateChange()
-}
-
-func (s *Server) flushGoalChecksumOnStop(workspacePath string) {
-	goalPath := filepath.Join(workspacePath, "GOAL.md")
-	checksum, errChecksum := computeGoalChecksum(goalPath)
-	if errChecksum != nil {
-		return
-	}
-	coord := s.workspaceCoordinator(workspacePath)
-	if errUpdate := coord.UpdateState(func(wf *state.Workflow) {
-		wf.GoalChecksum = checksum
-	}); errUpdate != nil {
-		log.Println("failed to flush goal checksum on stop:", errUpdate)
-	}
 }
 
 func badgeStatus(wfState state.Workflow, running bool) (class, text string) {
@@ -1101,21 +1086,15 @@ func (s *Server) workspaceCoordinator(workspacePath string) *state.Coordinator {
 	if sess != nil {
 		sess.mu.Lock()
 		coord := sess.coord
+		running := sess.running
 		sess.mu.Unlock()
-		if coord != nil {
+		if running && coord != nil {
 			return coord
 		}
 	}
 	coord, errCoord := state.NewCoordinator(statePath(workspacePath))
 	if errCoord != nil {
 		return state.NewCoordinatorEmpty(statePath(workspacePath))
-	}
-	if coord.State().Status == state.StatusWorking {
-		if errUpdate := coord.UpdateState(func(wf *state.Workflow) {
-			wf.Status = ""
-		}); errUpdate != nil {
-			log.Println("failed to reset workspace status:", errUpdate)
-		}
 	}
 	return coord
 }

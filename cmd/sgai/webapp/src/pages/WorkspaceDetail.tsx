@@ -164,6 +164,7 @@ export function WorkspaceDetail(): JSX.Element | null {
   const [isPinPending, startPinTransition] = useTransition();
   const [isEditorPending, startEditorTransition] = useTransition();
   const [isDeletePending, startDeleteTransition] = useTransition();
+  const [isResetPending, startResetTransition] = useTransition();
   const [execTimeSeconds, setExecTimeSeconds] = useState<number | null>(null);
 
   const { workspaces, fetchStatus } = useFactoryState();
@@ -372,6 +373,19 @@ export function WorkspaceDetail(): JSX.Element | null {
     });
   };
 
+  const handleReset = () => {
+    if (!workspaceName) return;
+    setActionError(null);
+    startResetTransition(async () => {
+      try {
+        await api.workspaces.reset(workspaceName);
+        triggerFactoryRefresh();
+      } catch (err) {
+        setActionError(err instanceof Error ? err.message : "Failed to reset workspace");
+      }
+    });
+  };
+
   return (
     <div className="sticky-header-wrapper">
       <div className="sticky top-0 z-10 bg-background">
@@ -501,6 +515,38 @@ export function WorkspaceDetail(): JSX.Element | null {
                         >
                           Stop
                         </Button>
+                      )}
+                      {!effectiveRunning && (
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="destructive"
+                              disabled={isResetPending}
+                            >
+                              Reset
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Reset workspace state?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                This will reset the workflow state. The next time you start this workspace, it will begin with a fresh state.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Cancel</AlertDialogCancel>
+                              <AlertDialogAction
+                                onClick={handleReset}
+                                disabled={isResetPending}
+                                className="bg-destructive text-white hover:bg-destructive/90"
+                              >
+                                Reset
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
                       )}
                     </>
                   )}

@@ -997,18 +997,6 @@ func TestPrintUsageDoesNotPanic(_ *testing.T) {
 	printUsage()
 }
 
-func TestComputeGoalChecksumDeterminism(t *testing.T) {
-	dir := t.TempDir()
-	goalPath := filepath.Join(dir, "GOAL.md")
-	require.NoError(t, os.WriteFile(goalPath, []byte("---\ntitle: test\n---\n# Goal"), 0o644))
-
-	h1, err1 := computeGoalChecksum(goalPath)
-	h2, err2 := computeGoalChecksum(goalPath)
-	require.NoError(t, err1)
-	require.NoError(t, err2)
-	assert.Equal(t, h1, h2)
-}
-
 func TestResolveBaseAgentCases(t *testing.T) {
 	alias := map[string]string{}
 	assert.Equal(t, "coordinator", resolveBaseAgent(alias, "coordinator"))
@@ -2381,46 +2369,45 @@ func TestExtractRetrospectiveDirFromProjectManagement(t *testing.T) {
 
 func TestCanResumeWorkflow(t *testing.T) {
 	tests := []struct {
-		name            string
-		wfState         state.Workflow
-		currentChecksum string
-		expected        bool
+		name     string
+		wfState  state.Workflow
+		expected bool
 	}{
 		{
-			name:            "matchingChecksumWorkingStatus",
-			wfState:         state.Workflow{GoalChecksum: "abc123", Status: state.StatusWorking},
-			currentChecksum: "abc123",
-			expected:        true,
+			name:     "workingStatus",
+			wfState:  state.Workflow{Status: state.StatusWorking},
+			expected: true,
 		},
 		{
-			name:            "matchingChecksumAgentDone",
-			wfState:         state.Workflow{GoalChecksum: "abc123", Status: state.StatusAgentDone},
-			currentChecksum: "abc123",
-			expected:        true,
+			name:     "agentDoneStatus",
+			wfState:  state.Workflow{Status: state.StatusAgentDone},
+			expected: true,
 		},
 		{
-			name:            "matchingChecksumHumanPending",
-			wfState:         state.Workflow{GoalChecksum: "abc123", HumanMessage: "question"},
-			currentChecksum: "abc123",
-			expected:        true,
+			name:     "humanMessagePending",
+			wfState:  state.Workflow{HumanMessage: "question"},
+			expected: true,
 		},
 		{
-			name:            "mismatchedChecksum",
-			wfState:         state.Workflow{GoalChecksum: "abc123", Status: state.StatusWorking},
-			currentChecksum: "different",
-			expected:        false,
+			name:     "multiChoiceQuestionPending",
+			wfState:  state.Workflow{MultiChoiceQuestion: &state.MultiChoiceQuestion{Questions: []state.QuestionItem{{Question: "test"}}}},
+			expected: true,
 		},
 		{
-			name:            "completeStatus",
-			wfState:         state.Workflow{GoalChecksum: "abc123", Status: state.StatusComplete},
-			currentChecksum: "abc123",
-			expected:        false,
+			name:     "completeStatus",
+			wfState:  state.Workflow{Status: state.StatusComplete},
+			expected: false,
+		},
+		{
+			name:     "emptyStatus",
+			wfState:  state.Workflow{Status: ""},
+			expected: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := canResumeWorkflow(tt.wfState, tt.currentChecksum)
+			result := canResumeWorkflow(tt.wfState)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -4319,21 +4306,6 @@ func TestSaveStateCoord(t *testing.T) {
 	assert.FileExists(t, stateFile)
 }
 
-func TestComputeGoalChecksumSuccess(t *testing.T) {
-	dir := t.TempDir()
-	goalPath := filepath.Join(dir, "GOAL.md")
-	require.NoError(t, os.WriteFile(goalPath, []byte("# My Goal"), 0644))
-	checksum, err := computeGoalChecksum(goalPath)
-	require.NoError(t, err)
-	assert.NotEmpty(t, checksum)
-	assert.Len(t, checksum, 64)
-}
-
-func TestComputeGoalChecksumMissing(t *testing.T) {
-	_, err := computeGoalChecksum("/nonexistent/GOAL.md")
-	assert.Error(t, err)
-}
-
 func TestOpenRetrospectiveLogsSuccess(t *testing.T) {
 	dir := t.TempDir()
 	stdoutLog, stderrLog, err := openRetrospectiveLogs(dir)
@@ -4718,18 +4690,6 @@ func TestInitializeJJForkWorkspace(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".jj", "repo"), []byte("/some/other/path"), 0644))
 	err := initializeJJ(dir)
 	assert.NoError(t, err)
-}
-
-func TestComputeGoalChecksumDifferentBody(t *testing.T) {
-	dir := t.TempDir()
-	goalPath := filepath.Join(dir, "GOAL.md")
-	require.NoError(t, os.WriteFile(goalPath, []byte("---\ntitle: test\n---\n# Content A"), 0644))
-	hash1, err1 := computeGoalChecksum(goalPath)
-	require.NoError(t, err1)
-	require.NoError(t, os.WriteFile(goalPath, []byte("---\ntitle: test\n---\n# Content B"), 0644))
-	hash2, err2 := computeGoalChecksum(goalPath)
-	require.NoError(t, err2)
-	assert.NotEqual(t, hash1, hash2)
 }
 
 func readSkeletonFileForTest(t *testing.T, relPath string) string {
