@@ -77,7 +77,7 @@ func TestComposeStateServiceWithInvalidFlow(t *testing.T) {
 	server.composeDraftService(wsDir, composerState{
 		Description: "Test",
 		Flow:        `digraph G { "a" -> }`,
-	}, wizardState{})
+	})
 	result := server.composeStateService(wsDir)
 	assert.NotEmpty(t, result.FlowError)
 }
@@ -88,7 +88,7 @@ func TestComposePreviewServiceWithInvalidFlow(t *testing.T) {
 	server.composeDraftService(wsDir, composerState{
 		Description: "Test",
 		Flow:        `digraph G { "a" -> }`,
-	}, wizardState{})
+	})
 	result, err := server.composePreviewService(wsDir)
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.FlowError)
@@ -100,7 +100,7 @@ func TestComposePreviewServiceWithValidFlow(t *testing.T) {
 	server.composeDraftService(wsDir, composerState{
 		Description: "Test",
 		Flow:        `"a" -> "b"`,
-	}, wizardState{})
+	})
 	result, err := server.composePreviewService(wsDir)
 	require.NoError(t, err)
 	assert.Empty(t, result.FlowError)
@@ -113,7 +113,7 @@ func TestComposeStateServiceWithValidFlow(t *testing.T) {
 	server.composeDraftService(wsDir, composerState{
 		Description: "Test",
 		Flow:        `"x" -> "y"`,
-	}, wizardState{})
+	})
 	result := server.composeStateService(wsDir)
 	assert.Empty(t, result.FlowError)
 }
@@ -125,7 +125,7 @@ func TestComposeDraftService(t *testing.T) {
 	result := server.composeDraftService(wsDir, composerState{
 		Description: "Test description",
 		Tasks:       "Test tasks",
-	}, wizardState{})
+	})
 	assert.True(t, result.Saved)
 
 	stateResult := server.composeStateService(wsDir)

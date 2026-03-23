@@ -5279,23 +5279,6 @@ func TestHandleAPIDeleteMessageNotFoundNew(t *testing.T) {
 	assert.Contains(t, []int{http.StatusOK, http.StatusNotFound, http.StatusBadRequest}, w.Code)
 }
 
-func TestGetWorkflowSVGServiceNoGoal(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "svg-ws")
-	svg := server.getWorkflowSVGService(wsDir)
-	assert.Empty(t, svg)
-}
-
-func TestGetWorkflowSVGServiceWithGoal(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "svg-ws2")
-	goalContent := "---\nflow: |\n  \"a\" -> \"b\"\n---\n# Test"
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte(goalContent), 0644))
-
-	svg := server.getWorkflowSVGService(wsDir)
-	assert.NotEmpty(t, svg)
-}
-
 func TestHandleAPIComposeStateWithWorkspace(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	setupTestWorkspace(t, rootDir, "compose-new-ws")
