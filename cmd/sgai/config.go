@@ -37,6 +37,7 @@ type actionConfig struct {
 	Name        string `json:"name"`
 	Model       string `json:"model"`
 	Prompt      string `json:"prompt"`
+	Script      string `json:"script,omitempty"`
 	Description string `json:"description,omitempty"`
 }
 

@@ -19,6 +19,7 @@ import type {
   ApiForkTemplateResponse,
   ApiUpdateGoalResponse,
   ApiAdhocResponse,
+  ApiActionRunRequest,
   ApiModelsResponse,
   ApiSteerResponse,
   ApiTogglePinResponse,
@@ -110,6 +111,11 @@ export const api = {
       fetchJSON<ApiAdhocResponse>(
         `/api/v1/workspaces/${encodeURIComponent(name)}/adhoc`,
         { method: "POST", body: JSON.stringify({ prompt, model }) },
+      ),
+    actionRun: (name: string, request: ApiActionRunRequest) =>
+      fetchJSON<ApiAdhocResponse>(
+        `/api/v1/workspaces/${encodeURIComponent(name)}/actions/run`,
+        { method: "POST", body: JSON.stringify(request) },
       ),
     adhocStatus: (name: string) =>
       fetchJSON<ApiAdhocResponse>(

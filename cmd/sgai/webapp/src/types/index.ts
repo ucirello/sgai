@@ -39,6 +39,7 @@ export interface ApiWorkspaceEntry {
   log: ApiLogEntry[];
   pendingQuestion?: ApiPendingQuestionResponse;
   actions?: ApiActionEntry[];
+  actionConfigError?: string;
   external?: boolean;
 }
 
@@ -53,7 +54,16 @@ export interface ApiActionEntry {
   name: string;
   model: string;
   prompt: string;
+  script?: string;
   description?: string;
+  kind?: "prompt" | "script" | "";
+  variables?: string[];
+  validationError?: string;
+}
+
+export interface ApiActionRunRequest {
+  name: string;
+  variables?: Record<string, string>;
 }
 
 export interface ApiGoalResponse {

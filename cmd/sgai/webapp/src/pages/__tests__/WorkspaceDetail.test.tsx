@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
-import { act, render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
+import { act, render, screen, waitFor, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route, createMemoryRouter, RouterProvider } from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -75,6 +75,13 @@ const mockFork = mock(() => Promise.resolve({ name: "test-workspace-fork" }));
 const mockTriggerFactoryRefresh = mock(() => {});
 const mockRespond = mock(() => Promise.resolve({ success: true }));
 const mockNavigate = mock(() => {});
+const mockStartActionRun = mock(() => {});
+const mockStopActionRun = mock(() => {});
+const mockActionRunState = {
+  output: "",
+  isRunning: false,
+  runError: null as string | null,
+};
 
 mock.module("react-router", () => ({
   ...require("react-router"),
@@ -114,11 +121,12 @@ mock.module("@/lib/api", () => ({
 
 mock.module("@/hooks/useAdhocRun", () => ({
   useAdhocRun: () => ({
-    output: "",
-    isRunning: false,
-    runError: null,
+    output: mockActionRunState.output,
+    isRunning: mockActionRunState.isRunning,
+    runError: mockActionRunState.runError,
     startRun: mock(() => {}),
-    stopRun: mock(() => {}),
+    startActionRun: mockStartActionRun,
+    stopRun: mockStopActionRun,
     outputRef: { current: null },
   }),
 }));
@@ -200,6 +208,207 @@ describe("WorkspaceDetail", () => {
     mockTriggerFactoryRefresh.mockClear();
     mockRespond.mockClear();
     mockNavigate.mockClear();
+    mockStartActionRun.mockClear();
+    mockStopActionRun.mockClear();
+    mockActionRunState.output = "";
+    mockActionRunState.isRunning = false;
+    mockActionRunState.runError = null;
+  });
+
+  describe("repository action buttons", () => {
+    it("shows workspace action configuration errors on the progress tab", async () => {
+      mockWorkspaces = [createMockWorkspace({
+        actionConfigError: "invalid JSON syntax",
+        actions: [],
+      })];
+
+      renderWorkspaceDetailRouter("/workspaces/test-workspace/progress");
+
+      await waitFor(() => {
+        expect(screen.getByText(/action configuration error/i)).toBeTruthy();
+        expect(screen.getByText(/invalid JSON syntax/i)).toBeTruthy();
+      });
+    });
+
+    it("routes fork row actions to the selected fork workspace", async () => {
+      const user = userEvent.setup();
+
+      mockWorkspaces = [createMockWorkspace({
+        isRoot: true,
+        forks: [{
+          name: "test-workspace-fork",
+          dir: "/path/to/test-workspace-fork",
+          running: false,
+          needsInput: false,
+          inProgress: false,
+          pinned: false,
+          description: "Fork 1",
+        }],
+        actions: [{
+          name: "Run Tests",
+          kind: "prompt",
+          model: "model-1",
+          prompt: "run tests",
+          variables: [],
+          description: "Run test suite",
+        }],
+      })];
+
+      renderWorkspaceDetailRouter("/workspaces/test-workspace/forks");
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Run Tests for fork test-workspace-fork" })).toBeTruthy();
+      });
+
+      await user.click(screen.getByRole("button", { name: "Run Tests for fork test-workspace-fork" }));
+
+      expect(mockStartActionRun).toHaveBeenCalledWith("Run Tests", {}, "test-workspace-fork");
+    });
+
+    it("gives repeated fork-row icon buttons unique accessible names", async () => {
+      const firstFork = {
+        name: "test-workspace-fork",
+        dir: "/path/to/test-workspace-fork",
+        running: false,
+        needsInput: false,
+        inProgress: false,
+        pinned: false,
+        description: "Fork 1",
+      };
+      const secondFork = {
+        name: "second-workspace-fork",
+        dir: "/path/to/second-workspace-fork",
+        running: false,
+        needsInput: false,
+        inProgress: false,
+        pinned: false,
+        description: "Fork 2",
+      };
+
+      mockWorkspaces = [createMockWorkspace({
+        isRoot: true,
+        forks: [firstFork, secondFork],
+      })];
+
+      renderWorkspaceDetailRouter("/workspaces/test-workspace/forks");
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Respond to fork test-workspace-fork" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Open fork test-workspace-fork in Editor" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Open fork test-workspace-fork in sgai" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Delete fork test-workspace-fork" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Respond to fork second-workspace-fork" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Open fork second-workspace-fork in Editor" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Open fork second-workspace-fork in sgai" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Delete fork second-workspace-fork" })).toBeTruthy();
+      });
+    });
+
+    it("targets fork-row icon actions by unique accessible name", async () => {
+      const user = userEvent.setup();
+      const needsInputFork = {
+        name: "needs-input-fork",
+        dir: "/path/to/needs-input-fork",
+        running: false,
+        needsInput: false,
+        inProgress: false,
+        pinned: false,
+        description: "Needs Input Fork",
+      };
+      const plainFork = {
+        name: "plain-fork",
+        dir: "/path/to/plain-fork",
+        running: false,
+        needsInput: false,
+        inProgress: false,
+        pinned: false,
+        description: "Plain Fork",
+      };
+
+      mockWorkspaces = [
+        createMockWorkspace({
+          isRoot: true,
+          forks: [needsInputFork, plainFork],
+        }),
+        createMockWorkspace({ name: "needs-input-fork", needsInput: true, isFork: true }),
+        createMockWorkspace({ name: "plain-fork", isFork: true }),
+      ];
+
+      renderWorkspaceDetailRouter("/workspaces/test-workspace/forks");
+
+      await user.click(await screen.findByRole("button", { name: "Respond to fork needs-input-fork" }));
+      expect(mockNavigate).toHaveBeenCalledWith("/workspaces/needs-input-fork/respond");
+
+      await user.click(screen.getByRole("button", { name: "Open fork plain-fork in Editor" }));
+
+      await waitFor(() => {
+        expect(mockOpenEditor).toHaveBeenCalledWith("plain-fork");
+      });
+
+      await user.click(screen.getByRole("button", { name: "Open fork plain-fork in sgai" }));
+      expect(mockNavigate).toHaveBeenCalledWith("/workspaces/plain-fork/progress");
+
+      await user.click(screen.getByRole("button", { name: "Delete fork plain-fork" }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/This will permanently delete ‘plain-fork’ from disk\./)).toBeTruthy();
+      });
+    });
+
+    it("shows workspace action configuration errors on the forks tab", async () => {
+      mockWorkspaces = [createMockWorkspace({
+        isRoot: true,
+        actionConfigError: "invalid JSON syntax",
+        actions: [],
+        forks: [{
+          name: "test-workspace-fork",
+          dir: "/path/to/test-workspace-fork",
+          running: false,
+          needsInput: false,
+          inProgress: false,
+          pinned: false,
+          description: "Fork 1",
+        }],
+      })];
+
+      renderWorkspaceDetailRouter("/workspaces/test-workspace/forks");
+
+      await waitFor(() => {
+        expect(screen.getByText(/action configuration error/i)).toBeTruthy();
+        expect(screen.getByText(/invalid JSON syntax/i)).toBeTruthy();
+      });
+    });
+
+    it("disables both root and row action bars while a named action run is active", async () => {
+      mockActionRunState.isRunning = true;
+      mockWorkspaces = [createMockWorkspace({
+        isRoot: true,
+        actions: [{
+          name: "Run Tests",
+          kind: "prompt",
+          model: "model-1",
+          prompt: "run tests",
+          variables: [],
+          description: "Run test suite",
+        }],
+        forks: [{
+          name: "test-workspace-fork",
+          dir: "/path/to/test-workspace-fork",
+          running: false,
+          needsInput: false,
+          inProgress: false,
+          pinned: false,
+          description: "Fork 1",
+        }],
+      })];
+
+      renderWorkspaceDetailRouter("/workspaces/test-workspace/forks");
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Run Tests for workspace test-workspace" }).hasAttribute("disabled")).toBe(true);
+        expect(screen.getByRole("button", { name: "Run Tests for fork test-workspace-fork" }).hasAttribute("disabled")).toBe(true);
+      });
+    });
   });
 
   describe("start/stop buttons work", () => {

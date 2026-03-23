@@ -220,15 +220,19 @@ export function WorkspaceDetail(): JSX.Element | null {
     output: actionOutput,
     isRunning: isActionRunning,
     runError: actionRunError,
-    startRun: startActionRun,
+    startActionRun,
     stopRun: stopActionRun,
     outputRef: actionOutputRef,
   } = useAdhocRun({ workspaceName, skipModelsFetch: true });
 
-  const handleActionClick = useCallback((action: ApiActionEntry, _forkName?: string) => {
+  const handleActionClick = useCallback((
+    action: ApiActionEntry,
+    variables: Record<string, string>,
+    targetWorkspaceName = workspaceName,
+  ) => {
     setActionOutputOpen(true);
-    startActionRun(action.prompt, action.model);
-  }, [startActionRun]);
+    void startActionRun(action.name, variables, targetWorkspaceName);
+  }, [startActionRun, workspaceName]);
 
   useEffect(() => {
     if (!detail) return;
@@ -691,7 +695,9 @@ export function WorkspaceDetail(): JSX.Element | null {
               pmContent={detail.pmContent}
               hasProjectMgmt={detail.hasProjectMgmt}
               actions={detail.actions}
+              actionConfigError={detail.actionConfigError}
               onActionClick={isForkedRoot ? handleActionClick : undefined}
+              isActionRunning={isActionRunning}
               showForkTab={showForkTab}
             />
           </Suspense>
@@ -717,7 +723,9 @@ function TabContent({
   pmContent,
   hasProjectMgmt,
   actions,
+  actionConfigError,
   onActionClick,
+  isActionRunning,
   showForkTab,
 }: {
   activeTab: string;
@@ -727,12 +735,21 @@ function TabContent({
   pmContent?: string;
   hasProjectMgmt?: boolean;
   actions?: ApiActionEntry[];
-  onActionClick?: (action: ApiActionEntry, forkName: string) => void;
+  actionConfigError?: string;
+  onActionClick?: (action: ApiActionEntry, variables: Record<string, string>, targetWorkspaceName: string) => void;
+  isActionRunning?: boolean;
   showForkTab: boolean;
 }) {
   switch (activeTab) {
     case "progress":
-      return <EventsTab workspaceName={workspaceName} goalContent={goalContent} actions={actions} />;
+      return (
+        <EventsTab
+          workspaceName={workspaceName}
+          goalContent={goalContent}
+          actions={actions}
+          actionConfigError={actionConfigError}
+        />
+      );
     case "fork":
       return showForkTab ? <InlineForkEditor key={workspaceName} workspaceName={workspaceName} /> : <NotYetAvailable pageName="Fork Tab" />;
     case "log":
@@ -745,7 +762,15 @@ function TabContent({
     case "run":
       return <RunTab workspaceName={workspaceName} currentModel={currentModel} />;
     case "forks":
-      return <ForksTab workspaceName={workspaceName} actions={actions} onActionClick={onActionClick} />;
+      return (
+        <ForksTab
+          workspaceName={workspaceName}
+          actions={actions}
+          actionConfigError={actionConfigError}
+          onActionClick={onActionClick}
+          isActionRunning={isActionRunning}
+        />
+      );
     default:
       return <NotYetAvailable pageName={`${activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} Tab`} />;
   }

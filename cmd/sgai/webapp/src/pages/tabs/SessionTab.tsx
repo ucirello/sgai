@@ -9,43 +9,12 @@ import { MarkdownContent } from "@/components/MarkdownContent";
 import { ChevronRight } from "lucide-react";
 import { api } from "@/lib/api";
 import { useFactoryState, triggerFactoryRefresh } from "@/lib/factory-state";
-import type { ApiAgentCost, ApiDollarBreakdown, ApiStepCost, ApiTodoEntry, ApiActionEntry, ApiSessionCost, ApiTokenUsage } from "@/types";
+import type { ApiAgentCost, ApiDollarBreakdown, ApiStepCost, ApiTodoEntry, ApiSessionCost, ApiTokenUsage } from "@/types";
 
 interface SessionTabProps {
   workspaceName: string;
   pmContent?: string;
   hasProjectMgmt?: boolean;
-}
-
-export interface ActionBarProps {
-  actions: ApiActionEntry[];
-  isRunning: boolean;
-  onActionClick: (action: ApiActionEntry) => void;
-}
-
-export function ActionBar({ actions, isRunning, onActionClick }: ActionBarProps) {
-  if (actions.length === 0) return null;
-
-  return (
-    <div className="flex flex-wrap items-center gap-2" role="toolbar" aria-label="Action buttons">
-      {actions.map((action) => (
-        <Tooltip key={`${action.name}-${action.model}`}>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={isRunning}
-              onClick={() => onActionClick(action)}
-            >
-              {action.name}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>{action.description || action.model}</TooltipContent>
-        </Tooltip>
-      ))}
-    </div>
-  );
 }
 
 function formatCost(cost: number): string {

@@ -1,8 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { EventsTab } from "../EventsTab";
+
+const createAction = (overrides = {}) => ({
+  name: "Run Tests",
+  kind: "prompt",
+  model: "model-1",
+  prompt: "run tests",
+  variables: [] as string[],
+  description: "Run test suite",
+  ...overrides,
+});
 
 beforeEach(() => {
   document.body.style.pointerEvents = "auto";
@@ -51,6 +62,8 @@ const createMockWorkspace = (overrides = {}) => ({
 
 let mockWorkspaces = [createMockWorkspace()];
 let mockFetchStatus = "idle";
+const mockActionRun = mock(() => Promise.resolve({ output: "", running: false }));
+const mockStartActionRun = mock(() => Promise.resolve());
 
 mock.module("@/lib/factory-state", () => ({
   useFactoryState: () => ({
@@ -66,6 +79,7 @@ mock.module("@/lib/api", () => ({
     workspaces: {
       openEditorGoal: mock(() => Promise.resolve({ opened: true })),
       adhoc: mock(() => Promise.resolve({ output: "", running: false })),
+      actionRun: mockActionRun,
       adhocStatus: mock(() => Promise.resolve({ output: "", running: false })),
       adhocStop: mock(() => Promise.resolve({ output: "", running: false })),
     },
@@ -85,6 +99,30 @@ mock.module("@/components/MarkdownContent", () => ({
   MarkdownContent: ({ content }: { content: string }) => (
     <div data-testid="markdown-content">{content}</div>
   ),
+}));
+
+mock.module("@/hooks/useAdhocRun", () => ({
+  useAdhocRun: () => ({
+    output: "",
+    isRunning: false,
+    runError: null,
+    startActionRun: mockStartActionRun,
+    stopRun: mock(() => {}),
+    outputRef: { current: null },
+    models: null,
+    modelsLoading: false,
+    modelsError: null,
+    selectedModel: "",
+    setSelectedModel: mock(() => {}),
+    prompt: "",
+    setPrompt: mock(() => {}),
+    startRun: mock(() => {}),
+    handleSubmit: mock(() => {}),
+    handleKeyDown: mock(() => {}),
+    promptHistory: [],
+    selectFromHistory: mock(() => {}),
+    clearHistory: mock(() => {}),
+  }),
 }));
 
 function renderEventsTab(props = {}) {
@@ -112,6 +150,8 @@ describe("EventsTab", () => {
   beforeEach(() => {
     mockWorkspaces = [createMockWorkspace()];
     mockFetchStatus = "idle";
+    mockActionRun.mockClear();
+    mockStartActionRun.mockClear();
   });
 
   describe("event rendering", () => {
@@ -313,6 +353,20 @@ describe("EventsTab", () => {
 
       const { container } = renderEventsTab({ workspaceName: "nonexistent" });
       expect(container.innerHTML).toBe("");
+    });
+  });
+
+  describe("action buttons", () => {
+    it("runs no-variable actions through the named action endpoint", async () => {
+      const user = userEvent.setup();
+
+      renderEventsTab({ actions: [createAction()] });
+
+      await user.click(screen.getByRole("button", { name: "Run Tests" }));
+
+      await waitFor(() => {
+        expect(mockStartActionRun).toHaveBeenCalledWith("Run Tests", {});
+      });
     });
   });
 });

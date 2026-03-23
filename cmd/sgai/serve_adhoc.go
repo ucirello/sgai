@@ -16,8 +16,8 @@ type adhocPromptState struct {
 	running       bool
 	output        bytes.Buffer
 	cmd           *exec.Cmd
-	selectedModel string
-	promptText    string
+	waitDone      chan struct{}
+	stopRequested bool
 }
 
 func (s *Server) getAdhocState(workspacePath string) *adhocPromptState {
@@ -51,29 +51,31 @@ func (st *adhocPromptState) stop() {
 		return
 	}
 	cmd := st.cmd
+	waitDone := st.waitDone
+	st.stopRequested = true
 	st.mu.Unlock()
 
 	if cmd != nil && cmd.Process != nil {
 		pgid := -cmd.Process.Pid
 		_ = syscall.Kill(pgid, syscall.SIGTERM)
 
-		done := make(chan struct{})
-		go func() {
-			_ = cmd.Wait()
-			close(done)
-		}()
-
-		select {
-		case <-done:
-		case <-time.After(gracefulShutdownTimeout):
-			_ = syscall.Kill(pgid, syscall.SIGKILL)
-			<-done
+		if waitDone != nil {
+			select {
+			case <-waitDone:
+			case <-time.After(gracefulShutdownTimeout):
+				_ = syscall.Kill(pgid, syscall.SIGKILL)
+				<-waitDone
+			}
 		}
 	}
 
 	st.mu.Lock()
-	st.running = false
-	st.cmd = nil
+	if st.running {
+		st.running = false
+		st.cmd = nil
+		st.waitDone = nil
+		st.stopRequested = false
+	}
 	st.output.WriteString("\n[stopped by user]\n")
 	st.mu.Unlock()
 }

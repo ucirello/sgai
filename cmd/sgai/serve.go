@@ -244,6 +244,9 @@ type Server struct {
 
 	adhocStates map[string]*adhocPromptState
 
+	promptActionRunner func(workspacePath, prompt, model string) adhocStartResult
+	scriptActionRunner func(workspacePath, actionName string, argv []string) adhocStartResult
+
 	composerSessionsMu sync.Mutex
 	composerSessions   map[string]*composerSession
 
