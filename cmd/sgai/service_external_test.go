@@ -153,7 +153,7 @@ func TestAttachExternalWorkspaceService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 			server.externalConfigDir = t.TempDir()
 
 			var externalPath string
@@ -236,7 +236,7 @@ func TestDetachExternalWorkspaceService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 			server.externalConfigDir = t.TempDir()
 
 			externalPath := filepath.Join(t.TempDir(), "external-workspace")
@@ -267,7 +267,7 @@ func TestDetachExternalWorkspaceService(t *testing.T) {
 
 func TestAttachExternalWorkspaceServiceRestoresStateOnSaveFailure(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 
 	blockingPath := filepath.Join(t.TempDir(), "external-config-blocker")
 	require.NoError(t, os.WriteFile(blockingPath, []byte("block"), 0o644))
@@ -287,7 +287,7 @@ func TestAttachExternalWorkspaceServiceRestoresStateOnSaveFailure(t *testing.T) 
 
 func TestDetachExternalWorkspaceServiceRestoresStateOnSaveFailure(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 	server.externalConfigDir = t.TempDir()
 
 	externalPath := filepath.Join(t.TempDir(), "external-workspace")
@@ -335,7 +335,7 @@ func TestIsExternalWorkspace(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			externalPath := filepath.Join(os.TempDir(), "external-workspace")
 			t.Cleanup(func() {
@@ -376,7 +376,7 @@ func TestDeleteExternalForkService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			forkPath := filepath.Join(os.TempDir(), "external-fork")
 			t.Cleanup(func() {
@@ -544,7 +544,7 @@ func TestClassifyWorkspace(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
 			require.NoError(t, os.MkdirAll(workspacePath, 0755))

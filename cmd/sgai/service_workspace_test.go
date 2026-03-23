@@ -99,7 +99,7 @@ func TestForkWorkspaceService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			var workspacePath string
 			if tt.setupFunc != nil {
@@ -131,7 +131,7 @@ func TestForkExternalWorkspaceSiblingPlacement(t *testing.T) {
 	require.NoError(t, os.MkdirAll(externalRepo, 0755))
 	require.NoError(t, initializeWorkspace(externalRepo))
 
-	server := NewServer(sgaiRoot)
+	server := NewServer(sgaiRoot, serverPaths{}, "")
 	server.mu.Lock()
 	server.externalDirs[resolveSymlinks(externalRepo)] = true
 	server.mu.Unlock()
@@ -179,7 +179,7 @@ func TestDeleteWorkspaceService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			workspacePath := tt.setupFunc(t, rootDir)
 
@@ -286,7 +286,7 @@ func TestDeleteForkService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			workspacePath, forkPath := tt.setupFunc(t, rootDir)
 
@@ -348,7 +348,7 @@ func TestGetGoalService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			workspacePath := tt.setupFunc(t, rootDir)
 
@@ -420,7 +420,7 @@ func TestUpdateGoalService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			workspacePath := tt.setupFunc(t, rootDir)
 
@@ -487,7 +487,7 @@ func TestTogglePinService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			workspacePath := tt.setupFunc(t, rootDir)
 
@@ -675,7 +675,7 @@ func TestDeleteForkByPathService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			forkPath := tt.setupFunc(t, rootDir)
 
@@ -780,7 +780,7 @@ func TestDeleteMessageService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
 			require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -808,7 +808,7 @@ func TestDeleteMessageService(t *testing.T) {
 
 func TestDeleteForkByPathServiceNonExistent(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 
 	forkPath := filepath.Join(rootDir, "non-existent-fork")
 	_, err := server.deleteForkByPathService(forkPath)
@@ -817,7 +817,7 @@ func TestDeleteForkByPathServiceNonExistent(t *testing.T) {
 
 func TestDeleteForkByPathServiceStandalone(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 
 	workspacePath := filepath.Join(rootDir, "standalone-workspace")
 	require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -914,7 +914,7 @@ func TestGenerateRandomForkNameUniqueness(t *testing.T) {
 
 func TestUpdateGoalServiceInvalidatesSVGCache(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 	workspacePath := filepath.Join(rootDir, "cache-ws")
 	require.NoError(t, os.MkdirAll(workspacePath, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(workspacePath, "GOAL.md"), []byte("# Old"), 0644))
@@ -934,7 +934,7 @@ func TestUpdateGoalServiceInvalidatesSVGCache(t *testing.T) {
 
 func TestTogglePinServiceSuccess(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 	workspacePath := filepath.Join(rootDir, "pin-ws")
 	require.NoError(t, os.MkdirAll(workspacePath, 0755))
 
@@ -949,7 +949,7 @@ func TestTogglePinServiceSuccess(t *testing.T) {
 
 func TestDeleteWorkspaceServiceSuccess(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 	workspacePath := filepath.Join(rootDir, "delete-ws")
 	require.NoError(t, os.MkdirAll(workspacePath, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(workspacePath, "GOAL.md"), []byte("# Goal"), 0644))

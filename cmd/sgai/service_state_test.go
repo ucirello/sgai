@@ -46,7 +46,7 @@ func TestGetWorkspaceStateService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			tt.setupFunc(t, rootDir)
 			workspacePath := filepath.Join(rootDir, "test-workspace")
@@ -105,7 +105,7 @@ func TestGetWorkflowSVGService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
 			require.NoError(t, os.MkdirAll(workspacePath, 0755))
@@ -122,7 +122,7 @@ func TestGetWorkflowSVGService(t *testing.T) {
 
 func TestGetWorkspaceStateServiceWithMultipleWorkspaces(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 
 	rootPath := filepath.Join(rootDir, "root-workspace")
 	require.NoError(t, os.MkdirAll(rootPath, 0755))
@@ -165,7 +165,7 @@ func TestGetWorkspaceStateServiceWithMultipleWorkspaces(t *testing.T) {
 
 func TestGetWorkspaceStateServiceUsesGroupedRootMode(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir)
+	server := NewServer(rootDir, serverPaths{}, "")
 
 	attachedRootDir := filepath.Join(rootDir, "attached-root")
 	attachedForkDir := filepath.Join(rootDir, "attached-fork")
@@ -241,7 +241,7 @@ func TestGetWorkflowSVGServiceWithDifferentGoals(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir)
+			server := NewServer(rootDir, serverPaths{}, "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
 			require.NoError(t, os.MkdirAll(workspacePath, 0755))
