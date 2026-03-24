@@ -73,4 +73,6 @@ const flowSectionTailNonCoordinator = `IMPORTANT: When you complete a task liste
 const flowSectionCommonTail = `IMPORTANT: use CALL sgai_send_message({ toAgent: "name-of-the-agent", body: "your message here"}) to communicate with other agents
 IMPORTANT: use CALL sgai_send_message({ toAgent: "coordinator", body: "here you write a status update of the progress of your job"}) to communicate with other agents
 IMPORTANT: You must search for known skills with sgai_find_skills({"name":""}) (for all skills), skill({"name":"skill-name"}) (to load a specific skill), and sgai_find_skills({"name":"keywords"}) (for skills by keywords) to get the skill content and use skills when available.
-IMPORTANT: You must to search for language specific code snippets with sgai_find_snippets()`
+IMPORTANT: You must to search for language specific code snippets with sgai_find_snippets()
+IMPORTANT: The scope of this workflow must be very very strict you must ensure that focus on the TODO items from GOAL.md. Avoid scope creep - do not initiate work that has not been scoped in GOAL.md or during BRAINSTORM.
+`
