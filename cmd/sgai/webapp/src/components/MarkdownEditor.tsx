@@ -34,6 +34,7 @@ import {
 interface MarkdownEditorProps {
   value: string;
   onChange: (value: string | undefined) => void;
+  onSubmitShortcut?: () => void;
   minHeight?: number;
   defaultHeight?: number;
   disabled?: boolean;
@@ -239,6 +240,7 @@ const TOOLBAR_ACTIONS: ToolbarAction[] = [
 export function MarkdownEditor({
   value,
   onChange,
+  onSubmitShortcut,
   minHeight = 200,
   defaultHeight,
   disabled = false,
@@ -252,6 +254,8 @@ export function MarkdownEditor({
   const toolbarRef = useRef<HTMLDivElement>(null);
   const modeBarRef = useRef<HTMLDivElement>(null);
   const completionDisposableRef = useRef<MonacoTypes.IDisposable | null>(null);
+  const disabledRef = useRef(disabled);
+  const onSubmitShortcutRef = useRef(onSubmitShortcut);
   const agentsRef = useRef<Agent[]>([]);
   const modelsRef = useRef<ApiModelEntry[]>([]);
 
@@ -259,6 +263,50 @@ export function MarkdownEditor({
   const [editorHeight, setEditorHeight] = useState(baseHeight);
   const [mode, setMode] = useState<"write" | "preview">("write");
   const [monacoReady, setMonacoReady] = useState(false);
+
+  useEffect(() => {
+    disabledRef.current = disabled;
+  }, [disabled]);
+
+  useEffect(() => {
+    onSubmitShortcutRef.current = onSubmitShortcut;
+  }, [onSubmitShortcut]);
+
+  useEffect(() => {
+    if (!onSubmitShortcut) {
+      return;
+    }
+
+    function handleSubmitShortcut(event: KeyboardEvent) {
+      if ((!event.ctrlKey && !event.metaKey) || event.key.toLowerCase() !== "s") {
+        return;
+      }
+
+      const editorDomNode = editorRef.current?.getDomNode();
+      if (!editorDomNode) {
+        return;
+      }
+
+      const target = event.target;
+      if (!(target instanceof Node) || !editorDomNode.contains(target)) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (disabledRef.current) {
+        return;
+      }
+
+      onSubmitShortcutRef.current?.();
+    }
+
+    window.addEventListener("keydown", handleSubmitShortcut, true);
+    return () => {
+      window.removeEventListener("keydown", handleSubmitShortcut, true);
+    };
+  }, [onSubmitShortcut]);
 
   useEffect(() => {
     const container = containerRef.current;
