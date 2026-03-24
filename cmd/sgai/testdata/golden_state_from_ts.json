@@ -23,7 +23,6 @@
       "readBy": "ts-coder"
     }
   ],
-  "goalChecksum": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
   "navigate": {
     "to": "ts-coder",
     "reason": "TypeScript golden navigation"

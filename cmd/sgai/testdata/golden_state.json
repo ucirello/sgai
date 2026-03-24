@@ -32,7 +32,6 @@
       "readBy": "coder"
     }
   ],
-  "goalChecksum": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "visitCounts": {
     "coder": 0,
     "coordinator": 1,

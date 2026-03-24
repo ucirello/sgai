@@ -30,14 +30,46 @@ var (
 
 func attachSessionCoordinator(t *testing.T, srv *Server, wsDir string, wf state.Workflow) {
 	t.Helper()
+	attachSessionCoordinatorWithRunning(t, srv, wsDir, wf, false)
+}
+
+func attachRunningSessionCoordinator(t *testing.T, srv *Server, wsDir string, wf state.Workflow) {
+	t.Helper()
+	attachSessionCoordinatorWithRunning(t, srv, wsDir, wf, true)
+}
+
+func attachSessionCoordinatorWithRunning(t *testing.T, srv *Server, wsDir string, wf state.Workflow, running bool) {
+	t.Helper()
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	coord := state.NewCoordinatorEmpty(statePath)
 	require.NoError(t, coord.UpdateState(func(current *state.Workflow) {
 		*current = wf
 	}))
 	srv.mu.Lock()
-	srv.sessions[wsDir] = &session{coord: coord}
+	srv.sessions[wsDir] = &session{coord: coord, running: running}
 	srv.mu.Unlock()
+}
+
+func stopCachedSession(t *testing.T, srv *Server, wsDir string, wf state.Workflow) *state.Coordinator {
+	t.Helper()
+
+	coord, errCoord := state.NewCoordinatorWith(filepath.Join(wsDir, ".sgai", "state.json"), wf)
+	require.NoError(t, errCoord)
+
+	srv.mu.Lock()
+	srv.sessions[wsDir] = &session{coord: coord, running: true}
+	srv.mu.Unlock()
+
+	srv.stopSession(wsDir)
+
+	return coord
+}
+
+func writeWorkflowStateToDisk(t *testing.T, wsDir string, wf state.Workflow) {
+	t.Helper()
+
+	_, errCoord := state.NewCoordinatorWith(filepath.Join(wsDir, ".sgai", "state.json"), wf)
+	require.NoError(t, errCoord)
 }
 
 func startWaitingSessionQuestion(t *testing.T, srv *Server, wsDir string, question *state.MultiChoiceQuestion, humanMessage string) (*state.Coordinator, <-chan error, context.CancelFunc) {
@@ -45,7 +77,7 @@ func startWaitingSessionQuestion(t *testing.T, srv *Server, wsDir string, questi
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	coord := state.NewCoordinatorEmpty(statePath)
 	srv.mu.Lock()
-	srv.sessions[wsDir] = &session{coord: coord}
+	srv.sessions[wsDir] = &session{coord: coord, running: true}
 	srv.mu.Unlock()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1041,6 +1073,22 @@ func TestLoadWorkspaceStateNoFileReturnsEmpty(t *testing.T) {
 	assert.Empty(t, result.Status)
 }
 
+func TestLoadWorkspaceStateUsesDiskAfterStoppedSession(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, rootDir, "test-ws-stopped")
+
+	stoppedCoord := stopCachedSession(t, server, wsDir, state.Workflow{Status: state.StatusComplete})
+	writeWorkflowStateToDisk(t, wsDir, state.Workflow{
+		Status: state.StatusWorking,
+		Task:   "resume me",
+	})
+
+	result := server.loadWorkspaceState(wsDir)
+	assert.NotSame(t, stoppedCoord, server.workspaceCoordinator(wsDir))
+	assert.Equal(t, state.StatusWorking, result.Status)
+	assert.Equal(t, "resume me", result.Task)
+}
+
 func TestResolveAPIWorkspace(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	_ = setupTestWorkspace(t, rootDir, "resolve-ws")
@@ -1455,6 +1503,15 @@ func setupTestWorkspace(t *testing.T, rootDir, name string) string {
 		server.invalidateWorkspaceScanCache()
 	}
 	return canonicalDir
+}
+
+func workflowStateFromDisk(t *testing.T, wsDir string) state.Workflow {
+	t.Helper()
+
+	coord, errCoord := state.NewCoordinator(filepath.Join(wsDir, ".sgai", "state.json"))
+	require.NoError(t, errCoord)
+
+	return coord.State()
 }
 
 func serveHTTP(server *Server, method, path string, body string) *httptest.ResponseRecorder {
@@ -2818,7 +2875,7 @@ func TestHandleAPIStateWithPendingQuestion(t *testing.T) {
 	wsDir := setupTestWorkspace(t, rootDir, "pq-int")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
-	attachSessionCoordinator(t, srv, wsDir, state.Workflow{
+	attachRunningSessionCoordinator(t, srv, wsDir, state.Workflow{
 		Status:       state.StatusWorking,
 		HumanMessage: "Which approach should I take?",
 		CurrentAgent: "coordinator",
@@ -2858,15 +2915,22 @@ func TestHandleAPIStatePendingQuestionUsesPromptToken(t *testing.T) {
 	w := serveHTTP(srv, "GET", "/api/v1/state", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 
-	var resp map[string]any
+	var resp apiFactoryState
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	workspaces, ok := resp["workspaces"].([]any)
-	require.True(t, ok)
-	require.NotEmpty(t, workspaces)
-	pendingQuestion, ok := workspaces[0].(map[string]any)["pendingQuestion"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, promptToken, pendingQuestion["promptToken"])
-	_, hasLegacyField := pendingQuestion["questionId"]
+	require.NotEmpty(t, resp.Workspaces)
+
+	workspace := resp.Workspaces[0]
+	require.NotNil(t, workspace.PendingQuestion)
+	assert.Equal(t, promptToken, workspace.PendingQuestion.PromptToken)
+
+	var rawResp struct {
+		Workspaces []struct {
+			PendingQuestion map[string]json.RawMessage `json:"pendingQuestion"`
+		} `json:"workspaces"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &rawResp))
+	require.NotEmpty(t, rawResp.Workspaces)
+	_, hasLegacyField := rawResp.Workspaces[0].PendingQuestion["questionId"]
 	assert.False(t, hasLegacyField)
 
 	cancel()
@@ -3110,7 +3174,7 @@ func TestBuildWorkspaceFullStateWithEditedGoal(t *testing.T) {
 func TestBuildWorkspaceFullStateWithFreeformPending(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
-	attachSessionCoordinator(t, server, wsDir, state.Workflow{
+	attachRunningSessionCoordinator(t, server, wsDir, state.Workflow{
 		Status:       state.StatusWorking,
 		HumanMessage: "What should I do next?",
 		CurrentAgent: "builder",
@@ -3153,7 +3217,7 @@ func TestBuildWorkspaceFullStateWithLogLines(t *testing.T) {
 func TestBuildWorkspaceFullStateWithMultiChoicePendingQuestion(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
-	attachSessionCoordinator(t, server, wsDir, state.Workflow{
+	attachRunningSessionCoordinator(t, server, wsDir, state.Workflow{
 		Status: state.StatusWorking,
 		MultiChoiceQuestion: &state.MultiChoiceQuestion{
 			Questions: []state.QuestionItem{
@@ -3206,7 +3270,7 @@ func TestBuildWorkspaceFullStateWithProgress(t *testing.T) {
 func TestBuildWorkspaceFullStateWithWorkGatePending(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
-	attachSessionCoordinator(t, server, wsDir, state.Workflow{
+	attachRunningSessionCoordinator(t, server, wsDir, state.Workflow{
 		Status: state.StatusWorking,
 		MultiChoiceQuestion: &state.MultiChoiceQuestion{
 			IsWorkGate: true,
@@ -4621,6 +4685,23 @@ func TestGetWorkspaceStatusComplete(t *testing.T) {
 	running, needsInput := srv.getWorkspaceStatus(dir)
 	assert.False(t, running)
 	assert.False(t, needsInput)
+}
+
+func TestGetWorkspaceStatusPreservesWorkingStatusOnDisk(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0o755))
+
+	stopCachedSession(t, srv, dir, state.Workflow{Status: state.StatusComplete})
+	writeWorkflowStateToDisk(t, dir, state.Workflow{
+		Status: state.StatusWorking,
+		Task:   "resume me",
+	})
+
+	running, needsInput := srv.getWorkspaceStatus(dir)
+	assert.False(t, running)
+	assert.False(t, needsInput)
+	assert.Equal(t, state.StatusWorking, workflowStateFromDisk(t, dir).Status)
 }
 
 func TestHandleAPIRespondViaHTTP(t *testing.T) {
@@ -6142,4 +6223,85 @@ func TestHandleAPIAttachWorkspaceWithGoal(t *testing.T) {
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/attach", `{"path": "`+extDir+`"}`)
 	assert.Equal(t, http.StatusCreated, w.Code)
 	assert.Contains(t, w.Body.String(), `"hasGoal":true`)
+}
+
+func TestHandleAPIResetSessionSuccess(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, rootDir, "reset-success-ws")
+	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0644))
+
+	sp := filepath.Join(wsDir, ".sgai", "state.json")
+	coord, errCoord := state.NewCoordinatorWith(sp, state.Workflow{
+		Status: state.StatusWorking,
+	})
+	require.NoError(t, errCoord)
+
+	server.mu.Lock()
+	server.sessions[wsDir] = &session{coord: coord, running: false}
+	server.mu.Unlock()
+
+	w := serveHTTP(server, "POST", "/api/v1/workspaces/reset-success-ws/reset", "")
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"status":"complete"`)
+	assert.Contains(t, w.Body.String(), `"message":"session reset successfully"`)
+
+	wf := workflowStateFromDisk(t, wsDir)
+	assert.Equal(t, state.StatusComplete, wf.Status)
+}
+
+func TestHandleAPIResetSessionRunning(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, rootDir, "reset-running-ws")
+	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0644))
+
+	sp := filepath.Join(wsDir, ".sgai", "state.json")
+	coord, errCoord := state.NewCoordinatorWith(sp, state.Workflow{
+		Status: state.StatusWorking,
+	})
+	require.NoError(t, errCoord)
+
+	server.mu.Lock()
+	server.sessions[wsDir] = &session{coord: coord, running: true}
+	server.mu.Unlock()
+
+	w := serveHTTP(server, "POST", "/api/v1/workspaces/reset-running-ws/reset", "")
+	assert.Equal(t, http.StatusConflict, w.Code)
+	assert.Contains(t, w.Body.String(), "cannot reset while session is running")
+}
+
+func TestHandleAPIResetSessionNoState(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, rootDir, "reset-nostate-ws")
+	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0644))
+
+	w := serveHTTP(server, "POST", "/api/v1/workspaces/reset-nostate-ws/reset", "")
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"status":"complete"`)
+
+	coord := server.workspaceCoordinator(wsDir)
+	wf := coord.State()
+	assert.Equal(t, state.StatusComplete, wf.Status)
+}
+
+func TestHandleAPIResetSessionAlreadyComplete(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, rootDir, "reset-complete-ws")
+	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0644))
+
+	sp := filepath.Join(wsDir, ".sgai", "state.json")
+	coord, errCoord := state.NewCoordinatorWith(sp, state.Workflow{
+		Status: state.StatusComplete,
+	})
+	require.NoError(t, errCoord)
+
+	server.mu.Lock()
+	server.sessions[wsDir] = &session{coord: coord, running: false}
+	server.mu.Unlock()
+
+	w := serveHTTP(server, "POST", "/api/v1/workspaces/reset-complete-ws/reset", "")
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"status":"complete"`)
+
+	wf := workflowStateFromDisk(t, wsDir)
+	assert.Equal(t, state.StatusComplete, wf.Status)
 }

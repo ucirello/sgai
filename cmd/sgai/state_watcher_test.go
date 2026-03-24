@@ -422,20 +422,23 @@ func TestPollWorkspaceStatesWithMultipleWorkspaces(t *testing.T) {
 	wsDir1 := setupTestWorkspace(t, rootDir, "poll-ws1")
 	wsDir2 := setupTestWorkspace(t, rootDir, "poll-ws2")
 	sp1 := filepath.Join(wsDir1, ".sgai", "state.json")
-	sp2 := filepath.Join(wsDir2, ".sgai", "state.json")
 	_, errCoord1 := state.NewCoordinatorWith(sp1, state.Workflow{
 		Status: state.StatusComplete,
 	})
 	require.NoError(t, errCoord1)
-	_, errCoord2 := state.NewCoordinatorWith(sp2, state.Workflow{
+
+	stopCachedSession(t, srv, wsDir2, state.Workflow{Status: state.StatusComplete})
+	writeWorkflowStateToDisk(t, wsDir2, state.Workflow{
 		Status: state.StatusWorking,
 		Task:   "building",
 	})
-	require.NoError(t, errCoord2)
 
 	snapshots := make(map[string]workspaceStateSnapshot)
 	srv.pollWorkspaceStates(snapshots)
 	assert.NotEmpty(t, snapshots)
+	assert.Equal(t, state.StatusComplete, snapshots[wsDir1].status)
+	assert.Equal(t, state.StatusWorking, snapshots[wsDir2].status)
+	assert.Equal(t, state.StatusWorking, workflowStateFromDisk(t, wsDir2).Status)
 }
 
 func TestPollWorkspaceStatesCleanupRemoved(t *testing.T) {

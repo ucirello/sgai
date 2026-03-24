@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -397,26 +398,60 @@ func TestWatchForTriggerCancelledContext(t *testing.T) {
 	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{})
 	require.NoError(t, errCoord)
 
-	result := watchForTrigger(ctx, dir, coord, "checksum123", 0, "")
+	result := watchForTrigger(ctx, dir, coord, 0, "")
 	assert.Equal(t, triggerNone, result)
 }
 
-func TestWatchForTriggerGoalChanged(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func TestWatchForTriggerIgnoresGoalChanges(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
 	require.NoError(t, os.MkdirAll(sgaiDir, 0755))
 	goalPath := filepath.Join(dir, "GOAL.md")
-	require.NoError(t, os.WriteFile(goalPath, []byte("# Goal version 2"), 0644))
+	require.NoError(t, os.WriteFile(goalPath, []byte("# Goal version 1"), 0644))
 
 	statePath := filepath.Join(sgaiDir, "state.json")
 	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{})
 	require.NoError(t, errCoord)
 
-	result := watchForTrigger(ctx, dir, coord, "stale-checksum", 0, "")
-	assert.Equal(t, triggerGoal, result)
+	pollStarted := make(chan struct{})
+	var notifyPollStart sync.Once
+
+	resultCh := make(chan triggerKind, 1)
+	go func() {
+		resultCh <- watchForTriggerWithAfter(ctx, dir, coord, 0, "", func(d time.Duration) <-chan time.Time {
+			notifyPollStart.Do(func() {
+				close(pollStarted)
+			})
+			return time.After(d)
+		})
+	}()
+
+	select {
+	case <-pollStarted:
+	case <-time.After(time.Second):
+		t.Fatal("watchForTrigger() did not enter its wait loop")
+	}
+
+	require.NoError(t, os.WriteFile(goalPath, []byte("# Goal version 2"), 0644))
+
+	goalChangeObservationWindow := continuousModePollInterval + time.Second
+	select {
+	case result := <-resultCh:
+		t.Fatalf("watchForTrigger() returned %q after GOAL.md changed; want it to keep waiting until cancellation", result)
+	case <-time.After(goalChangeObservationWindow):
+	}
+
+	cancel()
+
+	select {
+	case result := <-resultCh:
+		assert.Equal(t, triggerNone, result)
+	case <-time.After(time.Second):
+		t.Fatal("watchForTrigger() did not return after cancellation")
+	}
 }
 
 func TestWatchForTriggerSteeringMessage(t *testing.T) {
@@ -426,11 +461,7 @@ func TestWatchForTriggerSteeringMessage(t *testing.T) {
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
 	require.NoError(t, os.MkdirAll(sgaiDir, 0755))
-	goalPath := filepath.Join(dir, "GOAL.md")
-	require.NoError(t, os.WriteFile(goalPath, []byte("# Goal"), 0644))
-
-	checksum, errChecksum := computeGoalChecksum(goalPath)
-	require.NoError(t, errChecksum)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("# Goal"), 0644))
 
 	statePath := filepath.Join(sgaiDir, "state.json")
 	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
@@ -440,7 +471,7 @@ func TestWatchForTriggerSteeringMessage(t *testing.T) {
 	})
 	require.NoError(t, errCoord)
 
-	result := watchForTrigger(ctx, dir, coord, checksum, 0, "")
+	result := watchForTrigger(ctx, dir, coord, 0, "")
 	assert.Equal(t, triggerSteering, result)
 }
 
@@ -451,17 +482,13 @@ func TestWatchForTriggerAutoTimer(t *testing.T) {
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
 	require.NoError(t, os.MkdirAll(sgaiDir, 0755))
-	goalPath := filepath.Join(dir, "GOAL.md")
-	require.NoError(t, os.WriteFile(goalPath, []byte("# Goal"), 0644))
-
-	checksum, errChecksum := computeGoalChecksum(goalPath)
-	require.NoError(t, errChecksum)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("# Goal"), 0644))
 
 	statePath := filepath.Join(sgaiDir, "state.json")
 	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{})
 	require.NoError(t, errCoord)
 
-	result := watchForTrigger(ctx, dir, coord, checksum, 1*time.Millisecond, "")
+	result := watchForTrigger(ctx, dir, coord, 1*time.Millisecond, "")
 	assert.Equal(t, triggerAuto, result)
 }
 
@@ -472,17 +499,13 @@ func TestWatchForTriggerCronWithAutoFallback(t *testing.T) {
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
 	require.NoError(t, os.MkdirAll(sgaiDir, 0755))
-	goalPath := filepath.Join(dir, "GOAL.md")
-	require.NoError(t, os.WriteFile(goalPath, []byte("# Goal"), 0644))
-
-	checksum, errChecksum := computeGoalChecksum(goalPath)
-	require.NoError(t, errChecksum)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("# Goal"), 0644))
 
 	statePath := filepath.Join(sgaiDir, "state.json")
 	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{})
 	require.NoError(t, errCoord)
 
-	result := watchForTrigger(ctx, dir, coord, checksum, 1*time.Millisecond, "* * * * *")
+	result := watchForTrigger(ctx, dir, coord, 1*time.Millisecond, "* * * * *")
 	assert.Equal(t, triggerAuto, result)
 }
 
@@ -493,23 +516,18 @@ func TestWatchForTriggerInvalidCronExpression(t *testing.T) {
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
 	require.NoError(t, os.MkdirAll(sgaiDir, 0755))
-	goalPath := filepath.Join(dir, "GOAL.md")
-	require.NoError(t, os.WriteFile(goalPath, []byte("# Goal"), 0644))
-
-	checksum, errChecksum := computeGoalChecksum(goalPath)
-	require.NoError(t, errChecksum)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("# Goal"), 0644))
 
 	statePath := filepath.Join(sgaiDir, "state.json")
 	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{})
 	require.NoError(t, errCoord)
 
-	result := watchForTrigger(ctx, dir, coord, checksum, 1*time.Millisecond, "invalid cron")
+	result := watchForTrigger(ctx, dir, coord, 1*time.Millisecond, "invalid cron")
 	assert.Equal(t, triggerAuto, result)
 }
 
 func TestTriggerKindConstants(t *testing.T) {
 	assert.Equal(t, triggerKind(""), triggerNone)
-	assert.Equal(t, triggerKind("goal-changed"), triggerGoal)
 	assert.Equal(t, triggerKind("steering-message"), triggerSteering)
 	assert.Equal(t, triggerKind("auto-timer"), triggerAuto)
 	assert.Equal(t, triggerKind("cron-schedule"), triggerCron)

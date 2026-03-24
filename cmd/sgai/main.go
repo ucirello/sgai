@@ -5,9 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"embed"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1227,17 +1225,6 @@ func initializeJJ(dir string) error {
 	return nil
 }
 
-func computeGoalChecksum(goalPath string) (string, error) {
-	data, err := os.ReadFile(goalPath)
-	if err != nil {
-		return "", err
-	}
-
-	body := extractBody(data)
-	hash := sha256.Sum256(body)
-	return hex.EncodeToString(hash[:]), nil
-}
-
 func extractBody(content []byte) []byte {
 	delimiter := []byte("---")
 
@@ -1742,12 +1729,9 @@ func updateProjectManagementWithRetrospectiveDir(pmPath, retrospectiveDirRel str
 	return nil
 }
 
-// canResumeWorkflow determines if an existing workflow can be resumed based on
-// the current state and whether the GOAL.md checksum matches the stored checksum.
-func canResumeWorkflow(wfState state.Workflow, currentGoalChecksum string) bool {
-	if wfState.GoalChecksum != currentGoalChecksum {
-		return false
-	}
+// canResumeWorkflow determines if an existing workflow can be resumed
+// based on the current workflow state.
+func canResumeWorkflow(wfState state.Workflow) bool {
 	return wfState.Status == state.StatusWorking ||
 		wfState.Status == state.StatusAgentDone ||
 		wfState.NeedsHumanInput()

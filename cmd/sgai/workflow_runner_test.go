@@ -164,7 +164,7 @@ func TestHandleTrigger(t *testing.T) {
 		goalPath := filepath.Join(dir, "GOAL.md")
 		require.NoError(t, os.WriteFile(goalPath, []byte("# Goal"), 0o644))
 
-		r.handleTrigger(triggerGoal, goalPath)
+		r.handleTrigger(triggerAuto, goalPath)
 	})
 
 	t.Run("steeringNoMessages", func(t *testing.T) {

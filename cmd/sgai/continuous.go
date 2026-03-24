@@ -20,7 +20,6 @@ type triggerKind string
 
 const (
 	triggerNone     triggerKind = ""
-	triggerGoal     triggerKind = "goal-changed"
 	triggerSteering triggerKind = "steering-message"
 	triggerAuto     triggerKind = "auto-timer"
 	triggerCron     triggerKind = "cron-schedule"
@@ -69,8 +68,11 @@ func runContinuousModePrompt(ctx context.Context, dir string, prompt string, mcp
 	updateContinuousModeProgress(coord, "continuous mode prompt failed after all retries, proceeding to watch loop")
 }
 
-func watchForTrigger(ctx context.Context, dir string, coord *state.Coordinator, lastChecksum string, autoDuration time.Duration, cronExpr string) triggerKind {
-	goalPath := filepath.Join(dir, "GOAL.md")
+func watchForTrigger(ctx context.Context, dir string, coord *state.Coordinator, autoDuration time.Duration, cronExpr string) triggerKind {
+	return watchForTriggerWithAfter(ctx, dir, coord, autoDuration, cronExpr, time.After)
+}
+
+func watchForTriggerWithAfter(ctx context.Context, dir string, coord *state.Coordinator, autoDuration time.Duration, cronExpr string, after func(time.Duration) <-chan time.Time) triggerKind {
 	stateJSONPath := filepath.Join(dir, ".sgai", "state.json")
 
 	var deadline time.Time
@@ -96,15 +98,7 @@ func watchForTrigger(ctx context.Context, dir string, coord *state.Coordinator, 
 		select {
 		case <-ctx.Done():
 			return triggerNone
-		case <-time.After(continuousModePollInterval):
-		}
-
-		currentChecksum, errChecksum := computeGoalChecksum(goalPath)
-		if errChecksum != nil {
-			continue
-		}
-		if currentChecksum != lastChecksum {
-			return triggerGoal
+		case <-after(continuousModePollInterval):
 		}
 
 		freshCoord, errFresh := state.NewCoordinator(stateJSONPath)

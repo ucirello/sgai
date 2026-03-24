@@ -150,7 +150,6 @@ type Workflow struct {
 	HumanMessage        string               `json:"humanMessage"`
 	MultiChoiceQuestion *MultiChoiceQuestion `json:"multiChoiceQuestion,omitempty"`
 	Messages            []Message            `json:"messages"`
-	GoalChecksum        string               `json:"goalChecksum"`
 	VisitCounts         map[string]int       `json:"visitCounts,omitempty"`
 	CurrentAgent        string               `json:"currentAgent,omitempty"`
 	Todos               []TodoItem           `json:"todos,omitempty"`
