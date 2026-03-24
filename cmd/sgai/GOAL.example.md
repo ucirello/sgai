@@ -1,4 +1,6 @@
 ---
+# Required: this is the repository title shown in the UI.
+title: Title shown in the UI
 flow: |
   "go-developer" -> "go-reviewer"
   "react-developer" -> "react-reviewer"
@@ -21,9 +23,7 @@ models:
   # "go-developer-lite": "anthropic/claude-haiku-4-5"
 ---
 
-# Title of your Goal
-
-One or two paragraphs explaining what you want to do.
+One or two paragraphs explaining what you want to do. The `title` above is the only user-facing repository label. If `GOAL.md` is missing or has no frontmatter, SGAI falls back to the repository directory name instead of deriving a label from markdown headings.
 
 - [ ] a list of verifiable checks to help agents to communicate their progress
   - [ ] they can even be nested

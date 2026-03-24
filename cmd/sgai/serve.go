@@ -110,24 +110,15 @@ func scanForProjects(rootDir string) ([]project, error) {
 }
 
 func stripFrontmatter(content string) string {
-	delimiter := "---"
-
-	if !strings.HasPrefix(content, delimiter) {
+	sections, errSplit := splitFrontmatterSections([]byte(content))
+	if errSplit != nil {
 		return content
 	}
-
-	rest := content[len(delimiter):]
-	if len(rest) > 0 && rest[0] == '\n' {
-		rest = rest[1:]
+	after := sections.after
+	for bytes.HasPrefix(after, sections.lineEnding) {
+		after = after[len(sections.lineEnding):]
 	}
-
-	_, after, ok := strings.Cut(rest, delimiter)
-	if !ok {
-		return content
-	}
-
-	afterClosing := after
-	return strings.TrimLeft(afterClosing, "\n")
+	return string(after)
 }
 
 type session struct {
@@ -264,6 +255,13 @@ type Server struct {
 	stateFlight         singleflight[string, apiFactoryState]
 	stateCache          *ttlCache[string, apiFactoryState]
 	stateGeneration     uint64
+
+	goalTitleComposer      func(workspacePath string, goalContent []byte) (string, error)
+	goalTitleReadFile      func(path string) ([]byte, error)
+	goalTitleRepairMu      sync.Mutex
+	goalTitleRepairQueue   []string
+	goalTitleRepairQueued  map[string]struct{}
+	goalTitleRepairRunning bool
 }
 
 // NewServer creates a new Server with the supplied config paths and editor configuration.
@@ -284,25 +282,28 @@ func NewServer(rootDir string, paths serverPaths, editorConfig string) *Server {
 		}
 	}
 	return &Server{
-		sessions:           make(map[string]*session),
-		everStartedDirs:    make(map[string]bool),
-		pinnedDirs:         make(map[string]bool),
-		pinnedConfigDir:    paths.pinnedConfigDir,
-		externalDirs:       make(map[string]bool),
-		externalConfigDir:  paths.externalConfigDir,
-		adhocStates:        make(map[string]*adhocPromptState),
-		shutdownCtx:        context.Background(),
-		signals:            newSignalBroker(),
-		composerSessions:   make(map[string]*composerSession),
-		rootDir:            absRootDir,
-		editorAvailable:    editorAvail,
-		isTerminalEditor:   editor.isTerminal,
-		editorName:         editor.name,
-		editor:             editor,
-		workspaceScanCache: newTTLCache[string, []workspaceGroup](3 * time.Second),
-		classifyCache:      newTTLCache[string, workspaceKind](5 * time.Second),
-		svgCache:           newTTLCache[string, string](10 * time.Second),
-		stateCache:         newTTLCache[string, apiFactoryState](30 * time.Second),
+		sessions:              make(map[string]*session),
+		everStartedDirs:       make(map[string]bool),
+		pinnedDirs:            make(map[string]bool),
+		pinnedConfigDir:       paths.pinnedConfigDir,
+		externalDirs:          make(map[string]bool),
+		externalConfigDir:     paths.externalConfigDir,
+		adhocStates:           make(map[string]*adhocPromptState),
+		shutdownCtx:           context.Background(),
+		signals:               newSignalBroker(),
+		composerSessions:      make(map[string]*composerSession),
+		rootDir:               absRootDir,
+		editorAvailable:       editorAvail,
+		isTerminalEditor:      editor.isTerminal,
+		editorName:            editor.name,
+		editor:                editor,
+		workspaceScanCache:    newTTLCache[string, []workspaceGroup](3 * time.Second),
+		classifyCache:         newTTLCache[string, workspaceKind](5 * time.Second),
+		svgCache:              newTTLCache[string, string](10 * time.Second),
+		stateCache:            newTTLCache[string, apiFactoryState](30 * time.Second),
+		goalTitleComposer:     defaultGoalTitleComposer,
+		goalTitleReadFile:     os.ReadFile,
+		goalTitleRepairQueued: make(map[string]struct{}),
 	}
 }
 

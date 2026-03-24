@@ -1,9 +1,14 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCountAttention(t *testing.T) {
@@ -244,50 +249,50 @@ func TestFormatMenuItemLabel(t *testing.T) {
 		{
 			name: "needsInput",
 			item: menuBarItem{
-				name:        "workspace",
-				description: "Test Goal",
-				needsInput:  true,
+				name:       "workspace",
+				title:      "Test Goal",
+				needsInput: true,
 			},
 			expected: "\u26A0 Test Goal (Needs Input)",
 		},
 		{
 			name: "runningAndPinned",
 			item: menuBarItem{
-				name:        "workspace",
-				description: "Test Goal",
-				running:     true,
-				pinned:      true,
+				name:    "workspace",
+				title:   "Test Goal",
+				running: true,
+				pinned:  true,
 			},
 			expected: "\u25B6 Test Goal (Running)",
 		},
 		{
 			name: "pinnedOnly",
 			item: menuBarItem{
-				name:        "workspace",
-				description: "Test Goal",
-				pinned:      true,
+				name:   "workspace",
+				title:  "Test Goal",
+				pinned: true,
 			},
 			expected: "\u25CB Test Goal",
 		},
 		{
 			name: "stopped",
 			item: menuBarItem{
-				name:        "workspace",
-				description: "Test Goal",
-				stopped:     true,
+				name:    "workspace",
+				title:   "Test Goal",
+				stopped: true,
 			},
 			expected: "\u25A0 Test Goal (Stopped)",
 		},
 		{
 			name: "default",
 			item: menuBarItem{
-				name:        "workspace",
-				description: "Test Goal",
+				name:  "workspace",
+				title: "Test Goal",
 			},
 			expected: "Test Goal",
 		},
 		{
-			name: "noDescription",
+			name: "noTitle",
 			item: menuBarItem{
 				name: "workspace",
 			},
@@ -421,4 +426,26 @@ func TestFilterVisibleItemsResult(t *testing.T) {
 	}
 	filtered := filterVisibleItems(items)
 	assert.Len(t, filtered, 3)
+}
+
+func TestToMenuBarItemRepairsMissingGoalTitle(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	goalPath := filepath.Join(wsDir, "GOAL.md")
+	require.NoError(t, os.WriteFile(goalPath, []byte("---\nflow: test\n---\n# Improve Menu Title"), 0o644))
+
+	server.goalTitleComposer = func(_ string, _ []byte) (string, error) {
+		return "Menu Repair Title", nil
+	}
+
+	item := toMenuBarItem(server, workspaceInfo{DirName: "test-ws", Directory: wsDir})
+	assert.Equal(t, "test-ws", item.title)
+
+	require.Eventually(t, func() bool {
+		data, errRead := os.ReadFile(goalPath)
+		return errRead == nil && strings.Contains(string(data), "title: Menu Repair Title")
+	}, time.Second, 10*time.Millisecond)
+
+	item = toMenuBarItem(server, workspaceInfo{DirName: "test-ws", Directory: wsDir})
+	assert.Equal(t, "Menu Repair Title", item.title)
 }

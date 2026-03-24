@@ -96,17 +96,19 @@ Most users create goals using the built-in wizard.
 
 Goals are stored in `GOAL.md` and describe outcomes — not implementation steps.
 
+The frontmatter `title` is the only user-facing repository label. If `GOAL.md` is missing or has no frontmatter, SGAI falls back to the repository directory name instead of deriving a label from markdown headings or description text.
+
 **Example GOAL.md:**
 
 ```markdown
 ---
+# Required: this is the repository title shown in the UI.
+title: Build a REST API
 flow: |
   "backend-developer" -> "code-reviewer"
 completionGateScript: make test
 interactive: yes
 ---
-
-# Build a REST API
 
 Create endpoints for user registration and login with JWT auth.
 
@@ -119,10 +121,11 @@ See [GOAL.example.md](GOAL.example.md) for full reference.
 
 **Agent Aliases:**
 
-You can create agent aliases that reuse an existing agent's prompt and tools with a different model. This lets you run the same agent role at different cost/capability tiers:
+You can create agent aliases that reuse an existing agent's prompt and tools with a different model. This lets you run the same agent role at different cost/capability tiers. The `title` field is still required because it remains the user-facing repository label:
 
 ```markdown
 ---
+title: Build a REST API (Lite)
 flow: |
   "go-developer-lite" -> "go-reviewer"
 alias:

@@ -7,7 +7,8 @@ export interface ApiWorkspaceEntry {
   pinned: boolean;
   isRoot: boolean;
   isFork: boolean;
-  description: string;
+  title: string;
+  computedTitle?: string;
   status: string;
   badgeClass: string;
   badgeText: string;
@@ -265,7 +266,8 @@ export interface ApiForkEntry {
   needsInput: boolean;
   inProgress: boolean;
   pinned: boolean;
-  description: string;
+  title: string;
+  computedTitle?: string;
 }
 
 export interface ApiComposerAgentConf {

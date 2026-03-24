@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
-import { act, render, screen, waitFor, cleanup } from "@testing-library/react";
+import { act, render, screen, waitFor, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route, createMemoryRouter, RouterProvider } from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -30,7 +30,8 @@ const createMockWorkspace = (overrides = {}) => ({
   pinned: false,
   isRoot: false,
   isFork: false,
-  description: "Test Workspace",
+  title: "Test Workspace Title",
+  computedTitle: "",
   status: "",
   badgeClass: "",
   badgeText: "",
@@ -245,7 +246,7 @@ describe("WorkspaceDetail", () => {
           needsInput: false,
           inProgress: false,
           pinned: false,
-          description: "Fork 1",
+          title: "Fork 1",
         }],
         actions: [{
           name: "Run Tests",
@@ -260,33 +261,33 @@ describe("WorkspaceDetail", () => {
       renderWorkspaceDetailRouter("/workspaces/test-workspace/forks");
 
       await waitFor(() => {
-        expect(screen.getByRole("button", { name: "Run Tests for fork test-workspace-fork" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Run Tests for fork Fork 1" })).toBeTruthy();
       });
 
-      await user.click(screen.getByRole("button", { name: "Run Tests for fork test-workspace-fork" }));
+      await user.click(screen.getByRole("button", { name: "Run Tests for fork Fork 1" }));
 
       expect(mockStartActionRun).toHaveBeenCalledWith("Run Tests", {}, "test-workspace-fork");
     });
 
     it("gives repeated fork-row icon buttons unique accessible names", async () => {
-      const firstFork = {
-        name: "test-workspace-fork",
-        dir: "/path/to/test-workspace-fork",
-        running: false,
-        needsInput: false,
-        inProgress: false,
-        pinned: false,
-        description: "Fork 1",
-      };
-      const secondFork = {
-        name: "second-workspace-fork",
-        dir: "/path/to/second-workspace-fork",
-        running: false,
-        needsInput: false,
-        inProgress: false,
-        pinned: false,
-        description: "Fork 2",
-      };
+        const firstFork = {
+          name: "test-workspace-fork",
+          dir: "/path/to/test-workspace-fork",
+          running: false,
+          needsInput: false,
+          inProgress: false,
+          pinned: false,
+          title: "Fork 1",
+        };
+        const secondFork = {
+          name: "second-workspace-fork",
+          dir: "/path/to/second-workspace-fork",
+          running: false,
+          needsInput: false,
+          inProgress: false,
+          pinned: false,
+          title: "Fork 2",
+        };
 
       mockWorkspaces = [createMockWorkspace({
         isRoot: true,
@@ -296,14 +297,14 @@ describe("WorkspaceDetail", () => {
       renderWorkspaceDetailRouter("/workspaces/test-workspace/forks");
 
       await waitFor(() => {
-        expect(screen.getByRole("button", { name: "Respond to fork test-workspace-fork" })).toBeTruthy();
-        expect(screen.getByRole("button", { name: "Open fork test-workspace-fork in Editor" })).toBeTruthy();
-        expect(screen.getByRole("button", { name: "Open fork test-workspace-fork in sgai" })).toBeTruthy();
-        expect(screen.getByRole("button", { name: "Delete fork test-workspace-fork" })).toBeTruthy();
-        expect(screen.getByRole("button", { name: "Respond to fork second-workspace-fork" })).toBeTruthy();
-        expect(screen.getByRole("button", { name: "Open fork second-workspace-fork in Editor" })).toBeTruthy();
-        expect(screen.getByRole("button", { name: "Open fork second-workspace-fork in sgai" })).toBeTruthy();
-        expect(screen.getByRole("button", { name: "Delete fork second-workspace-fork" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Respond to fork Fork 1" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Open fork Fork 1 in Editor" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Open fork Fork 1 in sgai" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Delete fork Fork 1" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Respond to fork Fork 2" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Open fork Fork 2 in Editor" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Open fork Fork 2 in sgai" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Delete fork Fork 2" })).toBeTruthy();
       });
     });
 
@@ -316,7 +317,7 @@ describe("WorkspaceDetail", () => {
         needsInput: false,
         inProgress: false,
         pinned: false,
-        description: "Needs Input Fork",
+        title: "Needs Input Fork",
       };
       const plainFork = {
         name: "plain-fork",
@@ -325,7 +326,7 @@ describe("WorkspaceDetail", () => {
         needsInput: false,
         inProgress: false,
         pinned: false,
-        description: "Plain Fork",
+        title: "Plain Fork",
       };
 
       mockWorkspaces = [
@@ -339,22 +340,22 @@ describe("WorkspaceDetail", () => {
 
       renderWorkspaceDetailRouter("/workspaces/test-workspace/forks");
 
-      await user.click(await screen.findByRole("button", { name: "Respond to fork needs-input-fork" }));
+      await user.click(await screen.findByRole("button", { name: "Respond to fork Needs Input Fork" }));
       expect(mockNavigate).toHaveBeenCalledWith("/workspaces/needs-input-fork/respond");
 
-      await user.click(screen.getByRole("button", { name: "Open fork plain-fork in Editor" }));
+      await user.click(screen.getByRole("button", { name: "Open fork Plain Fork in Editor" }));
 
       await waitFor(() => {
         expect(mockOpenEditor).toHaveBeenCalledWith("plain-fork");
       });
 
-      await user.click(screen.getByRole("button", { name: "Open fork plain-fork in sgai" }));
+      await user.click(screen.getByRole("button", { name: "Open fork Plain Fork in sgai" }));
       expect(mockNavigate).toHaveBeenCalledWith("/workspaces/plain-fork/progress");
 
-      await user.click(screen.getByRole("button", { name: "Delete fork plain-fork" }));
+      await user.click(screen.getByRole("button", { name: "Delete fork Plain Fork" }));
 
       await waitFor(() => {
-        expect(screen.getByText(/This will permanently delete ‘plain-fork’ from disk\./)).toBeTruthy();
+        expect(screen.getByText(/This will permanently delete ‘Plain Fork’ from disk\./)).toBeTruthy();
       });
     });
 
@@ -370,7 +371,7 @@ describe("WorkspaceDetail", () => {
           needsInput: false,
           inProgress: false,
           pinned: false,
-          description: "Fork 1",
+          title: "Fork 1",
         }],
       })];
 
@@ -401,15 +402,15 @@ describe("WorkspaceDetail", () => {
           needsInput: false,
           inProgress: false,
           pinned: false,
-          description: "Fork 1",
+          title: "Fork 1",
         }],
       })];
 
       renderWorkspaceDetailRouter("/workspaces/test-workspace/forks");
 
       await waitFor(() => {
-        expect(screen.getByRole("button", { name: "Run Tests for workspace test-workspace" }).hasAttribute("disabled")).toBe(true);
-        expect(screen.getByRole("button", { name: "Run Tests for fork test-workspace-fork" }).hasAttribute("disabled")).toBe(true);
+        expect(screen.getByRole("button", { name: "Run Tests for workspace Test Workspace Title" }).hasAttribute("disabled")).toBe(true);
+        expect(screen.getByRole("button", { name: "Run Tests for fork Fork 1" }).hasAttribute("disabled")).toBe(true);
       });
     });
   });
@@ -443,7 +444,7 @@ describe("WorkspaceDetail", () => {
       const nextWorkspaceTemplate = deferredValue<{ content: string }>();
       mockWorkspaces = [
         createMockWorkspace({ name: "test-workspace" }),
-        createMockWorkspace({ name: "next-workspace", description: "Next Workspace" }),
+        createMockWorkspace({ name: "next-workspace", title: "Next Workspace" }),
       ];
 
       mockForkTemplate.mockImplementation((workspaceName: string) => {
@@ -493,7 +494,7 @@ describe("WorkspaceDetail", () => {
     });
 
     it("lets forked roots open the fork editor", async () => {
-      mockWorkspaces = [createMockWorkspace({ isRoot: true, forks: [{ name: "test-workspace-fork", dir: "/path/to/test-workspace-fork", running: false, needsInput: false, inProgress: false, pinned: false, description: "Fork 1" }] })];
+      mockWorkspaces = [createMockWorkspace({ isRoot: true, forks: [{ name: "test-workspace-fork", dir: "/path/to/test-workspace-fork", running: false, needsInput: false, inProgress: false, pinned: false, title: "Fork 1" }] })];
 
       const { router } = renderWorkspaceDetailRouter("/workspaces/test-workspace/fork");
 
@@ -507,7 +508,7 @@ describe("WorkspaceDetail", () => {
     });
 
     it("redirects forked roots from progress routes to Forks", async () => {
-      mockWorkspaces = [createMockWorkspace({ isRoot: true, forks: [{ name: "test-workspace-fork", dir: "/path/to/test-workspace-fork", running: false, needsInput: false, inProgress: false, pinned: false, description: "Fork 1" }] })];
+      mockWorkspaces = [createMockWorkspace({ isRoot: true, forks: [{ name: "test-workspace-fork", dir: "/path/to/test-workspace-fork", running: false, needsInput: false, inProgress: false, pinned: false, title: "Fork 1" }] })];
 
       renderWorkspaceDetailRouter("/workspaces/test-workspace/progress");
 
@@ -765,31 +766,89 @@ describe("WorkspaceDetail", () => {
   });
 
   describe("delete functionality", () => {
-    it("shows Delete button when workspace is not running", async () => {
+    it("shows Delete workspace button when workspace is not running", async () => {
       renderWorkspaceDetail();
 
       await waitFor(() => {
-        const deleteButtons = screen.queryAllByText("Delete");
+        const deleteButtons = screen.queryAllByRole("button", { name: "Delete workspace" });
         expect(deleteButtons.length).toBeGreaterThan(0);
       });
     });
 
-    it("opens delete confirmation dialog", async () => {
+    it("opens the workspace deletion confirmation dialog", async () => {
       const user = userEvent.setup();
 
       renderWorkspaceDetail();
 
       await waitFor(() => {
-        const deleteButtons = screen.queryAllByText("Delete");
+        const deleteButtons = screen.queryAllByRole("button", { name: "Delete workspace" });
         expect(deleteButtons.length).toBeGreaterThan(0);
       });
 
-      const deleteButtons = screen.getAllByText("Delete");
+      const deleteButtons = screen.getAllByRole("button", { name: "Delete workspace" });
       await user.click(deleteButtons[0]);
 
       await waitFor(() => {
-        const deleteWorkspaceElements = screen.queryAllByText("Delete workspace");
-        expect(deleteWorkspaceElements.length).toBeGreaterThan(0);
+        const dialogs = screen.queryAllByRole("alertdialog");
+        expect(dialogs.length).toBeGreaterThan(0);
+        const dialog = dialogs[dialogs.length - 1];
+        expect(within(dialog).getByRole("heading", { name: "Delete workspace" })).toBeTruthy();
+        expect(within(dialog).getByText(/This will permanently delete 'Test Workspace Title' from disk\./)).toBeTruthy();
+        expect(within(dialog).getByRole("button", { name: "Delete workspace" })).toBeTruthy();
+      });
+    });
+
+    it("uses external removal copy on the detail page", async () => {
+      const user = userEvent.setup();
+      mockWorkspaces[0] = createMockWorkspace({
+        external: true,
+        title: "External Workspace Title",
+      });
+
+      renderWorkspaceDetail();
+
+      await waitFor(() => {
+        const removeButtons = screen.queryAllByRole("button", { name: "Remove" });
+        expect(removeButtons.length).toBeGreaterThan(0);
+      });
+
+      const removeButtons = screen.getAllByRole("button", { name: "Remove" });
+      await user.click(removeButtons[0]);
+
+      await waitFor(() => {
+        expect(screen.getByText("Detach workspace")).toBeTruthy();
+        expect(screen.getByText(/This will remove 'External Workspace Title' from the interface\./)).toBeTruthy();
+        const dialogs = screen.queryAllByRole("alertdialog");
+        expect(dialogs.length).toBeGreaterThan(0);
+        const dialog = dialogs[dialogs.length - 1];
+        expect(within(dialog).getByRole("button", { name: "Remove" })).toBeTruthy();
+      });
+    });
+
+    it("uses fork deletion copy on the detail page", async () => {
+      const user = userEvent.setup();
+      mockWorkspaces[0] = createMockWorkspace({
+        isFork: true,
+        title: "Fork Workspace Title",
+      });
+
+      renderWorkspaceDetail();
+
+      await waitFor(() => {
+        const deleteForkButtons = screen.queryAllByRole("button", { name: "Delete fork" });
+        expect(deleteForkButtons.length).toBeGreaterThan(0);
+      });
+
+      const deleteForkButtons = screen.getAllByRole("button", { name: "Delete fork" });
+      await user.click(deleteForkButtons[0]);
+
+      await waitFor(() => {
+        const dialogs = screen.queryAllByRole("alertdialog");
+        expect(dialogs.length).toBeGreaterThan(0);
+        const dialog = dialogs[dialogs.length - 1];
+        expect(within(dialog).getByRole("heading", { name: "Delete fork" })).toBeTruthy();
+        expect(within(dialog).getByText(/This will permanently delete 'Fork Workspace Title' from disk\./)).toBeTruthy();
+        expect(within(dialog).getByRole("button", { name: "Delete fork" })).toBeTruthy();
       });
     });
   });
@@ -936,14 +995,14 @@ describe("WorkspaceDetail", () => {
   });
 
   describe("workspace information display", () => {
-    it("displays workspace description", async () => {
-      mockWorkspaces[0] = createMockWorkspace({ description: "My Test Workspace" });
+    it("displays workspace title", async () => {
+      mockWorkspaces[0] = createMockWorkspace({ title: "My Test Workspace Title" });
 
       renderWorkspaceDetail();
 
       await waitFor(() => {
-        const descriptionElements = screen.queryAllByText("My Test Workspace");
-        expect(descriptionElements.length).toBeGreaterThan(0);
+        const titleElements = screen.queryAllByText("My Test Workspace Title");
+        expect(titleElements.length).toBeGreaterThan(0);
       });
     });
 

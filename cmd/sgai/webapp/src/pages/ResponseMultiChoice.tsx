@@ -11,6 +11,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ResponseContext } from "@/components/ResponseContext";
 import { QuestionBlock } from "@/components/QuestionBlock";
 import { useResponseForm } from "@/hooks/useResponseForm";
+import { getRepositoryTitle } from "@/lib/repository-title";
 
 const STORAGE_PREFIX = "sgai-response-";
 
@@ -114,6 +115,8 @@ export function ResponseMultiChoice() {
 
   if (!question) return null;
 
+  const workspaceLabel = getRepositoryTitle(workspaceDetail ?? { name: workspaceName });
+
   return (
     <div className="max-w-2xl mx-auto">
       <Card>
@@ -130,7 +133,7 @@ export function ResponseMultiChoice() {
           {workspaceDetail?.name && (
             <div>
               <p className="text-base font-semibold" data-testid="workspace-name">
-                {workspaceDetail.name}
+                {workspaceLabel}
               </p>
 
             </div>

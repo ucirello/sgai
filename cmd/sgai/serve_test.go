@@ -1006,11 +1006,58 @@ func TestDashboardBaseURLVariants(t *testing.T) {
 }
 
 func TestStripFrontmatterVariantsExtended(t *testing.T) {
-	assert.Equal(t, "Hello world", stripFrontmatter("Hello world"))
-	got := stripFrontmatter("---\ntitle: test\n---\nBody content")
-	assert.Contains(t, got, "Body content")
-	got2 := stripFrontmatter("---\n---\nBody")
-	assert.Contains(t, got2, "Body")
+	tests := []struct {
+		name     string
+		content  string
+		expected string
+	}{
+		{
+			name:     "noFrontmatter",
+			content:  "Hello world",
+			expected: "Hello world",
+		},
+		{
+			name:     "simpleFrontmatter",
+			content:  "---\ntitle: test\n---\nBody content",
+			expected: "Body content",
+		},
+		{
+			name:     "emptyFrontmatter",
+			content:  "---\n---\nBody",
+			expected: "Body",
+		},
+		{
+			name: "quotedDelimiterInFrontmatter",
+			content: `---
+title: "Quoted --- Title"
+summary: example
+---
+Body content`,
+			expected: "Body content",
+		},
+		{
+			name: "blockScalarDelimiterInFrontmatter",
+			content: `---
+summary: |
+  first line
+  ---
+  second line
+---
+Body content`,
+			expected: "Body content",
+		},
+		{
+			name:     "crlfFrontmatter",
+			content:  "---\r\ntitle: \"Quoted --- Title\"\r\nsummary: |\r\n  first line\r\n  ---\r\n  second line\r\n---\r\nBody content",
+			expected: "Body content",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, stripFrontmatter(tt.content))
+		})
+	}
 }
 
 func TestExtractSubjectVariants(t *testing.T) {

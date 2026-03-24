@@ -16,7 +16,8 @@ const createMockWorkspace = (overrides: Record<string, unknown> = {}) => ({
   pinned: false,
   isRoot: true,
   isFork: false,
-  description: "Workspace 1",
+  title: "Workspace One Title",
+  computedTitle: "",
   status: "",
   badgeClass: "",
   badgeText: "",
@@ -110,7 +111,7 @@ describe("ForksTab", () => {
             needsInput: false,
             inProgress: false,
             pinned: false,
-            description: "Fork 1",
+            title: "Fork One Title",
           },
         ],
       }),
@@ -124,7 +125,7 @@ describe("ForksTab", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByText("Fork 1")).toBeTruthy();
+    expect(screen.getByText("Fork One Title")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /expand commits/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /collapse commits/i })).toBeNull();
   });

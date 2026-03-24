@@ -20,7 +20,8 @@ const createMockWorkspace = (overrides: Record<string, unknown> = {}) => ({
   pinned: false,
   isRoot: false,
   isFork: false,
-  description: "",
+  title: "",
+  computedTitle: "",
   status: "",
   badgeClass: "",
   badgeText: "",
@@ -56,7 +57,7 @@ const mockWorkspaces = [
   createMockWorkspace({
     name: "workspace-1",
     dir: "/path/to/workspace-1",
-    description: "Test Workspace 1",
+    title: "Workspace One Title",
   }),
   createMockWorkspace({
     name: "workspace-2",
@@ -65,7 +66,7 @@ const mockWorkspaces = [
     inProgress: true,
     pinned: true,
     isRoot: true,
-    description: "Test Workspace 2",
+    title: "Workspace Two Title",
     currentAgent: "coordinator",
     currentModel: "opencode/glm-5",
     task: "Working on task",
@@ -78,7 +79,7 @@ const mockWorkspaces = [
         needsInput: true,
         inProgress: false,
         pinned: false,
-        description: "Fork 1",
+        title: "Workspace Two Fork Title",
       },
     ],
   }),
@@ -87,7 +88,7 @@ const mockWorkspaces = [
     dir: "/path/to/workspace-3",
     needsInput: true,
     inProgress: true,
-    description: "Needs Input Workspace",
+    computedTitle: "Needs Input Fallback Title",
     external: true,
   }),
   createMockWorkspace({
@@ -95,7 +96,7 @@ const mockWorkspaces = [
     dir: "/path/to/root-unpinned",
     isRoot: true,
     pinned: false,
-    description: "Unpinned Root",
+    title: "Unpinned Root Title",
     forks: [
       {
         name: "orphan-pinned-fork",
@@ -104,7 +105,7 @@ const mockWorkspaces = [
         needsInput: false,
         inProgress: false,
         pinned: true,
-        description: "Orphan Pinned Fork",
+        title: "Orphan Pinned Fork Title",
       },
     ],
   }),
@@ -113,7 +114,7 @@ const mockWorkspaces = [
     dir: "/path/to/orphan-pinned-fork",
     isFork: true,
     pinned: true,
-    description: "Orphan Pinned Fork",
+    title: "Orphan Pinned Fork Title",
   }),
 ];
 
@@ -192,26 +193,26 @@ describe("Dashboard", () => {
       renderDashboard();
 
       await waitFor(() => {
-        const ws1Elements = screen.queryAllByText("Test Workspace 1");
+        const ws1Elements = screen.queryAllByText("Workspace One Title");
         expect(ws1Elements.length).toBeGreaterThan(0);
       });
 
       await waitFor(() => {
-        const ws2Elements = screen.queryAllByText("workspace-2");
+        const ws2Elements = screen.queryAllByText("Workspace Two Title");
         expect(ws2Elements.length).toBeGreaterThan(0);
       });
       
       await waitFor(() => {
-        const ws3Elements = screen.queryAllByText("Needs Input Workspace");
+        const ws3Elements = screen.queryAllByText("Needs Input Fallback Title");
         expect(ws3Elements.length).toBeGreaterThan(0);
       });
     });
 
-    it("shows workspace description when available", async () => {
+    it("shows workspace titles when available", async () => {
       renderDashboard();
 
       await waitFor(() => {
-        const ws1Elements = screen.queryAllByText("Test Workspace 1");
+        const ws1Elements = screen.queryAllByText("Workspace One Title");
         expect(ws1Elements.length).toBeGreaterThan(0);
       });
     });
@@ -279,7 +280,7 @@ describe("Dashboard", () => {
       renderDashboard();
 
       await waitFor(() => {
-        const ws2Elements = screen.queryAllByText("workspace-2");
+        const ws2Elements = screen.queryAllByText("Workspace Two Title");
         expect(ws2Elements.length).toBeGreaterThan(0);
       });
 
@@ -287,7 +288,7 @@ describe("Dashboard", () => {
       await user.click(expandButtons[0]);
 
       await waitFor(() => {
-        const forkElements = screen.queryAllByText("Fork 1");
+        const forkElements = screen.queryAllByText("Workspace Two Fork Title");
         expect(forkElements.length).toBeGreaterThan(0);
       });
     });
@@ -318,7 +319,7 @@ describe("Dashboard", () => {
       renderDashboard();
 
       await waitFor(() => {
-        const deleteButtons = screen.queryAllByLabelText("Delete workspace-1");
+        const deleteButtons = screen.queryAllByLabelText("Delete workspace Workspace One Title");
         expect(deleteButtons.length).toBeGreaterThan(0);
       });
     });
@@ -328,11 +329,11 @@ describe("Dashboard", () => {
       renderDashboard();
 
       await waitFor(() => {
-        const ws1Elements = screen.queryAllByText("Test Workspace 1");
+        const ws1Elements = screen.queryAllByText("Workspace One Title");
         expect(ws1Elements.length).toBeGreaterThan(0);
       });
 
-      const deleteButtons = screen.getAllByLabelText("Delete workspace-1");
+      const deleteButtons = screen.getAllByLabelText("Delete workspace Workspace One Title");
       await user.click(deleteButtons[0]);
 
       await waitFor(() => {
@@ -412,34 +413,34 @@ describe("Dashboard", () => {
       await user.click(expandButtons[0]);
 
       await waitFor(() => {
-        const forkElements = screen.queryAllByText("Fork 1");
+        const forkElements = screen.queryAllByText("Workspace Two Fork Title");
         expect(forkElements.length).toBeGreaterThan(0);
       });
 
-      const deleteForkButtons = screen.getAllByLabelText(/Delete workspace-2-fork-1/);
+      const deleteForkButtons = screen.getAllByLabelText("Delete fork Workspace Two Fork Title");
       expect(deleteForkButtons.length).toBeGreaterThan(0);
       await user.click(deleteForkButtons[0]);
 
       await waitFor(() => {
-        const confirmButtons = screen.queryAllByRole("button", { name: /^Delete$/ });
+        const confirmButtons = screen.queryAllByRole("button", { name: "Delete fork" });
         expect(confirmButtons.length).toBeGreaterThan(0);
       });
 
       const dialogs = screen.getAllByRole("alertdialog");
       const dialog = dialogs[dialogs.length - 1];
-      expect(within(dialog).getByText("Delete fork")).toBeTruthy();
-      expect(within(dialog).getByText(/This will permanently delete 'workspace-2-fork-1' from disk/i)).toBeTruthy();
+      expect(within(dialog).getByRole("heading", { name: "Delete fork" })).toBeTruthy();
+      expect(within(dialog).getByText(/This will permanently delete 'Workspace Two Fork Title' from disk/i)).toBeTruthy();
     });
 
     it("shows delete button for standalone workspaces", async () => {
       renderDashboard();
 
       await waitFor(() => {
-        const ws1Elements = screen.queryAllByText("Test Workspace 1");
+        const ws1Elements = screen.queryAllByText("Workspace One Title");
         expect(ws1Elements.length).toBeGreaterThan(0);
       });
 
-      const deleteButtons = screen.getAllByLabelText("Delete workspace-1");
+      const deleteButtons = screen.getAllByLabelText("Delete workspace Workspace One Title");
       expect(deleteButtons.length).toBeGreaterThan(0);
     });
   });
@@ -451,6 +452,25 @@ describe("Dashboard", () => {
       await waitFor(() => {
         const externalIndicators = screen.queryAllByLabelText("External workspace");
         expect(externalIndicators.length).toBeGreaterThan(0);
+      });
+    });
+
+    it("uses detach copy for external repository removal affordances", async () => {
+      const user = userEvent.setup();
+      renderDashboard();
+
+      await waitFor(() => {
+        const detachButtons = screen.queryAllByLabelText("Detach Needs Input Fallback Title");
+        expect(detachButtons.length).toBeGreaterThan(0);
+      });
+
+      const detachButtons = screen.getAllByLabelText("Detach Needs Input Fallback Title");
+      await user.click(detachButtons[0]);
+
+      await waitFor(() => {
+        expect(screen.getByText("Detach workspace")).toBeTruthy();
+        expect(screen.getByText(/This will remove 'Needs Input Fallback Title' from the interface\./)).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
       });
     });
 
@@ -487,7 +507,7 @@ describe("Dashboard", () => {
       renderDashboard();
 
       await waitFor(() => {
-        const ws2Elements = screen.queryAllByText("workspace-2");
+        const ws2Elements = screen.queryAllByText("Workspace Two Title");
         expect(ws2Elements.length).toBeGreaterThan(0);
       });
 
@@ -495,7 +515,7 @@ describe("Dashboard", () => {
       await user.click(expandButtons[0]);
 
       await waitFor(() => {
-        const forkElements = screen.queryAllByText("Fork 1");
+        const forkElements = screen.queryAllByText("Workspace Two Fork Title");
         expect(forkElements.length).toBeGreaterThan(0);
       });
     });
@@ -504,14 +524,14 @@ describe("Dashboard", () => {
       renderDashboard();
 
       await waitFor(() => {
-        const ws2Elements = screen.queryAllByText("workspace-2");
+        const ws2Elements = screen.queryAllByText("Workspace Two Title");
         expect(ws2Elements.length).toBeGreaterThan(0);
       });
     });
   });
 
   describe("pinned fork with unpinned root", () => {
-    it("shows pinned forks with rootName/description when root is not pinned", async () => {
+    it("shows pinned forks with root title and fork title when root is not pinned", async () => {
       renderDashboard();
 
       await waitFor(() => {
@@ -520,7 +540,7 @@ describe("Dashboard", () => {
       });
 
       await waitFor(() => {
-        const orphanFork = screen.queryAllByText("root-unpinned/Orphan Pinned Fork");
+        const orphanFork = screen.queryAllByText("Unpinned Root Title/Orphan Pinned Fork Title");
         expect(orphanFork.length).toBeGreaterThan(0);
       });
     });
@@ -530,20 +550,20 @@ describe("Dashboard", () => {
       renderDashboard();
 
       await waitFor(() => {
-        const orphanFork = screen.queryAllByText("root-unpinned/Orphan Pinned Fork");
+        const orphanFork = screen.queryAllByText("Unpinned Root Title/Orphan Pinned Fork Title");
         expect(orphanFork.length).toBeGreaterThan(0);
       });
 
-      const orphanForkLabel = screen.getAllByText("root-unpinned/Orphan Pinned Fork")[0];
+      const orphanForkLabel = screen.getAllByText("Unpinned Root Title/Orphan Pinned Fork Title")[0];
       await user.hover(orphanForkLabel);
 
       await waitFor(() => {
-        const tooltipForkName = screen.queryAllByText("orphan-pinned-fork");
+        const tooltipForkName = screen.queryAllByText("Name: orphan-pinned-fork");
         expect(tooltipForkName.length).toBeGreaterThan(0);
       });
 
       await waitFor(() => {
-        const tooltipRootName = screen.queryAllByText("Root: root-unpinned");
+        const tooltipRootName = screen.queryAllByText("Root: Unpinned Root Title");
         expect(tooltipRootName.length).toBeGreaterThan(0);
       });
     });
@@ -563,21 +583,21 @@ describe("Dashboard", () => {
       await user.click(expandButtons[0]);
 
       await waitFor(() => {
-        const forkElements = screen.queryAllByText("Fork 1");
+        const forkElements = screen.queryAllByText("Workspace Two Fork Title");
         expect(forkElements.length).toBeGreaterThan(0);
       });
 
-      const deleteForkButtons = screen.getAllByLabelText(/Delete workspace-2-fork-1/);
+      const deleteForkButtons = screen.getAllByLabelText("Delete fork Workspace Two Fork Title");
       await user.click(deleteForkButtons[0]);
 
       await waitFor(() => {
-        const confirmButtons = screen.queryAllByRole("button", { name: /^Delete$/ });
+        const confirmButtons = screen.queryAllByRole("button", { name: "Delete fork" });
         expect(confirmButtons.length).toBeGreaterThan(0);
       });
 
       const dialogs = screen.getAllByRole("alertdialog");
       const dialog = dialogs[dialogs.length - 1];
-      expect(within(dialog).getByRole("button", { name: /^Delete$/ })).toBeTruthy();
+      expect(within(dialog).getByRole("button", { name: "Delete fork" })).toBeTruthy();
       expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeTruthy();
     });
   });

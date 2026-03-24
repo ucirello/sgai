@@ -14,7 +14,8 @@ const mockWorkspace = {
   pinned: false,
   isRoot: false,
   isFork: false,
-  description: "Test Workspace Description",
+  title: "Test Workspace Title",
+  computedTitle: "",
   status: "",
   badgeClass: "",
   badgeText: "",
@@ -241,19 +242,19 @@ describe("EditGoal", () => {
       renderEditGoal();
 
       await waitFor(() => {
-        const backLinks = screen.getAllByLabelText("Back to test-workspace");
+        const backLinks = screen.getAllByLabelText("Back to Test Workspace Title");
         expect(backLinks.length).toBeGreaterThan(0);
       });
     });
   });
 
-  describe("description display", () => {
-    it("shows workspace description in header", async () => {
+  describe("title display", () => {
+    it("shows workspace title in header", async () => {
       renderEditGoal();
 
       await waitFor(() => {
-        const descriptions = screen.getAllByText("Test Workspace Description");
-        expect(descriptions.length).toBeGreaterThan(0);
+        const titles = screen.getAllByText("Test Workspace Title");
+        expect(titles.length).toBeGreaterThan(0);
       });
     });
   });

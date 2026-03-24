@@ -258,7 +258,7 @@ sgai --help
 
 ## Step 3: Create Workspace and Demo Project
 
-Create the following directory structure relative to the current working directory. The `sgai` directory is the root from which `sgai serve` is started. Each subdirectory (like `TodoApp`) is a workspace that appears in the dashboard.
+Create the following directory structure relative to the current working directory. The `sgai` directory is the root from which `sgai serve` is started. Each subdirectory (like `TodoApp`) is a workspace that appears in the dashboard. The dashboard label comes from `GOAL.md` frontmatter `title`; when `GOAL.md` is missing or has no frontmatter, SGAI falls back to the workspace directory name.
 
 ```
 ./sgai/
@@ -274,10 +274,12 @@ Create the following directory structure relative to the current working directo
 mkdir -p ./sgai/TodoApp/.sgai
 ```
 
-**Create `./sgai/TodoApp/GOAL.md`** with this content:
+**Create `./sgai/TodoApp/GOAL.md`** with this content. The `title` field is required and is the user-facing repository label; SGAI does not derive that label from markdown headings:
 
 ```markdown
 ---
+# Required: this is the repository title shown in the UI.
+title: Todo App
 flow: |
   "go-developer" -> "go-reviewer"
   "go-developer" -> "stpa-analyst"
@@ -291,8 +293,6 @@ models:
   "stpa-analyst": "opencode/big-pickle"
 interactive: yes
 ---
-
-# Todo App
 
 Build a simple command-line todo application.
 

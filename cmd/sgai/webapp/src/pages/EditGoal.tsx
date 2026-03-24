@@ -7,6 +7,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { api, ApiError } from "@/lib/api";
 import { triggerFactoryRefresh, useFactoryState } from "@/lib/factory-state";
+import { getRepositoryTitle } from "@/lib/repository-title";
 import { ArrowLeft, Save, Loader2, Check } from "lucide-react";
 import { Link } from "react-router";
 
@@ -22,7 +23,7 @@ export function EditGoal(): JSX.Element {
   const { workspaces } = useFactoryState();
   
   const workspace = workspaces.find(w => w.name === workspaceName);
-  const description = workspace?.description || workspaceName;
+  const workspaceLabel = getRepositoryTitle(workspace ?? { name: workspaceName });
   const dir = workspace?.dir || "";
 
   useEffect(() => {
@@ -121,7 +122,7 @@ export function EditGoal(): JSX.Element {
         <Link
           to={`/workspaces/${encodeURIComponent(workspaceName)}`}
           className="text-sm text-muted-foreground hover:text-foreground transition-colors inline-flex items-center gap-1"
-          aria-label={`Back to ${workspaceName}`}
+          aria-label={`Back to ${workspaceLabel}`}
         >
           <ArrowLeft className="h-4 w-4" />
         </Link>
@@ -130,12 +131,15 @@ export function EditGoal(): JSX.Element {
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="text-sm text-muted-foreground max-w-xs overflow-hidden text-ellipsis whitespace-nowrap cursor-help">
-              {description}
+              {workspaceLabel}
             </span>
           </TooltipTrigger>
           <TooltipContent>
             <div className="max-w-xs">
-              <div className="font-medium">{description}</div>
+              <div className="font-medium">{workspaceLabel}</div>
+              {workspaceLabel !== workspaceName && (
+                <div className="text-xs text-muted-foreground mt-1">Name: {workspaceName}</div>
+              )}
               {dir && <div className="text-xs text-muted-foreground mt-1">{dir}</div>}
             </div>
           </TooltipContent>

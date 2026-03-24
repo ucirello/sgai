@@ -39,7 +39,8 @@ const mockWorkspace = {
   pinned: false,
   isRoot: false,
   isFork: false,
-  description: "Test Workspace",
+  title: "Response Workspace Title",
+  computedTitle: "",
   status: "",
   badgeClass: "",
   badgeText: "",
@@ -149,6 +150,15 @@ describe("ResponseMultiChoice", () => {
   });
 
   describe("display retrospective questions", () => {
+    it("shows the repository title from the canonical title field", async () => {
+      renderResponseMultiChoice();
+
+      await waitFor(() => {
+        const workspaceTitles = screen.queryAllByText("Response Workspace Title");
+        expect(workspaceTitles.length).toBeGreaterThan(0);
+      });
+    });
+
     it("displays agent name badge", async () => {
       renderResponseMultiChoice();
 

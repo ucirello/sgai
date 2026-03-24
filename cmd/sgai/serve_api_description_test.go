@@ -1,424 +1,257 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestStripMarkdownFormatting(t *testing.T) {
+func TestGoalTitleStateFromContent(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		expected string
+		name         string
+		content      string
+		dirName      string
+		wantTitle    string
+		wantComputed string
+		wantRepair   bool
 	}{
 		{
-			name:     "plainText",
-			input:    "Hello World",
-			expected: "Hello World",
+			name:         "canonicalTitleFromFrontmatter",
+			content:      "---\ntitle: Canonical Title\nflow: test\n---\n# Body Heading",
+			dirName:      "workspace-name",
+			wantTitle:    "Canonical Title",
+			wantComputed: "",
+			wantRepair:   false,
 		},
 		{
-			name:     "heading",
-			input:    "## Heading",
-			expected: "Heading",
+			name:         "noFrontmatterFallsBackToDirectory",
+			content:      "# Body Heading",
+			dirName:      "workspace-name",
+			wantTitle:    "",
+			wantComputed: "workspace-name",
+			wantRepair:   false,
 		},
 		{
-			name:     "checkbox",
-			input:    "- [x] Task done",
-			expected: "Task done",
+			name:         "missingTitleTriggersRepair",
+			content:      "---\nflow: test\n---\n# Improve Repository Titles",
+			dirName:      "workspace-name",
+			wantTitle:    "",
+			wantComputed: "workspace-name",
+			wantRepair:   true,
 		},
 		{
-			name:     "checkboxUnchecked",
-			input:    "- [ ] Task pending",
-			expected: "Task pending",
-		},
-		{
-			name:     "listItem",
-			input:    "- List item",
-			expected: "List item",
-		},
-		{
-			name:     "numberedList",
-			input:    "1. First item",
-			expected: "First item",
-		},
-		{
-			name:     "link",
-			input:    "[Click here](https://example.com)",
-			expected: "Click here",
-		},
-		{
-			name:     "bold",
-			input:    "**bold text**",
-			expected: "bold text",
-		},
-		{
-			name:     "italic",
-			input:    "*italic text*",
-			expected: "italic text",
-		},
-		{
-			name:     "inlineCode",
-			input:    "`code snippet`",
-			expected: "code snippet",
-		},
-		{
-			name:     "combined",
-			input:    "## **Bold** and `code`",
-			expected: "Bold and code",
+			name:         "quotedDelimiterSubstringInTitleRemainsCanonical",
+			content:      "---\ntitle: \"Canonical --- Title\"\nflow: test\n---\n# Body Heading",
+			dirName:      "workspace-name",
+			wantTitle:    "Canonical --- Title",
+			wantComputed: "",
+			wantRepair:   false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := stripMarkdownFormatting(tt.input)
-			assert.Equal(t, tt.expected, result)
+			result := goalTitleStateFromContent([]byte(tt.content), tt.dirName)
+			assert.Equal(t, tt.wantTitle, result.Title)
+			assert.Equal(t, tt.wantComputed, result.ComputedTitle)
+			assert.Equal(t, tt.wantRepair, result.NeedsRepair)
 		})
 	}
 }
 
-func TestStripMarkdownHeadingPrefix(t *testing.T) {
+func TestComposeGoalTitleFromContent(t *testing.T) {
+	content := []byte("---\nflow: test\n---\n# Improve Repository Titles Across the Board\n\nDetails")
+	assert.Equal(t, "Improve Repository Titles Across the Board", composeGoalTitleFromContent(content, "fallback"))
+}
+
+func TestComposeGoalTitleFromTextFallsBack(t *testing.T) {
+	assert.Equal(t, "fallback", composeGoalTitleFromText("\n\n", "fallback"))
+}
+
+func TestContentWithInsertedGoalTitle(t *testing.T) {
+	content := []byte("---\nflow: test\n---\n# Body")
+	updated, errUpdate := contentWithInsertedGoalTitle(content, "Repaired Title")
+	require.NoError(t, errUpdate)
+	assert.Contains(t, string(updated), "title: Repaired Title")
+	assert.Contains(t, string(updated), "flow: test")
+	assert.Contains(t, string(updated), "# Body")
+}
+
+func TestContentWithInsertedGoalTitlePreservesCRLFFrontmatter(t *testing.T) {
+	content := []byte("---\r\nflow: test\r\n---\r\n# Body")
+	updated, errUpdate := contentWithInsertedGoalTitle(content, "Repaired Title")
+	require.NoError(t, errUpdate)
+	assert.Equal(t, "---\r\ntitle: Repaired Title\r\nflow: test\r\n---\r\n# Body", string(updated))
+}
+
+func TestContentWithInsertedGoalTitleReplacesExistingBlankTitle(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		expected string
+		name    string
+		content string
 	}{
 		{
-			name:     "noHeading",
-			input:    "Plain text",
-			expected: "Plain text",
+			name:    "emptyScalar",
+			content: "---\ntitle:\nflow: test\n---\n# Body",
 		},
 		{
-			name:     "h1",
-			input:    "# Heading 1",
-			expected: "Heading 1",
-		},
-		{
-			name:     "h2",
-			input:    "## Heading 2",
-			expected: "Heading 2",
-		},
-		{
-			name:     "h3",
-			input:    "### Heading 3",
-			expected: "Heading 3",
-		},
-		{
-			name:     "multipleHashes",
-			input:    "#### Heading 4",
-			expected: "Heading 4",
-		},
-		{
-			name:     "noSpaceAfterHash",
-			input:    "###NoSpace",
-			expected: "NoSpace",
+			name:    "quotedEmptyString",
+			content: "---\ntitle: \"\"\nflow: test\n---\n# Body",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := stripMarkdownHeadingPrefix(tt.input)
-			assert.Equal(t, tt.expected, result)
+			updated, errUpdate := contentWithInsertedGoalTitle([]byte(tt.content), "Repaired Title")
+			require.NoError(t, errUpdate)
+			assert.Equal(t, "---\ntitle: Repaired Title\nflow: test\n---\n# Body", string(updated))
+			assert.Equal(t, 1, strings.Count(string(updated), "title:"))
 		})
 	}
 }
 
-func TestStripMarkdownCheckboxMarkers(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "checkedLowercase",
-			input:    "- [x] Task completed",
-			expected: "Task completed",
-		},
-		{
-			name:     "checkedUppercase",
-			input:    "- [X] Task completed",
-			expected: "Task completed",
-		},
-		{
-			name:     "unchecked",
-			input:    "- [ ] Task pending",
-			expected: "Task pending",
-		},
-		{
-			name:     "noCheckbox",
-			input:    "Regular text",
-			expected: "Regular text",
-		},
-		{
-			name:     "partialMatch",
-			input:    "- [y] Not a checkbox",
-			expected: "- [y] Not a checkbox",
-		},
+func TestRepairGoalTitleSanitizesSynthesizedTitle(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, rootDir, "repair-ws")
+	goalPath := filepath.Join(wsDir, "GOAL.md")
+	require.NoError(t, os.WriteFile(goalPath, []byte("---\nflow: test\n---\n# Goal"), 0o644))
+
+	server.goalTitleComposer = func(_ string, _ []byte) (string, error) {
+		return "  Repaired\n\n  Title\tHere  ", nil
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := stripMarkdownCheckboxMarkers(tt.input)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
+	require.NoError(t, server.repairGoalTitle(wsDir))
+
+	state := goalTitleStateFromPath(wsDir, "repair-ws")
+	assert.Equal(t, "Repaired Title Here", state.Title)
+
+	data, errRead := os.ReadFile(goalPath)
+	require.NoError(t, errRead)
+	assert.Contains(t, string(data), "title: Repaired Title Here")
 }
 
-func TestStripMarkdownListMarkers(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "dashList",
-			input:    "- List item",
-			expected: "List item",
-		},
-		{
-			name:     "asteriskList",
-			input:    "* List item",
-			expected: "List item",
-		},
-		{
-			name:     "numberedList",
-			input:    "1. First item",
-			expected: "First item",
-		},
-		{
-			name:     "multiDigitNumber",
-			input:    "10. Tenth item",
-			expected: "Tenth item",
-		},
-		{
-			name:     "noMarker",
-			input:    "Plain text",
-			expected: "Plain text",
-		},
-		{
-			name:     "justNumber",
-			input:    "123",
-			expected: "123",
-		},
+func TestRepairGoalTitlePreservesFreshlyAddedTitle(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, rootDir, "repair-ws")
+	goalPath := filepath.Join(wsDir, "GOAL.md")
+	original := []byte("---\nflow: test\n---\n# Original Goal")
+	require.NoError(t, os.WriteFile(goalPath, original, 0o644))
+	updated := []byte("---\ntitle: User Edited Title\nflow: test\n---\n# Updated Goal\n\nUser edit")
+
+	originalReadFile := server.goalTitleReadFile
+	t.Cleanup(func() {
+		server.goalTitleReadFile = originalReadFile
+	})
+
+	var readCount int
+	server.goalTitleReadFile = func(path string) ([]byte, error) {
+		if path != goalPath {
+			return os.ReadFile(path)
+		}
+		readCount++
+		if readCount == 1 {
+			return original, nil
+		}
+		require.NoError(t, os.WriteFile(goalPath, updated, 0o644))
+		return updated, nil
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := stripMarkdownListMarkers(tt.input)
-			assert.Equal(t, tt.expected, result)
-		})
+	composerCalled := false
+
+	server.goalTitleComposer = func(_ string, _ []byte) (string, error) {
+		composerCalled = true
+		return "Composed Title", nil
 	}
+
+	require.NoError(t, server.repairGoalTitle(wsDir))
+	assert.False(t, composerCalled)
+
+	state := goalTitleStateFromPath(wsDir, "repair-ws")
+	assert.Equal(t, "User Edited Title", state.Title)
+
+	data, errRead := os.ReadFile(goalPath)
+	require.NoError(t, errRead)
+	assert.Contains(t, string(data), "# Updated Goal")
+	assert.Contains(t, string(data), "User edit")
+	assert.NotContains(t, string(data), "Composed Title")
 }
 
-func TestStripMarkdownLinks(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "simpleLink",
-			input:    "[Click here](https://example.com)",
-			expected: "Click here",
-		},
-		{
-			name:     "linkWithText",
-			input:    "Visit [our site](https://example.com) for more",
-			expected: "Visit our site for more",
-		},
-		{
-			name:     "multipleLinks",
-			input:    "[Link 1](url1) and [Link 2](url2)",
-			expected: "Link 1 and Link 2",
-		},
-		{
-			name:     "noLink",
-			input:    "Plain text",
-			expected: "Plain text",
-		},
-		{
-			name:     "unclosedBracket",
-			input:    "[unclosed text",
-			expected: "[unclosed text",
-		},
-		{
-			name:     "bracketNoParen",
-			input:    "[text] no url",
-			expected: "text no url",
-		},
+func TestRepairGoalTitleRecomputesTitleFromLatestGoalContent(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, rootDir, "repair-ws")
+	goalPath := filepath.Join(wsDir, "GOAL.md")
+	original := []byte("---\nflow: test\n---\n# First Goal\n\nFirst body")
+	latest := []byte("---\nflow: test\n---\n# Second Goal\n\nSecond body")
+	require.NoError(t, os.WriteFile(goalPath, original, 0o644))
+
+	originalReadFile := server.goalTitleReadFile
+	t.Cleanup(func() {
+		server.goalTitleReadFile = originalReadFile
+	})
+
+	var readCount int
+	server.goalTitleReadFile = func(path string) ([]byte, error) {
+		if path != goalPath {
+			return os.ReadFile(path)
+		}
+		readCount++
+		if readCount == 1 {
+			return original, nil
+		}
+		return latest, nil
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := stripMarkdownLinks(tt.input)
-			assert.Equal(t, tt.expected, result)
-		})
+	server.goalTitleComposer = func(_ string, goalContent []byte) (string, error) {
+		return composeGoalTitleFromContent(goalContent, filepath.Base(wsDir)), nil
 	}
+
+	require.NoError(t, server.repairGoalTitle(wsDir))
+
+	data, errRead := os.ReadFile(goalPath)
+	require.NoError(t, errRead)
+	assert.Contains(t, string(data), "title: Second Goal")
+	assert.Contains(t, string(data), "Second body")
+	assert.NotContains(t, string(data), "title: First Goal")
 }
 
-func TestStripMarkdownEmphasis(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "bold",
-			input:    "**bold text**",
-			expected: "bold text",
-		},
-		{
-			name:     "italic",
-			input:    "*italic text*",
-			expected: "italic text",
-		},
-		{
-			name:     "boldItalic",
-			input:    "***bold and italic***",
-			expected: "bold and italic",
-		},
-		{
-			name:     "underscoreBold",
-			input:    "__bold text__",
-			expected: "bold text",
-		},
-		{
-			name:     "underscoreItalic",
-			input:    "_italic text_",
-			expected: "italic text",
-		},
-		{
-			name:     "noEmphasis",
-			input:    "plain text",
-			expected: "plain text",
-		},
+func TestEnqueueGoalTitleRepairCollapsesAliasPathsToOneSlot(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, rootDir, "repair-ws")
+	goalPath := filepath.Join(wsDir, "GOAL.md")
+	require.NoError(t, os.WriteFile(goalPath, []byte("---\nflow: test\n---\n# Goal"), 0o644))
+
+	aliasDir := filepath.Join(rootDir, "repair-ws-alias")
+	require.NoError(t, os.Symlink(wsDir, aliasDir))
+
+	startedCh := make(chan struct{})
+	releaseCh := make(chan struct{})
+	server.goalTitleComposer = func(_ string, _ []byte) (string, error) {
+		close(startedCh)
+		<-releaseCh
+		return "Alias Repair Title", nil
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := stripMarkdownEmphasis(tt.input)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
+	server.enqueueGoalTitleRepair(wsDir)
+	<-startedCh
 
-func TestStripMarkdownInlineCode(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "inlineCode",
-			input:    "`code snippet`",
-			expected: "code snippet",
-		},
-		{
-			name:     "multipleCode",
-			input:    "use `foo` and `bar`",
-			expected: "use foo and bar",
-		},
-		{
-			name:     "noCode",
-			input:    "plain text",
-			expected: "plain text",
-		},
-	}
+	server.enqueueGoalTitleRepair(aliasDir)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := stripMarkdownInlineCode(tt.input)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
+	server.goalTitleRepairMu.Lock()
+	queueLen := len(server.goalTitleRepairQueue)
+	queuedLen := len(server.goalTitleRepairQueued)
+	server.goalTitleRepairMu.Unlock()
 
-func TestExtractGoalDescription(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name: "simpleGoal",
-			input: `---
-flow: |
-  "agent1" -> "agent2"
----
-# My Goal
+	close(releaseCh)
 
-This is a description.`,
-			expected: "My Goal",
-		},
-		{
-			name: "goalWithCheckbox",
-			input: `---
-flow: |
-  "agent1" -> "agent2"
----
-- [x] Completed task
+	require.Eventually(t, func() bool {
+		data, errRead := os.ReadFile(goalPath)
+		return errRead == nil && strings.Contains(string(data), "title: Alias Repair Title")
+	}, time.Second, 10*time.Millisecond)
 
-This is a description.`,
-			expected: "Completed task",
-		},
-		{
-			name: "longDescription",
-			input: `---
-flow: |
-  "agent1" -> "agent2"
----
-` + string(make([]byte, 300)),
-			expected: string(make([]byte, 255)) + "...",
-		},
-		{
-			name: "emptyGoal",
-			input: `---
-flow: |
-  "agent1" -> "agent2"
----
-
-`,
-			expected: "",
-		},
-		{
-			name:     "noFrontmatter",
-			input:    "# Heading\n\nDescription",
-			expected: "Heading",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := extractGoalDescription(tt.input)
-			if len(tt.expected) >= 256 {
-				assert.Equal(t, tt.expected[:255]+"...", result)
-			} else {
-				assert.Equal(t, tt.expected, result)
-			}
-		})
-	}
-}
-
-func TestExtractGoalDescriptionComplex(t *testing.T) {
-	content := "---\nflow: coordinator -> dev\nmodels:\n  coordinator: claude-opus-4\n---\n\n# Complex Goal Description\n\nThis is the body"
-	result := extractGoalDescription(content)
-	assert.Equal(t, "Complex Goal Description", result)
-}
-
-func TestExtractGoalDescriptionFromContent(t *testing.T) {
-	content := "---\nflow: |\n  \"a\" -> \"b\"\n---\n# My Project Description\nSome body"
-	result := extractGoalDescription(content)
-	assert.Equal(t, "My Project Description", result)
-}
-
-func TestExtractGoalDescriptionNoHeadingReturnsFirstLine(t *testing.T) {
-	content := "---\nflow: |\n  \"a\" -> \"b\"\n---\nNo heading here"
-	result := extractGoalDescription(content)
-	assert.Equal(t, "No heading here", result)
-}
-
-func TestExtractGoalDescriptionSkipsEmptyHeading(t *testing.T) {
-	content := "#\nActual title"
-	result := extractGoalDescription(content)
-	assert.Equal(t, "Actual title", result)
+	assert.Equal(t, 0, queueLen)
+	assert.Equal(t, 1, queuedLen)
 }

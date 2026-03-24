@@ -8,11 +8,16 @@ import { Label } from "@/components/ui/label";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { PromptHistory } from "@/components/PromptHistory";
 import { useAdhocRun } from "@/hooks/useAdhocRun";
+import { useFactoryState } from "@/lib/factory-state";
+import { getRepositoryTitle } from "@/lib/repository-title";
 
 export function AdhocOutput(): JSX.Element {
   const { name: workspaceName = "" } = useParams<{ name: string }>();
   const [searchParams] = useSearchParams();
   const autoRunRef = useRef(false);
+  const { workspaces } = useFactoryState();
+  const workspace = workspaces.find((entry) => entry.name === workspaceName);
+  const workspaceLabel = getRepositoryTitle(workspace ?? { name: workspaceName });
 
   const {
     selectedModel: model,
@@ -50,12 +55,12 @@ export function AdhocOutput(): JSX.Element {
         className="text-sm text-muted-foreground hover:text-foreground transition-colors inline-flex items-center gap-1 mb-6"
       >
         <ArrowLeft className="h-3 w-3" />
-        Back to {workspaceName}
+        Back to {workspaceLabel}
       </Link>
 
       <h1 className="text-2xl font-semibold mb-2">Ad-hoc Prompt</h1>
       <p className="text-sm text-muted-foreground mb-6">
-        Execute an ad-hoc prompt against <span className="font-medium text-foreground">{workspaceName}</span>.
+        Execute an ad-hoc prompt against <span className="font-medium text-foreground">{workspaceLabel}</span>.
       </p>
 
       {error ? (

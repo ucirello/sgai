@@ -25,6 +25,7 @@ import { PromptHistory } from "@/components/PromptHistory";
 import { ActionBar } from "@/components/ActionBar";
 import { api } from "@/lib/api";
 import { useFactoryState, triggerFactoryRefresh } from "@/lib/factory-state";
+import { getRepositoryTitle } from "@/lib/repository-title";
 import { useAdhocRun } from "@/hooks/useAdhocRun";
 import type { ApiForkEntry, ApiActionEntry } from "@/types";
 
@@ -78,10 +79,12 @@ function CompactForkRow({ fork, rootName, needsInput, actions, isActionRunning, 
   const navigate = useNavigate();
   const [actionError, setActionError] = useState<string | null>(null);
   const [isActionPending, startActionTransition] = useTransition();
-  const respondLabel = `Respond to fork ${fork.name}`;
-  const openEditorLabel = `Open fork ${fork.name} in Editor`;
-  const openInSgaiLabel = `Open fork ${fork.name} in sgai`;
-  const deleteForkLabel = `Delete fork ${fork.name}`;
+  const forkLabel = getRepositoryTitle(fork);
+  const showTechnicalName = forkLabel !== fork.name;
+  const respondLabel = `Respond to fork ${forkLabel}`;
+  const openEditorLabel = `Open fork ${forkLabel} in Editor`;
+  const openInSgaiLabel = `Open fork ${forkLabel} in sgai`;
+  const deleteForkLabel = `Delete fork ${forkLabel}`;
 
   const handleOpenEditor = useCallback((event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -125,15 +128,22 @@ function CompactForkRow({ fork, rootName, needsInput, actions, isActionRunning, 
   return (
     <div className="border rounded-md overflow-hidden">
       <div className="flex items-center gap-2 px-3 py-2 bg-muted/10 hover:bg-muted/20 transition-colors">
-          <StatusDot running={fork.running} needsInput={needsInput} />
+        <StatusDot running={fork.running} needsInput={needsInput} />
 
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="font-medium text-sm truncate flex-1 min-w-0 cursor-default">
-              {fork.description || fork.name}
+              {forkLabel}
             </span>
           </TooltipTrigger>
-          <TooltipContent>{fork.name}</TooltipContent>
+          <TooltipContent>
+            <div className="max-w-xs">
+              <div className="font-medium">{forkLabel}</div>
+              {showTechnicalName && (
+                <div className="text-xs text-muted-foreground mt-1">Name: {fork.name}</div>
+              )}
+            </div>
+          </TooltipContent>
         </Tooltip>
 
         <div className="flex items-center gap-1 shrink-0">
@@ -210,7 +220,7 @@ function CompactForkRow({ fork, rootName, needsInput, actions, isActionRunning, 
               <AlertDialogHeader>
                 <AlertDialogTitle>Delete fork</AlertDialogTitle>
                 <AlertDialogDescription>
-                  This will permanently delete &lsquo;{fork.name}&rsquo; from disk. This action cannot be undone.
+                  This will permanently delete &lsquo;{forkLabel}&rsquo; from disk. This action cannot be undone.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -233,7 +243,7 @@ function CompactForkRow({ fork, rootName, needsInput, actions, isActionRunning, 
               actions={actions}
               isRunning={isActionPending || isActionRunning}
               onActionClick={(action, variables) => onActionClick?.(action, variables, fork.name)}
-              accessibilityContext={`fork ${fork.name}`}
+              accessibilityContext={`fork ${forkLabel}`}
               className="flex items-center gap-1"
               buttonClassName="h-7 px-2 text-xs"
               showValidationErrors={false}
@@ -414,6 +424,7 @@ export function ForksTab({ workspaceName, actions, actionConfigError, onActionCl
 
   const forks = workspace.forks ?? [];
   const hasActionBar = Boolean((actions && actions.length > 0) || actionConfigError?.trim());
+  const workspaceLabel = getRepositoryTitle(workspace);
 
   return (
     <div className="space-y-4">
@@ -423,7 +434,7 @@ export function ForksTab({ workspaceName, actions, actionConfigError, onActionCl
           actionConfigError={actionConfigError}
           isRunning={isActionRunning}
           onActionClick={(action, variables) => onActionClick?.(action, variables, workspaceName)}
-          accessibilityContext={`workspace ${workspaceName}`}
+          accessibilityContext={`workspace ${workspaceLabel}`}
         />
       )}
       {forks.length === 0 ? (

@@ -35,6 +35,8 @@ import { Loader2, Inbox, Trash2, Link as LinkIcon } from "lucide-react";
 import { useFactoryState, triggerFactoryRefresh } from "@/lib/factory-state";
 import { useSidebarResize } from "@/hooks/useSidebarResize";
 import { cn } from "@/lib/utils";
+import { getRepositoryTitle } from "@/lib/repository-title";
+import { getWorkspaceDeletionCopy } from "@/lib/workspace-delete-copy";
 import type { ApiWorkspaceEntry } from "@/lib/factory-state";
 
 type ForkEntry = NonNullable<ApiWorkspaceEntry["forks"]>[number];
@@ -47,12 +49,14 @@ function workspaceToForkEntry(ws: ApiWorkspaceEntry): ForkEntry {
     needsInput: ws.needsInput,
     inProgress: ws.inProgress,
     pinned: ws.pinned,
-    description: ws.description,
+    title: ws.title,
+    computedTitle: ws.computedTitle,
   };
 }
 
 interface DeleteWorkspaceDialogProps {
   workspaceName: string;
+  workspaceLabel: string;
   isExternal: boolean;
   isFork: boolean;
   selectedName: string | undefined;
@@ -61,6 +65,7 @@ interface DeleteWorkspaceDialogProps {
 
 function DeleteWorkspaceDialog({
   workspaceName,
+  workspaceLabel,
   isExternal,
   isFork,
   selectedName,
@@ -100,10 +105,11 @@ function DeleteWorkspaceDialog({
     }
   }, []);
 
-  const dialogTitle = isFork ? "Delete fork" : isExternal ? "Detach workspace" : "Delete workspace";
-  const dialogDescription = isExternal && !isFork
-    ? `This will remove '${workspaceName}' from the interface. The directory and its contents will NOT be deleted.`
-    : `This will permanently delete '${workspaceName}' from disk. This action cannot be undone.`;
+  const deletionCopy = getWorkspaceDeletionCopy({
+    workspaceLabel,
+    isExternal,
+    isFork,
+  });
 
   return (
     <AlertDialog open={open} onOpenChange={handleOpenChange}>
@@ -113,15 +119,15 @@ function DeleteWorkspaceDialog({
           size="icon"
           onClick={(e) => { e.stopPropagation(); }}
           className="opacity-0 group-hover/row:opacity-100 focus:opacity-100 h-6 w-6 p-0.5 rounded hover:bg-destructive/20 transition-opacity shrink-0"
-          aria-label={`Delete ${workspaceName}`}
+          aria-label={deletionCopy.triggerLabel}
         >
           <Trash2 className="h-3 w-3 text-muted-foreground hover:text-destructive" />
         </Button>
       </AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>{dialogTitle}</AlertDialogTitle>
-          <AlertDialogDescription>{dialogDescription}</AlertDialogDescription>
+          <AlertDialogTitle>{deletionCopy.dialogTitle}</AlertDialogTitle>
+          <AlertDialogDescription>{deletionCopy.dialogDescription}</AlertDialogDescription>
         </AlertDialogHeader>
         {deleteError && (
           <p className="text-sm text-destructive" role="alert">{deleteError}</p>
@@ -133,7 +139,7 @@ function DeleteWorkspaceDialog({
             disabled={isDeleting}
             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
           >
-            {isDeleting ? "Deleting..." : "Delete"}
+            {isDeleting ? deletionCopy.pendingText : deletionCopy.confirmText}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -209,8 +215,8 @@ interface ForkItemProps {
 function ForkItem({ fork, selectedName, workspaceLookup, rootName }: ForkItemProps) {
   const forkSelected = fork.name === selectedName;
   const forkFullEntry = workspaceLookup.get(fork.name);
-
-  const forkDescription = forkFullEntry?.description || fork.description || null;
+  const forkLabel = getRepositoryTitle(forkFullEntry ?? fork);
+  const showTechnicalName = forkLabel !== fork.name;
 
   return (
     <SidebarMenuItem>
@@ -227,14 +233,14 @@ function ForkItem({ fork, selectedName, workspaceLookup, rootName }: ForkItemPro
             <Tooltip>
               <TooltipTrigger asChild>
                 <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-                  {forkDescription ?? <span className="italic text-muted-foreground">No description</span>}
+                  {forkLabel}
                 </span>
               </TooltipTrigger>
               <TooltipContent side="right">
                 <div className="max-w-xs">
-                  <div className="font-medium">{fork.name}</div>
-                  {forkDescription?.endsWith("...") && (
-                    <div className="text-xs text-muted-foreground mt-1">{forkFullEntry?.description || fork.description}</div>
+                  <div className="font-medium">{forkLabel}</div>
+                  {showTechnicalName && (
+                    <div className="text-xs text-muted-foreground mt-1">Name: {fork.name}</div>
                   )}
                 </div>
               </TooltipContent>
@@ -244,6 +250,7 @@ function ForkItem({ fork, selectedName, workspaceLookup, rootName }: ForkItemPro
         </SidebarMenuButton>
         <DeleteWorkspaceDialog
           workspaceName={fork.name}
+          workspaceLabel={forkLabel}
           isExternal={false}
           isFork
           selectedName={selectedName}
@@ -276,10 +283,8 @@ function WorkspaceTreeItem({ workspace, selectedName, workspaceLookup }: Workspa
 
   const isRoot = fullWorkspace?.isRoot ?? workspace.isRoot;
   const showDelete = !isRoot || !hasForks;
-  const description = workspace.description || null;
-
-  const displayText = isRoot ? workspace.name : description;
-  const tooltipText = workspace.name;
+  const displayText = getRepositoryTitle(fullWorkspace ?? workspace);
+  const showTechnicalName = displayText !== workspace.name;
 
   return (
     <SidebarMenuItem className="mb-0.5">
@@ -309,14 +314,14 @@ function WorkspaceTreeItem({ workspace, selectedName, workspaceLookup }: Workspa
             <Tooltip>
               <TooltipTrigger asChild>
                 <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-                  {displayText ?? <span className="italic text-muted-foreground">No description</span>}
+                  {displayText}
                 </span>
               </TooltipTrigger>
               <TooltipContent side="right">
                 <div className="max-w-xs">
-                  <div>{tooltipText}</div>
-                  {description?.endsWith("...") && (
-                    <div className="text-xs text-muted-foreground mt-1">{workspace.description}</div>
+                  <div className="font-medium">{displayText}</div>
+                  {showTechnicalName && (
+                    <div className="text-xs text-muted-foreground mt-1">Name: {workspace.name}</div>
                   )}
                 </div>
               </TooltipContent>
@@ -327,6 +332,7 @@ function WorkspaceTreeItem({ workspace, selectedName, workspaceLookup }: Workspa
         {showDelete && (
           <DeleteWorkspaceDialog
             workspaceName={workspace.name}
+            workspaceLabel={displayText}
             isExternal={workspace.external ?? false}
             isFork={workspace.isFork}
             selectedName={selectedName}
@@ -362,11 +368,8 @@ interface InProgressItemProps {
 function InProgressItem({ workspace, selectedName, workspaceLookup }: InProgressItemProps) {
   const isSelected = workspace.name === selectedName;
   const fullWorkspace = workspaceLookup.get(workspace.name);
-  const description = workspace.description || null;
-
-  const isRoot = fullWorkspace?.isRoot ?? workspace.isRoot;
-  const displayText = isRoot ? workspace.name : description;
-  const tooltipText = workspace.name;
+  const displayText = getRepositoryTitle(fullWorkspace ?? workspace);
+  const showTechnicalName = displayText !== workspace.name;
 
   return (
     <SidebarMenuItem>
@@ -385,21 +388,21 @@ function InProgressItem({ workspace, selectedName, workspaceLookup }: InProgress
             : `/workspaces/${encodeURIComponent(workspace.name)}/progress`
           }
         >
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-                {displayText ?? <span className="italic text-muted-foreground">No description</span>}
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <div className="max-w-xs">
-                <div>{tooltipText}</div>
-                {description?.endsWith("...") && (
-                  <div className="text-xs text-muted-foreground mt-1">{workspace.description}</div>
-                )}
-              </div>
-            </TooltipContent>
-          </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
+                {displayText}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                <div className="max-w-xs">
+                  <div className="font-medium">{displayText}</div>
+                  {showTechnicalName && (
+                    <div className="text-xs text-muted-foreground mt-1">Name: {workspace.name}</div>
+                  )}
+                </div>
+              </TooltipContent>
+            </Tooltip>
           <WorkspaceIndicators workspace={workspace} />
         </Link>
       </SidebarMenuButton>
@@ -426,10 +429,8 @@ function PinnedTreeItem({ workspace, selectedName, workspaceLookup, pinnedForks 
     }
   }, [isSelected, hasForkSelected]);
 
-  const isRoot = fullWorkspace?.isRoot ?? workspace.isRoot;
-  const description = workspace.description || null;
-  const displayText = isRoot ? workspace.name : description;
-  const tooltipText = workspace.name;
+  const displayText = getRepositoryTitle(fullWorkspace ?? workspace);
+  const showTechnicalName = displayText !== workspace.name;
 
   return (
     <SidebarMenuItem className="mb-0.5">
@@ -459,14 +460,14 @@ function PinnedTreeItem({ workspace, selectedName, workspaceLookup, pinnedForks 
             <Tooltip>
               <TooltipTrigger asChild>
                 <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-                  {displayText ?? <span className="italic text-muted-foreground">No description</span>}
+                  {displayText}
                 </span>
               </TooltipTrigger>
               <TooltipContent side="right">
                 <div className="max-w-xs">
-                  <div>{tooltipText}</div>
-                  {description?.endsWith("...") && (
-                    <div className="text-xs text-muted-foreground mt-1">{workspace.description}</div>
+                  <div className="font-medium">{displayText}</div>
+                  {showTechnicalName && (
+                    <div className="text-xs text-muted-foreground mt-1">Name: {workspace.name}</div>
                   )}
                 </div>
               </TooltipContent>
@@ -476,6 +477,7 @@ function PinnedTreeItem({ workspace, selectedName, workspaceLookup, pinnedForks 
         </SidebarMenuButton>
         <DeleteWorkspaceDialog
           workspaceName={workspace.name}
+          workspaceLabel={displayText}
           isExternal={workspace.external ?? false}
           isFork={workspace.isFork}
           selectedName={selectedName}
@@ -511,8 +513,11 @@ interface OrphanPinnedForkItemProps {
 function OrphanPinnedForkItem({ fork, rootName, selectedName, workspaceLookup }: OrphanPinnedForkItemProps) {
   const forkSelected = fork.name === selectedName;
   const forkFullEntry = workspaceLookup.get(fork.name);
-  const forkDescription = forkFullEntry?.description || fork.description || fork.name;
-  const displayLabel = `${rootName}/${forkDescription}`;
+  const rootEntry = workspaceLookup.get(rootName);
+  const rootLabel = getRepositoryTitle(rootEntry ?? { name: rootName });
+  const forkLabel = getRepositoryTitle(forkFullEntry ?? fork);
+  const displayLabel = `${rootLabel}/${forkLabel}`;
+  const showTechnicalName = forkLabel !== fork.name;
 
   return (
     <SidebarMenuItem>
@@ -535,8 +540,11 @@ function OrphanPinnedForkItem({ fork, rootName, selectedName, workspaceLookup }:
               </TooltipTrigger>
               <TooltipContent side="right">
                 <div className="max-w-xs">
-                  <div className="font-medium">{fork.name}</div>
-                  <div className="text-xs text-muted-foreground mt-1">Root: {rootName}</div>
+                  <div className="font-medium">{forkLabel}</div>
+                  {showTechnicalName && (
+                    <div className="text-xs text-muted-foreground mt-1">Name: {fork.name}</div>
+                  )}
+                  <div className="text-xs text-muted-foreground mt-1">Root: {rootLabel}</div>
                 </div>
               </TooltipContent>
             </Tooltip>
@@ -545,6 +553,7 @@ function OrphanPinnedForkItem({ fork, rootName, selectedName, workspaceLookup }:
         </SidebarMenuButton>
         <DeleteWorkspaceDialog
           workspaceName={fork.name}
+          workspaceLabel={forkLabel}
           isExternal={false}
           isFork
           selectedName={selectedName}
