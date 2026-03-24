@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router";
 import { api, ApiError } from "@/lib/api";
+import { resolveRepositoryLabelFromCandidates } from "@/lib/repository-label";
 import { computeAgentsAndFlowFromTechStack } from "./composeWizardTechStack";
 import type {
   ApiComposePreviewResponse,
@@ -14,6 +15,7 @@ const AUTO_SAVE_INTERVAL_MS = 30_000;
 const WIZARD_STEPS = [1, 2, 3, 4] as const;
 
 export interface WizardStepData {
+  title: string;
   description: string;
   techStack: string[];
   safetyAnalysis: boolean;
@@ -131,9 +133,14 @@ export function clearAllWizardStorage(
   return null;
 }
 
-function buildWizardStateFromData(data: WizardStepData, step: number): ApiWizardState {
+function buildWizardStateFromData(
+  data: WizardStepData,
+  step: number,
+  repositoryTitle: string,
+): ApiWizardState {
   return {
     currentStep: step,
+    title: repositoryTitle,
     description: data.description,
     techStack: data.techStack,
     safetyAnalysis: data.safetyAnalysis,
@@ -144,6 +151,7 @@ function buildWizardStateFromData(data: WizardStepData, step: number): ApiWizard
 function buildComposerStateFromData(
   data: WizardStepData,
   serverState: ApiComposerState | null,
+  repositoryTitle: string,
 ): ApiComposerState {
   const { agents, flow } = computeAgentsAndFlowFromTechStack(
     data.techStack,
@@ -153,6 +161,7 @@ function buildComposerStateFromData(
   const hasUserAgents = agents.length > 1;
 
   return {
+    title: repositoryTitle,
     description: data.description,
     completionGate: data.completionGate,
     agents: hasUserAgents ? agents : (serverState?.agents ?? []),
@@ -165,10 +174,17 @@ function buildDraftRequest(
   data: WizardStepData,
   currentStep: number,
   serverState: ApiComposerState | null,
+  workspace: string,
 ): { state: ApiComposerState; wizard: ApiWizardState } {
+  const repositoryTitle = resolveRepositoryLabelFromCandidates(
+    workspace,
+    data.title,
+    serverState?.title,
+  );
+
   return {
-    state: buildComposerStateFromData(data, serverState),
-    wizard: buildWizardStateFromData(data, currentStep),
+    state: buildComposerStateFromData(data, serverState, repositoryTitle),
+    wizard: buildWizardStateFromData(data, currentStep, repositoryTitle),
   };
 }
 
@@ -221,6 +237,7 @@ function serializeWizardData(data: WizardStepData): string {
 }
 
 const DEFAULT_WIZARD_DATA: WizardStepData = {
+  title: "",
   description: "",
   techStack: [],
   safetyAnalysis: false,
@@ -275,6 +292,11 @@ export function useComposeWizard({
 
         // Merge sessionStorage data per step with server state
         const merged: WizardStepData = {
+          title: resolveRepositoryLabelFromCandidates(
+            workspace,
+            stateResp.wizard.title,
+            stateResp.state.title,
+          ),
           description: stateResp.wizard.description ?? stateResp.state.description ?? "",
           techStack: stateResp.wizard.techStack ?? [],
           safetyAnalysis: stateResp.wizard.safetyAnalysis ?? false,
@@ -386,6 +408,7 @@ export function useComposeWizard({
         wizardData,
         currentStep,
         serverStateRef.current,
+        workspace,
       );
 
       await api.compose.saveDraft(workspace, draftRequest);
@@ -442,6 +465,7 @@ export function useComposeWizard({
         wizardData,
         currentStep,
         serverStateRef.current,
+        workspace,
       );
       await api.compose.saveDraft(workspace, draftRequest);
 
@@ -466,6 +490,7 @@ export function useComposeWizard({
         wizardData,
         currentStep,
         serverStateRef.current,
+        workspace,
       );
       await api.compose.saveDraft(workspace, draftRequest);
 

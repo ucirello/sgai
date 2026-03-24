@@ -1,15 +1,18 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ComposePreview } from "@/components/ComposePreview";
 import { ProgressDots } from "@/components/WizardLayout";
 import { useComposeWizard } from "@/hooks/useComposeWizard";
 import { MissingWorkspaceNotice } from "@/components/MissingWorkspaceNotice";
+import { FocusableTooltipText } from "@/components/FocusableTooltipText";
 import { Link } from "react-router";
+import { resolveRepositoryLabel } from "@/lib/repository-label";
 import {
   ArrowLeft,
   Save,
@@ -27,6 +30,7 @@ export function WizardFinish() {
   const navigate = useNavigate();
   const workspace = searchParams.get("workspace") ?? "";
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const redirectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const {
     wizardData,
@@ -53,11 +57,23 @@ export function WizardFinish() {
     }
   }, [isLoading, fetchPreview]);
 
+  useEffect(() => {
+    return () => {
+      if (redirectTimeoutRef.current !== null) {
+        clearTimeout(redirectTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const handleSave = useCallback(async () => {
     const success = await saveGoal();
     if (success) {
       setSaveSuccess(true);
-      setTimeout(() => {
+      if (redirectTimeoutRef.current !== null) {
+        clearTimeout(redirectTimeoutRef.current);
+      }
+      redirectTimeoutRef.current = setTimeout(() => {
+        redirectTimeoutRef.current = null;
         navigate(workspace ? `/workspaces/${encodeURIComponent(workspace)}` : "/");
       }, 1500);
     }
@@ -66,6 +82,7 @@ export function WizardFinish() {
   const selectedTechNames = techStackItems
     .filter((item) => wizardData.techStack.includes(item.id))
     .map((item) => item.name);
+  const repositoryTitle = resolveRepositoryLabel({ name: workspace, title: wizardData.title });
 
   if (isLoading) {
     return (
@@ -116,6 +133,18 @@ export function WizardFinish() {
         <div className="overflow-y-auto pr-2 space-y-3">
           <h2 className="text-xl font-semibold mb-4">Review & Save</h2>
 
+          <Card className="py-3">
+            <CardContent className="flex items-start gap-3 px-4 py-0">
+              <FileText className="h-5 w-5 text-muted-foreground mt-0.5 flex-shrink-0" />
+              <div className="min-w-0 flex-1">
+                <div className="text-xs text-muted-foreground mb-1">Repository Title</div>
+                <FocusableTooltipText as="div" className="font-semibold text-sm">
+                  {repositoryTitle}
+                </FocusableTooltipText>
+              </div>
+            </CardContent>
+          </Card>
+
           {/* Description */}
           <Card className="py-3">
             <CardContent className="flex items-start gap-3 px-4 py-0">
@@ -123,9 +152,9 @@ export function WizardFinish() {
               <div className="min-w-0 flex-1">
                 <div className="text-xs text-muted-foreground mb-1">Project Description</div>
                 {wizardData.description ? (
-                  <div className="font-semibold text-sm truncate" title={wizardData.description}>
+                  <FocusableTooltipText as="div" className="font-semibold text-sm">
                     {wizardData.description}
-                  </div>
+                  </FocusableTooltipText>
                 ) : (
                   <div className="text-sm italic text-muted-foreground">Not set</div>
                 )}
@@ -142,9 +171,18 @@ export function WizardFinish() {
                 {selectedTechNames.length > 0 ? (
                   <div className="flex flex-wrap gap-1">
                     {selectedTechNames.map((name) => (
-                      <Badge key={name} variant="secondary" className="text-xs" title={name}>
-                        {name}
-                      </Badge>
+                      <Tooltip key={name}>
+                        <TooltipTrigger asChild>
+                          <Badge
+                            variant="secondary"
+                            tabIndex={0}
+                            className="max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                          >
+                            {name}
+                          </Badge>
+                        </TooltipTrigger>
+                        <TooltipContent>{name}</TooltipContent>
+                      </Tooltip>
                     ))}
                   </div>
                 ) : (
@@ -174,9 +212,9 @@ export function WizardFinish() {
                 <Terminal className="h-5 w-5 text-muted-foreground mt-0.5 flex-shrink-0" />
                 <div className="min-w-0 flex-1">
                   <div className="text-xs text-muted-foreground mb-1">Completion Gate</div>
-                  <code className="font-semibold text-sm" title={wizardData.completionGate}>
+                  <FocusableTooltipText as="code" className="font-semibold text-sm">
                     {wizardData.completionGate}
-                  </code>
+                  </FocusableTooltipText>
                 </div>
               </CardContent>
             </Card>

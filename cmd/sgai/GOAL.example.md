@@ -1,6 +1,6 @@
 ---
 # Required: this is the repository title shown in the UI.
-title: Title shown in the UI
+title: Title of your Goal
 flow: |
   "go-developer" -> "go-reviewer"
   "react-developer" -> "react-reviewer"

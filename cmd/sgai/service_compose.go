@@ -1,10 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 )
+
+var errComposerGoalModified = errors.New("GOAL.md has been modified by another session")
 
 type composeStateResult struct {
 	Workspace      string
@@ -15,11 +18,7 @@ type composeStateResult struct {
 }
 
 func (s *Server) composeStateService(workspacePath string) composeStateResult {
-	cs := s.getComposerSession(workspacePath)
-	cs.mu.Lock()
-	currentState := cs.state
-	wizard := syncWizardState(cs.wizard, currentState)
-	cs.mu.Unlock()
+	currentState, wizard := s.currentComposerSession(workspacePath)
 
 	var flowErr string
 	if currentState.Flow != "" {
@@ -43,27 +42,22 @@ type composeSaveResult struct {
 }
 
 func (s *Server) composeSaveService(workspacePath, ifMatch string) (composeSaveResult, error) {
-	goalPath := filepath.Join(workspacePath, "GOAL.md")
+	currentState, goalContent, errBuild := s.composerStateForBuild(workspacePath)
+	if errBuild != nil {
+		return composeSaveResult{}, errBuild
+	}
 
 	if ifMatch != "" {
-		currentContent, errRead := os.ReadFile(goalPath)
-		if errRead != nil && !os.IsNotExist(errRead) {
-			return composeSaveResult{}, fmt.Errorf("failed to read current GOAL.md")
-		}
-		currentEtag := computeEtag(currentContent)
+		currentEtag := computeEtag(goalContent)
 		if ifMatch != currentEtag {
-			return composeSaveResult{}, fmt.Errorf("GOAL.md has been modified by another session")
+			return composeSaveResult{}, errComposerGoalModified
 		}
 	}
 
-	cs := s.getComposerSession(workspacePath)
-	cs.mu.Lock()
-	currentState := cs.state
-	cs.mu.Unlock()
+	goalPath := filepath.Join(workspacePath, "GOAL.md")
+	goalContent = []byte(buildGOALContent(currentState))
 
-	goalContent := buildGOALContent(currentState)
-
-	if errWrite := os.WriteFile(goalPath, []byte(goalContent), 0644); errWrite != nil {
+	if errWrite := os.WriteFile(goalPath, goalContent, 0644); errWrite != nil {
 		return composeSaveResult{}, fmt.Errorf("failed to save GOAL.md: %w", errWrite)
 	}
 
@@ -91,10 +85,10 @@ type composePreviewResult struct {
 }
 
 func (s *Server) composePreviewService(workspacePath string) (composePreviewResult, error) {
-	cs := s.getComposerSession(workspacePath)
-	cs.mu.Lock()
-	currentState := cs.state
-	cs.mu.Unlock()
+	currentState, goalContent, errBuild := s.composerStateForBuild(workspacePath)
+	if errBuild != nil {
+		return composePreviewResult{}, errBuild
+	}
 
 	preview := buildGOALContent(currentState)
 
@@ -105,12 +99,7 @@ func (s *Server) composePreviewService(workspacePath string) (composePreviewResu
 		}
 	}
 
-	goalPath := filepath.Join(workspacePath, "GOAL.md")
-	existingContent, errRead := os.ReadFile(goalPath)
-	if errRead != nil && !os.IsNotExist(errRead) {
-		return composePreviewResult{}, fmt.Errorf("failed to read current GOAL.md")
-	}
-	etag := computeEtag(existingContent)
+	etag := computeEtag(goalContent)
 
 	return composePreviewResult{Content: preview, FlowError: flowErr, Etag: etag}, nil
 }
@@ -119,11 +108,8 @@ type composeDraftResult struct {
 	Saved bool
 }
 
-func (s *Server) composeDraftService(workspacePath string, state composerState) composeDraftResult {
-	cs := s.getComposerSession(workspacePath)
-	cs.mu.Lock()
-	cs.state = state
-	cs.mu.Unlock()
+func (s *Server) composeDraftService(workspacePath string, state composerState, wizard wizardState) composeDraftResult {
+	s.updateComposerSession(workspacePath, state, wizard)
 
 	s.notifyStateChange()
 

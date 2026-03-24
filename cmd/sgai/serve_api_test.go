@@ -2456,7 +2456,7 @@ func TestHandleAPIUpdateGoalValid(t *testing.T) {
 func TestHandleAPIOpenEditorGoalViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "editgoal-ws")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\ntitle: Compose Full\n---\n# Goal\n"), 0o644))
 	srv.editorAvailable = true
 	srv.editor = newConfigurableEditor("echo")
 
@@ -2518,7 +2518,7 @@ func TestComposeSaveWorkspaceNotFound(t *testing.T) {
 func TestComposeSaveWithMatchingEtag(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "etag-match-ws")
-	goalContent := "# Goal"
+	goalContent := "---\ntitle: Goal\n---\nBody"
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte(goalContent), 0o644))
 
 	etag := computeEtag([]byte(goalContent))
@@ -2529,7 +2529,7 @@ func TestComposeSaveWithMatchingEtag(t *testing.T) {
 func TestComposeSaveWithMismatchedEtag(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "etag-mismatch-ws")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\ntitle: Compose State Full Content\n---\n# Goal\n"), 0o644))
 
 	w := serveHTTPWithHeader(srv, "POST", "/api/v1/compose?workspace=etag-mismatch-ws", `{}`, "If-Match", `"wrongetag"`)
 	assert.Equal(t, http.StatusPreconditionFailed, w.Code)
@@ -2566,7 +2566,7 @@ func TestDeleteWorkspaceInvalidBodyViaHTTP(t *testing.T) {
 func TestDeleteWorkspaceStandaloneViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "del-standalone")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\ntitle: Compose Full\n---\n# Goal\n"), 0o644))
 
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/del-standalone/delete", `{"confirm":true}`)
 	assert.NotEqual(t, http.StatusNotFound, w.Code)
@@ -3074,6 +3074,107 @@ func TestBuildWorkspaceFullStateCanonicalTitle(t *testing.T) {
 	assert.Equal(t, "Canonical Repository Title", result.Title)
 	assert.Empty(t, result.ComputedTitle)
 	assert.True(t, result.HasEditedGoal)
+}
+
+func TestBuildWorkspaceFullStateUsesComputedTitleForForkedRoot(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	rootWSDir := setupTestWorkspace(t, rootDir, "root-ws")
+	forkWSDir := setupTestWorkspace(t, rootDir, "fork-ws")
+	require.NoError(t, os.WriteFile(filepath.Join(rootWSDir, "GOAL.md"), []byte("---\ntitle: Root Goal Title\n---\n# Root Goal\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(forkWSDir, "GOAL.md"), []byte("---\ntitle: Fork Goal Title\n---\n# Fork Goal\n"), 0o644))
+
+	groups := []workspaceGroup{{
+		Root: workspaceInfo{Directory: rootWSDir, DirName: "root-ws", IsRoot: true, HasWorkspace: true},
+		Forks: []workspaceInfo{{
+			Directory:    forkWSDir,
+			DirName:      "fork-ws",
+			HasWorkspace: true,
+		}},
+	}}
+
+	result := server.buildWorkspaceFullState(groups[0].Root, groups)
+	assert.Equal(t, "Root Goal Title", result.Title)
+	assert.Equal(t, "root-ws", result.ComputedTitle)
+}
+
+func TestBuildWorkspaceFullStateUsesComputedTitleForForkInRootGroup(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	rootWSDir := setupTestWorkspace(t, rootDir, "root-ws")
+	forkWSDir := setupTestWorkspace(t, rootDir, "fork-ws")
+	require.NoError(t, os.WriteFile(filepath.Join(rootWSDir, "GOAL.md"), []byte("---\ntitle: Root Goal Title\n---\n# Root Goal\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(forkWSDir, "GOAL.md"), []byte("---\ntitle: Fork Goal Title\n---\n# Fork Goal\n"), 0o644))
+
+	groups := []workspaceGroup{{
+		Root: workspaceInfo{Directory: rootWSDir, DirName: "root-ws", IsRoot: true, HasWorkspace: true},
+		Forks: []workspaceInfo{{
+			Directory:    forkWSDir,
+			DirName:      "fork-ws",
+			HasWorkspace: true,
+		}},
+	}}
+
+	result := server.buildWorkspaceFullState(groups[0].Forks[0], groups)
+	assert.Equal(t, "Fork Goal Title", result.Title)
+	assert.Equal(t, "root-ws/Fork Goal Title", result.ComputedTitle)
+}
+
+func TestBuildWorkspaceFullStatePreservesLiteralForkGoalTitleText(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	rootWSDir := setupTestWorkspace(t, rootDir, "root-ws")
+	forkWSDir := setupTestWorkspace(t, rootDir, "fork-ws")
+	require.NoError(t, os.WriteFile(filepath.Join(rootWSDir, "GOAL.md"), []byte("---\ntitle: Root Goal Title\n---\n# Root Goal\n"), 0o644))
+
+	groups := []workspaceGroup{{
+		Root: workspaceInfo{Directory: rootWSDir, DirName: "root-ws", IsRoot: true, HasWorkspace: true},
+		Forks: []workspaceInfo{{
+			Directory:    forkWSDir,
+			DirName:      "fork-ws",
+			HasWorkspace: true,
+		}},
+	}}
+
+	tests := []struct {
+		name      string
+		goalTitle string
+		want      string
+	}{
+		{name: "leadingSlash", goalTitle: "/Title", want: "root-ws//Title"},
+		{name: "dotDotSegment", goalTitle: "../Title", want: "root-ws/../Title"},
+		{name: "doubleSlash", goalTitle: "A//B", want: "root-ws/A//B"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.NoError(t, os.WriteFile(filepath.Join(forkWSDir, "GOAL.md"), []byte("---\ntitle: "+tt.goalTitle+"\n---\n# Fork Goal\n"), 0o644))
+
+			result := server.buildWorkspaceFullState(groups[0].Forks[0], groups)
+
+			assert.Equal(t, tt.goalTitle, result.Title)
+			assert.Equal(t, tt.want, result.ComputedTitle)
+		})
+	}
+}
+
+func TestCollectForksForAPIFromGroupsUsesComputedTitleForForks(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	rootWSDir := setupTestWorkspace(t, rootDir, "root-ws")
+	forkWSDir := setupTestWorkspace(t, rootDir, "fork-ws")
+	require.NoError(t, os.WriteFile(filepath.Join(rootWSDir, "GOAL.md"), []byte("---\ntitle: Root Goal Title\n---\n# Root Goal\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(forkWSDir, "GOAL.md"), []byte("---\ntitle: Fork Goal Title\n---\n# Fork Goal\n"), 0o644))
+
+	groups := []workspaceGroup{{
+		Root: workspaceInfo{Directory: rootWSDir, DirName: "root-ws", IsRoot: true, HasWorkspace: true},
+		Forks: []workspaceInfo{{
+			Directory:    forkWSDir,
+			DirName:      "fork-ws",
+			HasWorkspace: true,
+		}},
+	}}
+
+	result := server.collectForksForAPIFromGroups(rootWSDir, groups)
+	require.Len(t, result, 1)
+	assert.Equal(t, "Fork Goal Title", result[0].Title)
+	assert.Equal(t, "root-ws/Fork Goal Title", result[0].ComputedTitle)
 }
 
 func TestBuildWorkspaceFullStateNoGoal(t *testing.T) {
@@ -3604,7 +3705,7 @@ func TestHandleAPIComposeSaveSuccessful(t *testing.T) {
 func TestHandleAPIComposeStateFull(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "compose-full")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\ntitle: Compose Full\n---\n# Goal\n"), 0o644))
 
 	cs := srv.getComposerSession(wsDir)
 	cs.mu.Lock()
@@ -3629,7 +3730,7 @@ func TestHandleAPIComposeStateFull(t *testing.T) {
 func TestHandleAPIComposeStateFullContent(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "cs-full")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\ntitle: Compose State Full Content\n---\n# Goal\n"), 0o644))
 
 	cs := srv.getComposerSession(wsDir)
 	cs.mu.Lock()

@@ -165,6 +165,7 @@ var workflowTemplates = []workflowTemplate{
 type wizardState struct {
 	CurrentStep    int
 	FromTemplate   string
+	Title          string
 	Description    string
 	TechStack      []string
 	SafetyAnalysis bool
@@ -197,6 +198,9 @@ var defaultTechStackItems = []techStackItem{
 }
 
 func syncWizardState(wizard wizardState, st composerState) wizardState {
+	if wizard.Title == "" {
+		wizard.Title = st.Title
+	}
 	if len(wizard.TechStack) == 0 {
 		wizard.TechStack = techStackFromAgents(st.Agents)
 	}

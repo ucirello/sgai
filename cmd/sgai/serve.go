@@ -246,15 +246,16 @@ type Server struct {
 	composerSessionsMu sync.Mutex
 	composerSessions   map[string]*composerSession
 
-	workspaceScanFlight singleflight[string, []workspaceGroup]
-	workspaceScanCache  *ttlCache[string, []workspaceGroup]
-	classifyFlight      singleflight[string, workspaceKind]
-	classifyCache       *ttlCache[string, workspaceKind]
-	svgFlight           singleflight[string, string]
-	svgCache            *ttlCache[string, string]
-	stateFlight         singleflight[string, apiFactoryState]
-	stateCache          *ttlCache[string, apiFactoryState]
-	stateGeneration     uint64
+	workspaceScanFlight   singleflight[string, []workspaceGroup]
+	workspaceScanCache    *ttlCache[string, []workspaceGroup]
+	classifyFlight        singleflight[string, workspaceKind]
+	classifyCache         *ttlCache[string, workspaceKind]
+	repositoryTitleFlight singleflight[string, string]
+	svgFlight             singleflight[string, string]
+	svgCache              *ttlCache[string, string]
+	stateFlight           singleflight[string, apiFactoryState]
+	stateCache            *ttlCache[string, apiFactoryState]
+	stateGeneration       uint64
 
 	goalTitleComposer      func(workspacePath string, goalContent []byte) (string, error)
 	goalTitleReadFile      func(path string) ([]byte, error)
