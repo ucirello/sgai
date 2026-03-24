@@ -9,12 +9,6 @@ import type {
   ApiSessionActionResponse,
   ApiGoalResponse,
   ApiCreateWorkspaceResponse,
-  ApiComposeStateResponse,
-  ApiComposeTemplatesResponse,
-  ApiComposePreviewResponse,
-  ApiComposeDraftRequest,
-  ApiComposeDraftResponse,
-  ApiComposeSaveResponse,
   ApiForkResponse,
   ApiForkTemplateResponse,
   ApiUpdateGoalResponse,
@@ -229,40 +223,6 @@ export const api = {
     get: (lang: string, fileName: string, workspace: string) =>
       fetchJSON<Snippet>(
         `/api/v1/snippets/${encodeURIComponent(lang)}/${encodeURIComponent(fileName)}?workspace=${encodeURIComponent(workspace)}`,
-      ),
-  },
-
-  compose: {
-    get: (workspace: string) =>
-      fetchJSON<ApiComposeStateResponse>(
-        `/api/v1/compose?workspace=${encodeURIComponent(workspace)}`,
-      ),
-    save: (workspace: string, etag?: string) => {
-      const headers: Record<string, string> = {};
-      if (etag) {
-        headers["If-Match"] = etag;
-      }
-      return fetchJSON<ApiComposeSaveResponse>(
-        `/api/v1/compose?workspace=${encodeURIComponent(workspace)}`,
-        {
-          method: "POST",
-          headers,
-        },
-      );
-    },
-    templates: () =>
-      fetchJSON<ApiComposeTemplatesResponse>("/api/v1/compose/templates"),
-    preview: (workspace: string) =>
-      fetchJSON<ApiComposePreviewResponse>(
-        `/api/v1/compose/preview?workspace=${encodeURIComponent(workspace)}`,
-      ),
-    saveDraft: (workspace: string, draft: ApiComposeDraftRequest) =>
-      fetchJSON<ApiComposeDraftResponse>(
-        `/api/v1/compose/draft?workspace=${encodeURIComponent(workspace)}`,
-        {
-          method: "POST",
-          body: JSON.stringify(draft),
-        },
       ),
   },
 } as const;

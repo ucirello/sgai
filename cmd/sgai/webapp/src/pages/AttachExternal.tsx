@@ -177,11 +177,7 @@ export function AttachExternal() {
       try {
         const result = await api.workspaces.attach(validation.trimmedPath);
         triggerFactoryRefresh();
-        if (result.hasGoal) {
-          navigate(`/workspaces/${encodeURIComponent(result.name)}/goal/edit`);
-        } else {
-          navigate(`/compose?workspace=${encodeURIComponent(result.name)}`);
-        }
+        navigate(`/workspaces/${encodeURIComponent(result.name)}/goal/edit`);
       } catch (err) {
         if (err instanceof ApiError) {
           setError(err.message);

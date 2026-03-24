@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"io/fs"
 	"net/http"
@@ -212,41 +210,6 @@ func TestIsStaticAsset(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
-}
-
-func TestComputeEtag(t *testing.T) {
-	tests := []struct {
-		name    string
-		content []byte
-	}{
-		{
-			name:    "emptyContent",
-			content: []byte(""),
-		},
-		{
-			name:    "simpleContent",
-			content: []byte("test content"),
-		},
-		{
-			name:    "jsonContent",
-			content: []byte(`{"key": "value"}`),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := computeEtag(tt.content)
-			expected := computeExpectedEtag(tt.content)
-			assert.Equal(t, expected, result)
-			assert.NotEmpty(t, result)
-			assert.True(t, len(result) > 2)
-		})
-	}
-}
-
-func computeExpectedEtag(content []byte) string {
-	h := sha256.Sum256(content)
-	return `"` + hex.EncodeToString(h[:8]) + `"`
 }
 
 func TestFindSteerInsertPosition(t *testing.T) {
@@ -607,52 +570,6 @@ func TestCoordinatorModelFromWorkspace(t *testing.T) {
 	})
 }
 
-func TestBuildAPITechStackItemsTest(t *testing.T) {
-	techStack := []string{"go", "react", "htmx"}
-	result := buildAPITechStackItems(techStack)
-	assert.NotEmpty(t, result)
-
-	selectedCount := 0
-	for _, item := range result {
-		if item.Selected {
-			selectedCount++
-		}
-	}
-	assert.Equal(t, 3, selectedCount)
-}
-
-func TestBuildAPITechStackItemsFiltering(t *testing.T) {
-	items := buildAPITechStackItems([]string{"go"})
-	foundGo := false
-	for _, item := range items {
-		if item.ID == "go" {
-			assert.True(t, item.Selected)
-			foundGo = true
-		} else {
-			assert.False(t, item.Selected)
-		}
-	}
-	assert.True(t, foundGo)
-}
-
-func TestBuildAPITechStackItemsSelectedFiltering(t *testing.T) {
-	result := buildAPITechStackItems([]string{"go", "react"})
-	selectedCount := 0
-	for _, item := range result {
-		if item.Selected {
-			selectedCount++
-		}
-	}
-	assert.GreaterOrEqual(t, selectedCount, 0)
-}
-
-func TestBuildAPITechStackItemsNilSelected(t *testing.T) {
-	result := buildAPITechStackItems(nil)
-	for _, item := range result {
-		assert.False(t, item.Selected)
-	}
-}
-
 func TestWarmStateCache(t *testing.T) {
 	server, _ := setupTestServer(t)
 	server.warmStateCache()
@@ -685,7 +602,7 @@ func TestWriteJSONResponse(t *testing.T) {
 func TestWriteJSONContentType(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	_ = setupTestWorkspace(t, rootDir, "json-ct-ws")
-	w := serveHTTP(srv, "GET", "/api/v1/compose/templates", "")
+	w := serveHTTP(srv, "GET", "/api/v1/models", "")
 	assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
 }
 
@@ -1774,57 +1691,6 @@ func TestHandleAPIForkTemplate(t *testing.T) {
 	})
 }
 
-func TestHandleAPIComposeState(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "test-ws")
-
-	w := serveHTTP(server, "GET", "/api/v1/compose?workspace=test-ws", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestHandleAPIComposeTemplates(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "test-ws")
-
-	w := serveHTTP(server, "GET", "/api/v1/compose/templates?workspace=test-ws", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestHandleAPIComposePreview(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "test-ws")
-
-	w := serveHTTP(server, "GET", "/api/v1/compose/preview?workspace=test-ws", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestHandleAPIComposeSave(t *testing.T) {
-	t.Run("savesComposerState", func(t *testing.T) {
-		server, rootDir := setupTestServer(t)
-		_ = setupTestWorkspace(t, rootDir, "test-ws")
-
-		w := serveHTTP(server, "POST", "/api/v1/compose?workspace=test-ws", "")
-		assert.Equal(t, http.StatusCreated, w.Code)
-	})
-
-	t.Run("missingWorkspace", func(t *testing.T) {
-		server, _ := setupTestServer(t)
-
-		w := serveHTTP(server, "POST", "/api/v1/compose?workspace=nonexistent", "")
-		assert.Equal(t, http.StatusNotFound, w.Code)
-	})
-}
-
-func TestHandleAPIComposeDraft(t *testing.T) {
-	t.Run("invalidBody", func(t *testing.T) {
-		server, rootDir := setupTestServer(t)
-		_ = setupTestWorkspace(t, rootDir, "test-ws")
-
-		w := serveHTTP(server, "POST", "/api/v1/compose/draft?workspace=test-ws", `{invalid}`)
-		assert.Equal(t, http.StatusBadRequest, w.Code)
-	})
-}
-
 func TestHandleAPIBrowseDirectories(t *testing.T) {
 	server, _ := setupTestServer(t)
 
@@ -2110,42 +1976,6 @@ func TestHandleAPIWorkflowSVGMissingWorkspace(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
-func serveHTTPWithHeader(server *Server, method, path, body, headerKey, headerValue string) *httptest.ResponseRecorder {
-	mux := http.NewServeMux()
-	server.registerAPIRoutes(mux)
-	var req *http.Request
-	if body != "" {
-		req = httptest.NewRequest(method, path, strings.NewReader(body))
-	} else {
-		req = httptest.NewRequest(method, path, nil)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if headerKey != "" {
-		req.Header.Set(headerKey, headerValue)
-	}
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-	return w
-}
-
-func createHTTPRequest(t *testing.T, method, path, body string) *http.Request {
-	t.Helper()
-	var req *http.Request
-	if body != "" {
-		req = httptest.NewRequest(method, path, strings.NewReader(body))
-	} else {
-		req = httptest.NewRequest(method, path, nil)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	return req
-}
-
-func serveHTTPReq(mux *http.ServeMux, req *http.Request) *httptest.ResponseRecorder {
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-	return w
-}
-
 func TestSPAMiddlewareAPIRoutes(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	setupTestWorkspace(t, rootDir, "test-ws")
@@ -2202,44 +2032,10 @@ func TestHandleAPIDeleteWorkspaceInvalidBody(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
-func TestHandleAPIComposeDraftInvalidBody(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
-
-	w := serveHTTP(server, "POST", "/api/v1/compose/draft?workspace=test-ws", `{invalid}`)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
-
 func TestHandleAPIRespondMissingWorkspace(t *testing.T) {
 	server, _ := setupTestServer(t)
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/nonexistent/respond", `{"answer":"yes"}`)
 	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
-func TestHandleAPIComposeSaveWithEtag(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0644))
-
-	w := serveHTTP(server, "POST", "/api/v1/compose?workspace=test-ws", "")
-	assert.Equal(t, http.StatusCreated, w.Code)
-}
-
-func TestHandleAPIComposeSaveEtagMismatch(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0644))
-
-	mux := http.NewServeMux()
-	server.registerAPIRoutes(mux)
-
-	req := httptest.NewRequest("POST", "/api/v1/compose?workspace=test-ws", nil)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("If-Match", `"wrong-etag"`)
-
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-	assert.Equal(t, http.StatusPreconditionFailed, w.Code)
 }
 
 func TestHandleAPIStartSessionViaHTTPMissing(t *testing.T) {
@@ -2319,38 +2115,6 @@ func TestHandleAPIUpdateGoalViaHTTP(t *testing.T) {
 
 	w := serveHTTP(srv, "PUT", "/api/v1/workspaces/goal-ws/goal", `{"content":"---\n---\n# New Goal"}`)
 	assert.NotEqual(t, http.StatusNotFound, w.Code)
-}
-
-func TestHandleAPIComposeStateViaHTTP(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "compose-ws")
-
-	w := serveHTTP(srv, "GET", "/api/v1/compose", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestHandleAPIComposeDraftViaHTTP(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "draft-ws")
-
-	w := serveHTTP(srv, "POST", "/api/v1/compose/draft?workspace=draft-ws", `{"state":{},"wizard":{}}`)
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestHandleAPIComposeTemplatesViaHTTP(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "tmpl-ws")
-
-	w := serveHTTP(srv, "GET", "/api/v1/compose/templates", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestHandleAPIComposePreviewViaHTTP(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "preview-ws")
-
-	w := serveHTTP(srv, "GET", "/api/v1/compose/preview?workspace=preview-ws", "")
-	assert.Equal(t, http.StatusOK, w.Code)
 }
 
 func TestHandleAPIBrowseDirectoriesViaHTTP(t *testing.T) {
@@ -2509,32 +2273,6 @@ func TestHandleAPIDetachWorkspaceViaHTTP(t *testing.T) {
 	assert.Contains(t, []int{http.StatusNotFound, http.StatusInternalServerError}, w.Code)
 }
 
-func TestComposeSaveWorkspaceNotFound(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	w := serveHTTP(srv, "POST", "/api/v1/compose?workspace=nonexistent", `{}`)
-	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
-func TestComposeSaveWithMatchingEtag(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "etag-match-ws")
-	goalContent := "---\ntitle: Goal\n---\nBody"
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte(goalContent), 0o644))
-
-	etag := computeEtag([]byte(goalContent))
-	w := serveHTTPWithHeader(srv, "POST", "/api/v1/compose?workspace=etag-match-ws", `{}`, "If-Match", etag)
-	assert.Equal(t, http.StatusCreated, w.Code)
-}
-
-func TestComposeSaveWithMismatchedEtag(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "etag-mismatch-ws")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\ntitle: Compose State Full Content\n---\n# Goal\n"), 0o644))
-
-	w := serveHTTPWithHeader(srv, "POST", "/api/v1/compose?workspace=etag-mismatch-ws", `{}`, "If-Match", `"wrongetag"`)
-	assert.Equal(t, http.StatusPreconditionFailed, w.Code)
-}
-
 func TestUpdateGoalEmptyContentViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	_ = setupTestWorkspace(t, rootDir, "upgoal-empty-v2")
@@ -2680,24 +2418,6 @@ func TestSnippetsWorkspaceNotFoundViaHTTP(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
-func TestComposeStateWorkspaceNotFoundViaHTTP(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	w := serveHTTP(srv, "GET", "/api/v1/compose?workspace=nonexistent", "")
-	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
-func TestComposeDraftWorkspaceNotFoundViaHTTP(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	w := serveHTTP(srv, "POST", "/api/v1/compose/draft?workspace=nonexistent", `{}`)
-	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
-func TestComposePreviewWorkspaceNotFoundViaHTTP(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	w := serveHTTP(srv, "GET", "/api/v1/compose/preview?workspace=nonexistent", "")
-	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
 func TestStopSessionNotFoundViaHTTP(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/nonexistent-stop/stop", "{}")
@@ -2740,13 +2460,6 @@ func TestOpenEditorPMNotAvailableViaHTTP(t *testing.T) {
 
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/editor-pm-unavail/open-editor/project-management", "")
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-}
-
-func TestHandleAPIComposeTemplatesContent(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	w := serveHTTP(srv, "GET", "/api/v1/compose/templates", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), "templates")
 }
 
 func TestHandleAPIListModelsContent(t *testing.T) {
@@ -2971,41 +2684,6 @@ func TestRespondViaCoordinatorWithoutActiveToolCall(t *testing.T) {
 	body := `{"answer":"go with A","selectedChoices":["A"]}`
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/respond-wrong/respond", body)
 	assert.Equal(t, http.StatusConflict, w.Code)
-}
-
-func TestHandleAPIComposeSaveEtagMatchSucceeds(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws-etag-match")
-	goalContent := []byte("original content")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), goalContent, 0644))
-	etag := computeEtag(goalContent)
-
-	cs := server.getComposerSession(wsDir)
-	cs.mu.Lock()
-	cs.state = composerState{Description: "Updated"}
-	cs.mu.Unlock()
-
-	mux := http.NewServeMux()
-	server.registerAPIRoutes(mux)
-
-	req := createHTTPRequest(t, "POST", "/api/v1/compose?workspace=test-ws-etag-match", "")
-	req.Header.Set("If-Match", etag)
-	w := serveHTTPReq(mux, req)
-	assert.Equal(t, http.StatusCreated, w.Code)
-}
-
-func TestHandleAPIComposeSaveEtagMismatchFails(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws-etag-fail")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("original"), 0644))
-
-	mux := http.NewServeMux()
-	server.registerAPIRoutes(mux)
-
-	req := createHTTPRequest(t, "POST", "/api/v1/compose?workspace=test-ws-etag-fail", "")
-	req.Header.Set("If-Match", `"stale-etag"`)
-	w := serveHTTPReq(mux, req)
-	assert.Equal(t, http.StatusPreconditionFailed, w.Code)
 }
 
 func TestHandleAPIStateWithCaching(t *testing.T) {
@@ -3525,20 +3203,6 @@ func TestCollectAgentModelsWithGoal(t *testing.T) {
 	assert.NotNil(t, result)
 }
 
-func TestComputeEtagConsistency(t *testing.T) {
-	data := []byte("test content")
-	etag1 := computeEtag(data)
-	etag2 := computeEtag(data)
-	assert.Equal(t, etag1, etag2)
-	assert.True(t, len(etag1) > 0)
-}
-
-func TestComputeEtagDifferent(t *testing.T) {
-	etag1 := computeEtag([]byte("content1"))
-	etag2 := computeEtag([]byte("content2"))
-	assert.NotEqual(t, etag1, etag2)
-}
-
 func TestCoordinatorModelFromWorkspaceEmptyReturnsEmpty(t *testing.T) {
 	server, _ := setupTestServer(t)
 	result := server.coordinatorModelFromWorkspace("")
@@ -3610,140 +3274,6 @@ func TestHandleAPIBrowseDirsWithPathParam(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	w := serveHTTP(server, "GET", "/api/v1/browse-directories?path="+rootDir, "")
 	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestHandleAPIComposeDraftInvalidBodyV2(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "draft-invalid")
-
-	w := serveHTTP(srv, "POST", "/api/v1/compose/draft?workspace=draft-invalid", `not json`)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
-
-func TestHandleAPIComposeDraftWithContent(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "draft-content")
-
-	body := `{"state":{"description":"my project","agents":[{"name":"coordinator"}]},"wizard":{}}`
-	w := serveHTTP(srv, "POST", "/api/v1/compose/draft?workspace=draft-content", body)
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestHandleAPIComposePreviewWithFlowError(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "preview-flow-err")
-
-	cs := srv.getComposerSession(wsDir)
-	cs.mu.Lock()
-	cs.state.Flow = "invalid flow content {"
-	cs.mu.Unlock()
-
-	w := serveHTTP(srv, "GET", "/api/v1/compose/preview?workspace=preview-flow-err", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestHandleAPIComposePreviewWithState(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "preview-state")
-
-	cs := srv.getComposerSession(wsDir)
-	cs.mu.Lock()
-	cs.state.Description = "Preview test"
-	cs.state.Tasks = "## Tasks\n- Build something"
-	cs.mu.Unlock()
-
-	w := serveHTTP(srv, "GET", "/api/v1/compose/preview?workspace=preview-state", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	var resp apiComposePreviewResponse
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Contains(t, resp.Content, "Preview test")
-}
-
-func TestHandleAPIComposeSaveFullPath(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "save-full")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Old Goal"), 0o644))
-
-	cs := srv.getComposerSession(wsDir)
-	cs.mu.Lock()
-	cs.state.Description = "Saved project"
-	cs.state.Agents = []composerAgentConf{
-		{Name: "coordinator", Selected: true},
-		{Name: "builder", Selected: true},
-	}
-	cs.state.Flow = `digraph G {
-    "coordinator" -> "builder"
-}`
-	cs.mu.Unlock()
-
-	w := serveHTTP(srv, "POST", "/api/v1/compose?workspace=save-full", `{}`)
-	assert.Equal(t, http.StatusCreated, w.Code)
-
-	saved, errRead := os.ReadFile(filepath.Join(wsDir, "GOAL.md"))
-	require.NoError(t, errRead)
-	assert.Contains(t, string(saved), "Saved project")
-}
-
-func TestHandleAPIComposeSaveSuccessful(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
-	cs := server.getComposerSession(wsDir)
-	cs.mu.Lock()
-	cs.state = composerState{
-		Description: "Test project",
-		Flow:        `"a" -> "b"`,
-	}
-	cs.mu.Unlock()
-	w := serveHTTP(server, "POST", "/api/v1/compose?workspace=test-ws", "")
-	assert.Equal(t, http.StatusCreated, w.Code)
-	var resp apiComposeSaveResponse
-	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
-	assert.True(t, resp.Saved)
-}
-
-func TestHandleAPIComposeStateFull(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "compose-full")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\ntitle: Compose Full\n---\n# Goal\n"), 0o644))
-
-	cs := srv.getComposerSession(wsDir)
-	cs.mu.Lock()
-	cs.state.Description = "test"
-	cs.state.Agents = []composerAgentConf{
-		{Name: "coordinator", Selected: true, Model: "anthropic/claude-opus-4-6"},
-	}
-	cs.state.Flow = `digraph G { "coordinator" -> "builder" }`
-	cs.state.CompletionGate = "make test"
-	cs.wizard = wizardState{TechStack: []string{"go", "react"}}
-	cs.mu.Unlock()
-
-	w := serveHTTP(srv, "GET", "/api/v1/compose?workspace=compose-full", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	var resp apiComposeStateResponse
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, "test", resp.State.Description)
-	assert.NotEmpty(t, resp.TechStackItems)
-}
-
-func TestHandleAPIComposeStateFullContent(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "cs-full")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\ntitle: Compose State Full Content\n---\n# Goal\n"), 0o644))
-
-	cs := srv.getComposerSession(wsDir)
-	cs.mu.Lock()
-	cs.state.Description = "Test project"
-	cs.state.Agents = []composerAgentConf{{Name: "coordinator"}, {Name: "builder"}}
-	cs.mu.Unlock()
-
-	w := serveHTTP(srv, "GET", "/api/v1/compose?workspace=cs-full", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	var resp apiComposeStateResponse
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, "Test project", resp.State.Description)
 }
 
 func TestHandleAPIDeleteForkConfirmedNoFork(t *testing.T) {
@@ -5244,12 +4774,6 @@ func TestResolveRootForDeleteFork(t *testing.T) {
 	assert.Empty(t, result)
 }
 
-func TestHandleAPIComposePreviewNoWorkspace(t *testing.T) {
-	server, _ := setupTestServer(t)
-	w := serveHTTP(server, "GET", "/api/v1/compose/preview", "")
-	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
 func TestHandleAPIDeleteWorkspaceRootBlocked(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
@@ -5550,20 +5074,6 @@ func TestHandleAPIDeleteMessageNotFoundNew(t *testing.T) {
 	assert.Contains(t, []int{http.StatusOK, http.StatusNotFound, http.StatusBadRequest}, w.Code)
 }
 
-func TestHandleAPIComposeStateWithWorkspace(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "compose-new-ws")
-	w := serveHTTP(server, "GET", "/api/v1/compose?workspace=compose-new-ws", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestHandleAPIComposeSaveWithWorkspace(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "compose-save-new")
-	w := serveHTTP(server, "POST", "/api/v1/compose?workspace=compose-save-new", `{"flow":"\"a\" -> \"b\"","body":"# Goal","models":{}}`)
-	assert.Contains(t, []int{http.StatusOK, http.StatusCreated}, w.Code)
-}
-
 func TestHandleAPISteerEmptyMessage(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "steer-ws")
@@ -5738,14 +5248,6 @@ func TestHandleAPISnippetsWithWorkspaceNew(t *testing.T) {
 	require.NoError(t, os.MkdirAll(goDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(goDir, "test.go"), []byte("---\nname: Test\ndescription: Test snippet\n---\npackage main"), 0644))
 	w := serveHTTP(server, "GET", "/api/v1/snippets?workspace=snippets-ws-new", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestHandleAPIComposeDraftGlobal(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "compose-draft-global")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Test"), 0644))
-	w := serveHTTP(server, "POST", "/api/v1/compose/draft", `{"workspace":"compose-draft-global"}`)
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
@@ -6267,38 +5769,6 @@ func TestHandleAPIForkWorkspaceNotRootStandalone(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
-func TestHandleAPIComposeStateMissingWs(t *testing.T) {
-	server, _ := setupTestServer(t)
-	w := serveHTTP(server, "GET", "/api/v1/compose?workspace=nonexistent-compose", "")
-	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
-func TestHandleAPIComposeStateExistsWs(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "compose-ws")
-	w := serveHTTP(server, "GET", "/api/v1/compose?workspace=compose-ws", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestHandleAPIComposeSaveMissingWs(t *testing.T) {
-	server, _ := setupTestServer(t)
-	w := serveHTTP(server, "POST", "/api/v1/compose/save?workspace=nonexistent-save", "")
-	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
-func TestHandleAPIComposePreviewMissingWs(t *testing.T) {
-	server, _ := setupTestServer(t)
-	w := serveHTTP(server, "GET", "/api/v1/compose/preview?workspace=nonexistent-preview", "")
-	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
-func TestHandleAPIComposePreviewExistsWs(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "preview-ws")
-	w := serveHTTP(server, "GET", "/api/v1/compose/preview?workspace=preview-ws", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
 func TestHandleAPIStopSessionRunning(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, rootDir, "stop-session-ws")
@@ -6364,14 +5834,6 @@ func TestHandleAPIDetachWorkspaceInvalidBody(t *testing.T) {
 	server, _ := setupTestServer(t)
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/detach", `not json`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
-
-func TestHandleAPIComposeSaveWriteSuccess(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "compose-save-ok-ws")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0644))
-	w := serveHTTP(server, "POST", "/api/v1/compose?workspace=compose-save-ok-ws", `{}`)
-	assert.Equal(t, http.StatusCreated, w.Code)
 }
 
 func TestHandleAPIAttachWorkspaceNotDirectory(t *testing.T) {
