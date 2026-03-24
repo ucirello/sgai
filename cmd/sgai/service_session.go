@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -27,6 +28,22 @@ func (s *Server) startSessionService(workspacePath string, auto bool) (startSess
 		return startSessionResult2{}, errRootWorkspaceCannotStart
 	}
 
+	name := filepath.Base(workspacePath)
+
+	if s.sessionRunning(workspacePath) {
+		return startSessionResult2{
+			Name:           name,
+			Status:         "running",
+			Running:        true,
+			Message:        "session already running",
+			AlreadyRunning: true,
+		}, nil
+	}
+
+	if errValidateStart := validateStartSessionWorkspace(workspacePath); errValidateStart != nil {
+		return startSessionResult2{}, errValidateStart
+	}
+
 	coord := s.workspaceCoordinator(workspacePath)
 	continuousPrompt := readContinuousModePrompt(workspacePath)
 
@@ -47,8 +64,6 @@ func (s *Server) startSessionService(workspacePath string, auto bool) (startSess
 	}
 
 	result := s.startSession(workspacePath)
-
-	name := filepath.Base(workspacePath)
 
 	if result.alreadyRunning {
 		return startSessionResult2{
@@ -72,6 +87,64 @@ func (s *Server) startSessionService(workspacePath string, auto bool) (startSess
 		Running: true,
 		Message: "session started",
 	}, nil
+}
+
+func (s *Server) sessionRunning(workspacePath string) bool {
+	s.mu.Lock()
+	sess := s.sessions[workspacePath]
+	s.mu.Unlock()
+	if sess == nil {
+		return false
+	}
+	sess.mu.Lock()
+	running := sess.running
+	sess.mu.Unlock()
+	return running
+}
+
+func validateStartSessionWorkspace(workspacePath string) error {
+	goalPath := filepath.Join(workspacePath, "GOAL.md")
+	goalContent, errRead := os.ReadFile(goalPath)
+	if errRead != nil {
+		if os.IsNotExist(errRead) {
+			return fmt.Errorf("GOAL.md not found in %s", workspacePath)
+		}
+		return errRead
+	}
+
+	metadata, errParse := parseYAMLFrontmatter(goalContent)
+	if errParse != nil {
+		return fmt.Errorf("failed to parse GOAL.md frontmatter: %w", errParse)
+	}
+
+	projectConfig, errConfig := loadProjectConfig(workspacePath)
+	if errConfig != nil {
+		return fmt.Errorf("failed to load sgai.json: %w", errConfig)
+	}
+
+	if errValidate := validateProjectConfig(projectConfig); errValidate != nil {
+		return errValidate
+	}
+
+	applyConfigDefaults(projectConfig, &metadata)
+
+	if errInit := initializeWorkspaceDir(workspacePath); errInit != nil {
+		return fmt.Errorf("failed to initialize workspace directory: %w", errInit)
+	}
+
+	flowDag, errFlow := parseFlow(metadata.Flow, workspacePath)
+	if errFlow != nil {
+		return fmt.Errorf("failed to parse flow: %w", errFlow)
+	}
+
+	if retrospectiveEnabled(metadata) {
+		flowDag.injectRetrospectiveEdge()
+	}
+
+	ensureImplicitAgentModel(flowDag, &metadata, "project-critic-council")
+	ensureImplicitAgentModel(flowDag, &metadata, "retrospective")
+
+	return validateModels(metadata.Models)
 }
 
 type stopSessionResult struct {
