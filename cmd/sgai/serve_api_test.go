@@ -4713,6 +4713,40 @@ func TestHandleAPIStartSessionRootWorkspace(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "root workspace cannot start")
 }
 
+func TestHandleAPIStartSessionInvalidModelReturnsActionableError(t *testing.T) {
+	if _, errLookPath := exec.LookPath("opencode"); errLookPath != nil {
+		t.Skip("opencode not found in PATH")
+	}
+
+	if os.Getenv("SGAI_HELPER_INVALID_MODEL_START") == "1" {
+		server, rootDir := setupTestServer(t)
+		wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+		require.NoError(t, initializeWorkspace(wsDir))
+
+		goalContent := strings.Join([]string{
+			"---",
+			"flow: |",
+			`  "coordinator"`,
+			"models:",
+			"  coordinator: totally-fake-model-xyz",
+			"---",
+			"# Test Goal",
+		}, "\n")
+		require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte(goalContent), 0o644))
+
+		w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/start", `{}`)
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.Contains(t, w.Body.String(), "invalid model(s) specified")
+		assert.Contains(t, w.Body.String(), "totally-fake-model-xyz")
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run", "^TestHandleAPIStartSessionInvalidModelReturnsActionableError$")
+	cmd.Env = append(os.Environ(), "SGAI_HELPER_INVALID_MODEL_START=1")
+	output, errRun := cmd.CombinedOutput()
+	require.NoError(t, errRun, "subprocess output:\n%s", string(output))
+}
+
 func TestHandleAPIForkWorkspaceStandalone(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	setupTestWorkspace(t, rootDir, "test-ws")
