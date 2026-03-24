@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -101,11 +99,6 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/workspaces/{name}/open-editor/goal", s.handleAPIOpenEditorGoal)
 	mux.HandleFunc("POST /api/v1/workspaces/{name}/open-editor/project-management", s.handleAPIOpenEditorProjectManagement)
 	mux.HandleFunc("GET /api/v1/models", s.handleAPIListModels)
-	mux.HandleFunc("GET /api/v1/compose", s.handleAPIComposeState)
-	mux.HandleFunc("POST /api/v1/compose", s.handleAPIComposeSave)
-	mux.HandleFunc("GET /api/v1/compose/templates", s.handleAPIComposeTemplates)
-	mux.HandleFunc("GET /api/v1/compose/preview", s.handleAPIComposePreview)
-	mux.HandleFunc("POST /api/v1/compose/draft", s.handleAPIComposeDraft)
 
 	mux.HandleFunc("GET /api/v1/browse-directories", s.handleAPIBrowseDirectories)
 	mux.HandleFunc("POST /api/v1/workspaces/attach", s.handleAPIAttachWorkspace)
@@ -1370,160 +1363,6 @@ func (s *Server) handleAPIResetSession(w http.ResponseWriter, r *http.Request) {
 		Running: false,
 		Message: "session reset successfully",
 	})
-}
-
-type apiComposeStateResponse struct {
-	Workspace      string             `json:"workspace"`
-	State          composerState      `json:"state"`
-	Wizard         apiWizardState     `json:"wizard"`
-	TechStackItems []apiTechStackItem `json:"techStackItems"`
-	FlowError      string             `json:"flowError,omitempty"`
-}
-
-type apiWizardState struct {
-	CurrentStep    int      `json:"currentStep"`
-	FromTemplate   string   `json:"fromTemplate,omitempty"`
-	Title          string   `json:"title,omitempty"`
-	Description    string   `json:"description,omitempty"`
-	TechStack      []string `json:"techStack"`
-	SafetyAnalysis bool     `json:"safetyAnalysis"`
-	CompletionGate string   `json:"completionGate,omitempty"`
-}
-
-type apiTechStackItem struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Selected bool   `json:"selected"`
-}
-
-func (s *Server) handleAPIComposeState(w http.ResponseWriter, r *http.Request) {
-	workspacePath := s.resolveAPIWorkspace(r)
-	if workspacePath == "" {
-		http.Error(w, "workspace not found", http.StatusNotFound)
-		return
-	}
-
-	writeJSON(w, s.composeStateService(workspacePath))
-}
-
-func buildAPITechStackItems(selectedTech []string) []apiTechStackItem {
-	selectedMap := make(map[string]bool)
-	for _, ts := range selectedTech {
-		selectedMap[ts] = true
-	}
-
-	items := make([]apiTechStackItem, len(defaultTechStackItems))
-	for i, item := range defaultTechStackItems {
-		items[i] = apiTechStackItem{
-			ID:       item.ID,
-			Name:     item.Name,
-			Selected: selectedMap[item.ID],
-		}
-	}
-	return items
-}
-
-type apiComposeSaveResponse struct {
-	Saved     bool   `json:"saved"`
-	Workspace string `json:"workspace"`
-}
-
-func (s *Server) handleAPIComposeSave(w http.ResponseWriter, r *http.Request) {
-	workspacePath := s.resolveAPIWorkspace(r)
-	if workspacePath == "" {
-		http.Error(w, "workspace not found", http.StatusNotFound)
-		return
-	}
-
-	result, errSave := s.composeSaveService(workspacePath, r.Header.Get("If-Match"))
-	if errSave != nil {
-		if errors.Is(errSave, errComposerGoalModified) {
-			http.Error(w, errSave.Error(), http.StatusPreconditionFailed)
-			return
-		}
-		http.Error(w, errSave.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	if err := json.NewEncoder(w).Encode(apiComposeSaveResponse(result)); err != nil {
-		log.Println("failed to encode json response:", err)
-	}
-}
-
-func computeEtag(content []byte) string {
-	h := sha256.Sum256(content)
-	return `"` + hex.EncodeToString(h[:8]) + `"`
-}
-
-type apiComposeTemplateEntry struct {
-	ID          string              `json:"id"`
-	Name        string              `json:"name"`
-	Description string              `json:"description"`
-	Icon        string              `json:"icon"`
-	Agents      []composerAgentConf `json:"agents"`
-	Flow        string              `json:"flow"`
-}
-
-type apiComposeTemplatesResponse struct {
-	Templates []apiComposeTemplateEntry `json:"templates"`
-}
-
-func (s *Server) handleAPIComposeTemplates(w http.ResponseWriter, _ *http.Request) {
-	entries := make([]apiComposeTemplateEntry, len(workflowTemplates))
-	for i, tmpl := range workflowTemplates {
-		entries[i] = apiComposeTemplateEntry(tmpl)
-	}
-
-	writeJSON(w, apiComposeTemplatesResponse{Templates: entries})
-}
-
-type apiComposePreviewResponse struct {
-	Content   string `json:"content"`
-	FlowError string `json:"flowError,omitempty"`
-	Etag      string `json:"etag"`
-}
-
-func (s *Server) handleAPIComposePreview(w http.ResponseWriter, r *http.Request) {
-	workspacePath := s.resolveAPIWorkspace(r)
-	if workspacePath == "" {
-		http.Error(w, "workspace not found", http.StatusNotFound)
-		return
-	}
-
-	result, errPreview := s.composePreviewService(workspacePath)
-	if errPreview != nil {
-		http.Error(w, errPreview.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	writeJSON(w, apiComposePreviewResponse(result))
-}
-
-type apiComposeDraftRequest struct {
-	State  composerState  `json:"state"`
-	Wizard apiWizardState `json:"wizard"`
-}
-
-type apiComposeDraftResponse struct {
-	Saved bool `json:"saved"`
-}
-
-func (s *Server) handleAPIComposeDraft(w http.ResponseWriter, r *http.Request) {
-	workspacePath := s.resolveAPIWorkspace(r)
-	if workspacePath == "" {
-		http.Error(w, "workspace not found", http.StatusNotFound)
-		return
-	}
-
-	var req apiComposeDraftRequest
-	if errDecode := json.NewDecoder(r.Body).Decode(&req); errDecode != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	writeJSON(w, apiComposeDraftResponse(s.composeDraftService(workspacePath, req.State, wizardState(req.Wizard))))
 }
 
 type apiForkRequest struct {

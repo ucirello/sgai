@@ -72,8 +72,9 @@ describe("AttachExternal", () => {
     expect(screen.queryByText("Attach Workspace")).toBeNull();
   });
 
-  it("attaches an external repository and routes to GOAL editing when the repo already has one", async () => {
+  it("attaches an external repository and routes to GOAL editing", async () => {
     const user = userEvent.setup();
+    mockAttach.mockResolvedValueOnce({ name: "attached-repo", hasGoal: false });
     renderAttachExternal();
 
     const input = screen.getByRole("combobox", { name: "Repository Path" });

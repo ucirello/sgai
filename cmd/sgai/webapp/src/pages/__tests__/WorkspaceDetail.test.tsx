@@ -838,6 +838,19 @@ describe("WorkspaceDetail", () => {
       });
     });
 
+    it("navigates to Edit GOAL for an idle root workspace", async () => {
+      const user = userEvent.setup();
+
+      mockWorkspaces = [createMockWorkspace({ hasSgai: false, goalContent: "", rawGoalContent: "", isRoot: true })];
+
+      renderWorkspaceDetail();
+
+      const editGoalButton = await screen.findByRole("button", { name: "Edit GOAL" });
+      await user.click(editGoalButton);
+
+      expect(mockNavigate).toHaveBeenCalledWith("/workspaces/test-workspace/goal/edit?workspaceDir=%2Fpath%2Fto%2Ftest-workspace");
+    });
+
     it("shows Stop button when workspace is running", async () => {
       mockWorkspaces[0] = createMockWorkspace({ running: true });
 

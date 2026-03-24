@@ -211,14 +211,6 @@ describe("API URL construction patterns", () => {
     expect(`/api/v1/models?workspace=${encodeURIComponent("ws-1")}`).toBe("/api/v1/models?workspace=ws-1");
   });
 
-  it("constructs correct compose URL", () => {
-    expect(`/api/v1/compose?workspace=${encodeURIComponent("ws-1")}`).toBe("/api/v1/compose?workspace=ws-1");
-  });
-
-  it("constructs correct compose templates URL", () => {
-    expect("/api/v1/compose/templates").toBe("/api/v1/compose/templates");
-  });
-
   it("constructs request body for start with auto flag", () => {
     expect(JSON.stringify({ auto: true })).toBe('{"auto":true}');
     expect(JSON.stringify({ auto: false })).toBe('{"auto":false}');

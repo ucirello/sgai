@@ -299,8 +299,7 @@ export function WorkspaceDetail(): JSX.Element | null {
   const showStatusLine = !isForkedRoot && Boolean(agentModelLabel || statusLine);
   const encodedWorkspace = encodeURIComponent(detail.name);
   const selfDriveLabel = effectiveRunning ? "Self-Drive" : "Self-drive";
-  const showComposeGoalAction = !effectiveRunning;
-  const showEditGoalAction = detail.hasSgai || Boolean(detail.goalContent?.trim());
+  const showEditGoalAction = !effectiveRunning || detail.hasSgai || Boolean(detail.goalContent?.trim());
   const showOpenEditorAction = true;
   const isActionDisabled = effectiveRunning || isStartStopPending || isSelfDrivePending || isResetPending;
   const isResetActionDisabled = isResetPending || isStartStopPending || isSelfDrivePending;
@@ -601,16 +600,6 @@ export function WorkspaceDetail(): JSX.Element | null {
                         </AlertDialog>
                       )}
                     </>
-                  )}
-                  {showComposeGoalAction && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => navigate(`/compose?workspace=${encodedWorkspace}`)}
-                    >
-                      Compose GOAL
-                    </Button>
                   )}
                   {showEditGoalAction && (
                     <Button

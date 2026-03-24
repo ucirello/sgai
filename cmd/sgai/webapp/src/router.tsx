@@ -32,30 +32,6 @@ const SnippetDetail = lazy(() =>
 const ResponseMultiChoice = lazy(() =>
   import("./pages/ResponseMultiChoice").then((m) => ({ default: m.ResponseMultiChoice })),
 );
-const ComposeLanding = lazy(() =>
-  import("./pages/ComposeLanding").then((m) => ({ default: m.ComposeLanding })),
-);
-const ComposeTemplate = lazy(() =>
-  import("./pages/ComposeTemplate").then((m) => ({ default: m.ComposeTemplateRedirect })),
-);
-const WizardStep1 = lazy(() =>
-  import("./pages/WizardStep1").then((m) => ({ default: m.WizardStep1 })),
-);
-const WizardStep2 = lazy(() =>
-  import("./pages/WizardStep2").then((m) => ({ default: m.WizardStep2 })),
-);
-const WizardStep3 = lazy(() =>
-  import("./pages/WizardStep3").then((m) => ({ default: m.WizardStep3 })),
-);
-const WizardStep4 = lazy(() =>
-  import("./pages/WizardStep4").then((m) => ({ default: m.WizardStep4 })),
-);
-const WizardFinish = lazy(() =>
-  import("./pages/WizardFinish").then((m) => ({ default: m.WizardFinish })),
-);
-const ComposePreviewPage = lazy(() =>
-  import("./pages/ComposePreviewPage").then((m) => ({ default: m.ComposePreviewPage })),
-);
 const AttachExternal = lazy(() =>
   import("./pages/AttachExternal").then((m) => ({ default: m.AttachExternal })),
 );
@@ -181,43 +157,6 @@ export const router = createBrowserRouter([
         element: withDashboardSuspense(DashboardWithWorkspace),
         errorElement: createRouteErrorElement(),
       },
-      {
-        path: "compose",
-        element: withSuspense(ComposeLanding),
-      },
-      {
-        path: "compose/landing",
-        element: withSuspense(ComposeLanding),
-      },
-      {
-        path: "compose/template/:id",
-        element: withSuspense(ComposeTemplate),
-      },
-      {
-        path: "compose/step/1",
-        element: withSuspense(WizardStep1),
-      },
-      {
-        path: "compose/step/2",
-        element: withSuspense(WizardStep2),
-      },
-      {
-        path: "compose/step/3",
-        element: withSuspense(WizardStep3),
-      },
-      {
-        path: "compose/step/4",
-        element: withSuspense(WizardStep4),
-      },
-      {
-        path: "compose/finish",
-        element: withSuspense(WizardFinish),
-      },
-      {
-        path: "compose/preview",
-        element: withSuspense(ComposePreviewPage),
-      },
-      
       {
         path: "workspaces/:name/respond",
         element: withSuspense(ResponseMultiChoice),

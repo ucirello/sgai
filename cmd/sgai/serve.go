@@ -242,9 +242,6 @@ type Server struct {
 	promptActionRunner func(workspacePath, prompt, model string) adhocStartResult
 	scriptActionRunner func(workspacePath, actionName string, argv []string) adhocStartResult
 
-	composerSessionsMu sync.Mutex
-	composerSessions   map[string]*composerSession
-
 	workspaceScanFlight   singleflight[string, []workspaceGroup]
 	workspaceScanCache    *ttlCache[string, []workspaceGroup]
 	classifyFlight        singleflight[string, workspaceKind]
@@ -291,7 +288,6 @@ func NewServer(rootDir string, paths serverPaths, editorConfig string) *Server {
 		adhocStates:           make(map[string]*adhocPromptState),
 		shutdownCtx:           context.Background(),
 		signals:               newSignalBroker(),
-		composerSessions:      make(map[string]*composerSession),
 		rootDir:               absRootDir,
 		editorAvailable:       editorAvail,
 		isTerminalEditor:      editor.isTerminal,

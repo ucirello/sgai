@@ -6,7 +6,47 @@ const GOAL_WORKSPACE_NAME = "standalone-demo";
 
 async function openGoalWorkspace(page: Parameters<typeof test>[0]["page"]) {
   await page.goto(`/workspaces/${GOAL_WORKSPACE_NAME}/progress`);
+
+  const directEditGoalButton = page.getByRole("button", { name: "Edit GOAL" });
+  if ((await directEditGoalButton.count()) > 0) {
+    await expect(page).toHaveURL(/\/workspaces\/[^/]+(?:\/progress)?$/);
+    await expect(directEditGoalButton).toBeVisible();
+    return;
+  }
+
+  await page.goto("/");
+  await expect(page.getByText("Workspaces", { exact: true }).first()).toBeVisible();
+
+  const preferredWorkspaceLink = page.getByRole("link", { name: "Title of your Goal" }).first();
+  const workspaceLink = (await preferredWorkspaceLink.count()) > 0
+    ? preferredWorkspaceLink
+    : page.locator("a[href^='/workspaces/']").first();
+
+  await expect(workspaceLink).toBeVisible();
+  await workspaceLink.click();
   await expect(page).toHaveURL(/\/workspaces\/[^/]+(?:\/progress)?$/);
+  await expect(page.getByRole("button", { name: "Edit GOAL" })).toBeVisible();
+}
+
+async function openGoalEditor(page: Parameters<typeof test>[0]["page"]) {
+  await openGoalWorkspace(page);
+
+  const editGoalButton = page.getByRole("button", { name: "Edit GOAL" });
+  await expect(editGoalButton).toBeVisible();
+  await expect(editGoalButton).toBeEnabled();
+  await editGoalButton.click();
+
+  await expect(page).toHaveURL(/\/goal\/edit/);
+  await expect(page.getByText("Edit GOAL.md", { exact: true })).toBeVisible();
+
+  const editor = page.getByTestId("markdown-editor");
+  await expect(editor).toBeVisible();
+}
+
+async function focusGoalEditorSurface(page: Parameters<typeof test>[0]["page"]) {
+  const editorSurface = page.locator(".view-lines").first();
+  await expect(editorSurface).toBeVisible();
+  await editorSurface.click({ position: { x: 20, y: 20 } });
 }
 
 async function expectRenamedGoWorkflowVisible(page: Parameters<typeof test>[0]["page"]) {
@@ -22,262 +62,127 @@ test.describe("Goal Management Workflow", () => {
     await page.goto("/");
   });
 
-  test("create goal → edit → run agents → view results", async ({ page }) => {
-    await openGoalWorkspace(page);
-
-    const editGoalButton = page.locator('button:has-text("Edit GOAL")');
-    const hasEditGoal = await editGoalButton.isVisible().catch(() => false);
-
-    if (hasEditGoal) {
-      await editGoalButton.click();
-
-      await page.waitForURL(/\/goal\/edit/);
-
-      await expect(page.locator("text=Edit GOAL.md")).toBeVisible();
-
-      const editor = page.locator('[data-testid="markdown-editor"]');
-      const hasEditor = await editor.isVisible().catch(() => false);
-
-      if (hasEditor) {
-        await editor.click();
-
-        await page.keyboard.press("Control+a");
-        await page.keyboard.type(GO_WORKFLOW_GOAL);
-      }
-
-      await page.click('button:has-text("Save GOAL.md")');
-
-      await page.waitForSelector("text=Saved!", { timeout: 10000 });
-
-      await page.click('a:has-text("←")');
-
-      await page.waitForURL(/\/workspaces\/[^/]+\/progress/);
-
-      const startButton = page.locator('button:has-text("Start")');
-      const canStart = await startButton.isVisible().catch(() => false);
-
-      if (canStart) {
-        await startButton.click();
-
-        await page.waitForSelector("text=running", { timeout: 10000 });
-        await expectRenamedGoWorkflowVisible(page);
-      }
-
-      await page.click('a[href$="/progress"]');
-
-      await expect(page.locator("h3")).toBeVisible();
-
-      const logTab = page.locator('a[href$="/log"]');
-      const hasLogTab = await logTab.isVisible().catch(() => false);
-
-      if (hasLogTab) {
-        await logTab.click();
-
-        await page.waitForURL(/\/log/);
-
-        await expect(page.locator("text=Log")).toBeVisible();
-      }
-    }
-  });
-
   test("goal editor shows workspace description", async ({ page }) => {
-    await openGoalWorkspace(page);
+    await openGoalEditor(page);
 
-    const editGoalButton = page.locator('button:has-text("Edit GOAL")');
-    const hasEditGoal = await editGoalButton.isVisible().catch(() => false);
-
-    if (hasEditGoal) {
-      await editGoalButton.click();
-
-      await page.waitForURL(/\/goal\/edit/);
-
-      const description = page.locator("text=Edit GOAL.md").locator("..").locator("span").first();
-      const hasDescription = await description.isVisible().catch(() => false);
-
-      if (hasDescription) {
-        await expect(description).toBeVisible();
-      }
-    }
+    const description = page.locator("text=Edit GOAL.md").locator("..").locator("span").first();
+    await expect(description).toBeVisible();
   });
 
   test("goal editor keyboard shortcut saves", async ({ page }) => {
-    await openGoalWorkspace(page);
+    await openGoalEditor(page);
 
-    const editGoalButton = page.locator('button:has-text("Edit GOAL")');
-    const hasEditGoal = await editGoalButton.isVisible().catch(() => false);
-
-    if (hasEditGoal) {
-      await editGoalButton.click();
-
-      await page.waitForURL(/\/goal\/edit/);
-
-      await page.keyboard.press("Control+s");
-
-      await page.waitForSelector("text=Saved!", { timeout: 10000 });
-    }
+    await page.keyboard.press("Control+s");
+    await expect(page.getByText("Saved!", { exact: true })).toBeVisible({ timeout: 10000 });
   });
 
   test("goal editor shows loading state", async ({ page }) => {
-    await openGoalWorkspace(page);
-
-    const editGoalButton = page.locator('button:has-text("Edit GOAL")');
-    const hasEditGoal = await editGoalButton.isVisible().catch(() => false);
-
-    if (hasEditGoal) {
-      await editGoalButton.click();
-
-      await page.waitForURL(/\/goal\/edit/, { timeout: 5000 });
-    }
+    await openGoalEditor(page);
   });
 
   test("goal editor autocomplete for agents", async ({ page }) => {
-    await openGoalWorkspace(page);
+    await openGoalEditor(page);
+    await focusGoalEditorSurface(page);
+    await page.keyboard.press("Meta+A");
+    await page.keyboard.type("---\nflow: |\n\n---");
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.type('  "');
+    await page.keyboard.press("Control+Space");
 
-    const editGoalButton = page.locator('button:has-text("Edit GOAL")');
-    const hasEditGoal = await editGoalButton.isVisible().catch(() => false);
-
-    if (hasEditGoal) {
-      await editGoalButton.click();
-
-      await page.waitForURL(/\/goal\/edit/);
-
-      const editor = page.locator('[data-testid="markdown-editor"]');
-      const hasEditor = await editor.isVisible().catch(() => false);
-
-      if (hasEditor) {
-        await editor.click();
-
-        await page.keyboard.type('flow: |\n  "');
-
-        await page.waitForTimeout(1000);
-
-        await expect(editor).toBeVisible();
-      }
-    }
+    const suggestionWidget = page.locator(".suggest-widget.visible");
+    await expect(suggestionWidget).toBeVisible();
+    await expect(suggestionWidget).toContainText(/No suggestions\.|coordinator/);
   });
 
   test("goal editor preview mode", async ({ page }) => {
-    await openGoalWorkspace(page);
+    await openGoalEditor(page);
 
-    const editGoalButton = page.locator('button:has-text("Edit GOAL")');
-    const hasEditGoal = await editGoalButton.isVisible().catch(() => false);
+    const previewButton = page.getByRole("button", { name: "Preview" });
+    await expect(previewButton).toBeVisible();
+    await expect(previewButton).toBeEnabled();
+    await previewButton.click();
 
-    if (hasEditGoal) {
-      await editGoalButton.click();
-
-      await page.waitForURL(/\/goal\/edit/);
-
-      const previewButton = page.locator('button:has-text("Preview")');
-      const hasPreview = await previewButton.isVisible().catch(() => false);
-
-      if (hasPreview) {
-        await previewButton.click();
-
-        const previewContent = page.locator("text=Nothing to preview, text=Preview");
-        const hasPreviewContent = await previewContent.isVisible().catch(() => false);
-
-        if (hasPreviewContent) {
-          await expect(previewContent).toBeVisible();
-        }
-      }
-    }
+    await expect(previewButton).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("textbox", { name: "Editor content" })).toHaveCount(0);
   });
 
   test("goal editor write mode", async ({ page }) => {
-    await openGoalWorkspace(page);
+    await openGoalEditor(page);
 
-    const editGoalButton = page.locator('button:has-text("Edit GOAL")');
-    const hasEditGoal = await editGoalButton.isVisible().catch(() => false);
-
-    if (hasEditGoal) {
-      await editGoalButton.click();
-
-      await page.waitForURL(/\/goal\/edit/);
-
-      const writeButton = page.locator('button[aria-pressed="true"]:has-text("Write")');
-      const hasWriteButton = await writeButton.isVisible().catch(() => false);
-
-      if (hasWriteButton) {
-        await expect(writeButton).toBeVisible();
-      }
-    }
+    const writeButton = page.getByRole("button", { name: "Write" });
+    await expect(writeButton).toBeVisible();
+    await expect(writeButton).toHaveAttribute("aria-pressed", "true");
   });
 
   test("goal editor toolbar actions", async ({ page }) => {
-    await openGoalWorkspace(page);
+    await openGoalEditor(page);
 
-    const editGoalButton = page.locator('button:has-text("Edit GOAL")');
-    const hasEditGoal = await editGoalButton.isVisible().catch(() => false);
+    const boldButton = page.getByRole("button", { name: "Bold" });
+    const italicButton = page.getByRole("button", { name: "Italic" });
+    const headingButton = page.getByRole("button", { name: "Heading 1" });
 
-    if (hasEditGoal) {
-      await editGoalButton.click();
-
-      await page.waitForURL(/\/goal\/edit/);
-
-      const boldButton = page.locator('[aria-label="Bold"]');
-      const italicButton = page.locator('[aria-label="Italic"]');
-      const headingButton = page.locator('[aria-label="Heading 1"]');
-
-      const hasBold = await boldButton.isVisible().catch(() => false);
-      const hasItalic = await italicButton.isVisible().catch(() => false);
-      const hasHeading = await headingButton.isVisible().catch(() => false);
-
-      if (hasBold) await expect(boldButton).toBeVisible();
-      if (hasItalic) await expect(italicButton).toBeVisible();
-      if (hasHeading) await expect(headingButton).toBeVisible();
-    }
-  });
-
-  test("compose goal from scratch", async ({ page }) => {
-    await openGoalWorkspace(page);
-
-    const composeButton = page.locator('button:has-text("Compose GOAL")');
-    const hasCompose = await composeButton.isVisible().catch(() => false);
-
-    if (hasCompose) {
-      await composeButton.click();
-
-      await page.waitForURL(/\/compose/);
-
-      await expect(page.locator("text=Compose")).toBeVisible();
-    }
+    await expect(boldButton).toBeVisible();
+    await expect(boldButton).toBeEnabled();
+    await expect(italicButton).toBeVisible();
+    await expect(italicButton).toBeEnabled();
+    await expect(headingButton).toBeVisible();
+    await expect(headingButton).toBeEnabled();
   });
 
   test("goal content displays in progress tab", async ({ page }) => {
     await openGoalWorkspace(page);
 
-    const progressTab = page.locator('a[href$="/progress"]');
-    const hasProgressTab = await progressTab.isVisible().catch(() => false);
+    const progressTab = page.locator('a[href$="/progress"]').first();
+    await expect(progressTab).toBeVisible();
+    await progressTab.click();
 
-    if (hasProgressTab) {
-      await progressTab.click();
-
-      await expect(page.locator("h3")).toBeVisible();
-    }
+    await expect(page.locator("h3").first()).toBeVisible();
   });
 
   test("goal validation prevents empty save", async ({ page }) => {
-    await openGoalWorkspace(page);
+    await openGoalEditor(page);
+    await focusGoalEditorSurface(page);
+    await page.keyboard.press("Meta+A");
+    await page.keyboard.press("Backspace");
 
-    const editGoalButton = page.locator('button:has-text("Edit GOAL")');
-    const hasEditGoal = await editGoalButton.isVisible().catch(() => false);
+    const saveButton = page.getByRole("button", { name: "Save GOAL.md" });
+    await expect(saveButton).toBeDisabled();
+  });
 
-    if (hasEditGoal) {
-      await editGoalButton.click();
+  test("create goal → edit → run agents → view results", async ({ page }) => {
+    await openGoalEditor(page);
+    await focusGoalEditorSurface(page);
+    await page.keyboard.press("Meta+A");
+    await page.keyboard.type(GO_WORKFLOW_GOAL);
 
-      await page.waitForURL(/\/goal\/edit/);
+    const saveButton = page.getByRole("button", { name: "Save GOAL.md" });
+    await expect(saveButton).toBeVisible();
+    await expect(saveButton).toBeEnabled();
+    await saveButton.click();
+    await expect(page.getByText("Saved!", { exact: true })).toBeVisible({ timeout: 10000 });
 
-      const editor = page.locator('[data-testid="markdown-editor"]');
-      const hasEditor = await editor.isVisible().catch(() => false);
+    const backLink = page.getByRole("link", { name: /Back to/i });
+    await expect(backLink).toBeVisible();
+    await backLink.click();
+    await expect(page).toHaveURL(/\/workspaces\/[^/]+(?:\/progress)?$/);
 
-      if (hasEditor) {
-        await editor.click();
-        await page.keyboard.press("Control+a");
-        await page.keyboard.press("Backspace");
+    const startButton = page.getByRole("button", { name: "Start", exact: true });
+    await expect(startButton).toBeVisible();
+    await expect(startButton).toBeEnabled();
+    await startButton.click();
 
-        const saveButton = page.locator('button:has-text("Save GOAL.md")');
-        await expect(saveButton).toBeDisabled();
-      }
-    }
+    await expect(page.getByText(/running/i).first()).toBeVisible({ timeout: 10000 });
+    await expectRenamedGoWorkflowVisible(page);
+
+    const progressTab = page.locator('a[href$="/progress"]').first();
+    await expect(progressTab).toBeVisible();
+    await progressTab.click();
+    await expect(page.locator("h3").first()).toBeVisible();
+
+    const logTab = page.locator('a[href$="/log"]').first();
+    await expect(logTab).toBeVisible();
+    await logTab.click();
+    await expect(page).toHaveURL(/\/log/);
+    await expect(page.getByText("Log", { exact: true })).toBeVisible();
   });
 });
