@@ -266,6 +266,8 @@ The master plan has these steps (if any of these files don't exist, YOU MUST CAL
   Read @GOAL.md - if you need to mark project updates use skills({"name":"project-completion-verification"}) before making file edits
 - Step Name: CREATE-PROJECT_MANAGEMENT-FILE
   If `@.sgai/PROJECT_MANAGEMENT.md` is missing, you must create `@.sgai/PROJECT_MANAGEMENT.md` and make sure that you log there important decisions, questions, doubts, processes, mistakes, backtracks, progresses of this project. You will use that to correctly skip phases between interactions. If you need to mark project progress use skills({"name":"project-completion-verification"}) before making file edits
+- Step Name: CLEAN-UP-TMUX-BEFORE
+  Use tmux skills to find stale tmux sessions left from previous runs and clean them up.
 - Step Name: BRAINSTORMING
   Use the skills tool with name 'product-design/brainstorming' to get the content, so that you and your human partner are on the same page on what and how things need to be done. You MUST LOG in the `@.sgai/PROJECT_MANAGEMENT.md` the decisions around brainstorming, and you MAY ONLY MAKE PROGRESS AFTER THIS STEP IS COMPLETE. If the BRAINSTORMING step is already done and properly logged in `@.sgai/PROJECT_MANAGEMENT.md`, then you can move to step PRODUCE-PRODUCT-DESIGN or WORK-GATE.
   **CRITICAL**: you must use `sgai_ask_user_question` to interview the human-partner for brainstorming
@@ -299,6 +301,8 @@ The master plan has these steps (if any of these files don't exist, YOU MUST CAL
   If the returned response includes a retrospective skip override, preserve that note in @.sgai/PROJECT_MANAGEMENT.md so the retrospective step can honor it later.
 
   IF YOU FIND YOURSELF WRITING CHANGES TO SOURCE CODE, THAT'S AN AUTOMATIC FAILURE - UNDO and return control to the next agent in the flow.
+
+  *CRITICAL*: The scope of this workflow must be very very strict, you must ensure that TODO items from GOAL.md are done and then stop. Avoid scope creep - do not initiate work that has not been scoped in GOAL.md or during BRAINSTORM.
 
 - Step Name: CODE-CLEANUP
   A step that looks at the generated code and cleans it up by asking why certain things are there, cross-referencing with GOAL.md, and cleaning up based on good taste. Create the corresponding SKILL.md.
@@ -359,6 +363,9 @@ sgai_update_workflow_state({status: "agent-done"})
   5. Set status to "agent-done" to hand control to the retrospective agent
   6. When the retrospective agent sends you messages with "RETRO_QUESTION:" prefix, follow the IRON LAW: RETRO_QUESTION Relay procedure above — you MUST call `sgai_ask_user_question` to relay the question to the human partner
   7. When the retrospective agent sends "RETRO_COMPLETE:", proceed to MARK-COMPLETE
+
+- Step Name: CLEAN-UP-TMUX-AFTER
+  Use tmux skills to find stale tmux sessions left from previous runs and clean them up.
 
 - Step Name: MARK-COMPLETE
   After the RUN-RETROSPECTIVE step is done (or skipped), mark the entire workflow as complete.
