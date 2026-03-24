@@ -1550,6 +1550,7 @@ func (j *jsonPrettyWriter) processEvent(event streamEvent) {
 				if part.State.Output != "" {
 					if isTodoTool(part.Tool) {
 						j.formatTodoOutput(part.State.Output)
+						j.updateAgentTodos(part.Tool, part.State.Output)
 					} else {
 						for line := range strings.SplitSeq(part.State.Output, "\n") {
 							if _, err := fmt.Fprintln(j.w, j.tsPrefix()+"  → "+line); err != nil {
@@ -1692,16 +1693,8 @@ func isTodoTool(tool string) bool {
 }
 
 func (j *jsonPrettyWriter) formatTodoOutput(output string) {
-	type todo struct {
-		Content  string `json:"content"`
-		Status   string `json:"status"`
-		Priority string `json:"priority"`
-	}
-
-	jsonOutput := stripMCPTodoPrefix(output)
-
-	var todos []todo
-	if err := json.Unmarshal([]byte(jsonOutput), &todos); err != nil {
+	todos, ok := parseTodoOutput(output)
+	if !ok {
 		for line := range strings.SplitSeq(output, "\n") {
 			if _, err := fmt.Fprintln(j.w, j.tsPrefix()+"  → "+line); err != nil {
 				log.Println("write failed:", err)
@@ -1716,6 +1709,34 @@ func (j *jsonPrettyWriter) formatTodoOutput(output string) {
 			log.Println("write failed:", err)
 		}
 	}
+}
+
+func (j *jsonPrettyWriter) updateAgentTodos(tool, output string) {
+	if tool != "todowrite" || j.coord == nil || j.currentAgent == "" {
+		return
+	}
+
+	todos, ok := parseTodoOutput(output)
+	if !ok {
+		return
+	}
+
+	if errUpdate := j.coord.UpdateState(func(wf *state.Workflow) {
+		wf.Todos = slices.Clone(todos)
+	}); errUpdate != nil {
+		log.Println("failed to save todos:", errUpdate)
+	}
+}
+
+func parseTodoOutput(output string) ([]state.TodoItem, bool) {
+	jsonOutput := stripMCPTodoPrefix(output)
+
+	var todos []state.TodoItem
+	if errUnmarshal := json.Unmarshal([]byte(jsonOutput), &todos); errUnmarshal != nil {
+		return nil, false
+	}
+
+	return todos, true
 }
 
 func stripMCPTodoPrefix(output string) string {
