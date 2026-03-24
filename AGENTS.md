@@ -34,6 +34,7 @@ Use useSyncExternalStore for external data sources (SSE store). Use useReducer+C
 When modifying cmd/sgai/webapp/, always run `bun run build && make build` to verify both the React build and Go binary compile correctly.
 
 CRITICAL(code quality): ensure good Go code quality by calling `make lint`
+CRITICAL(code quality): never use `log.Fatal*` or similar -- because they crash the whole server
 
 You must use the skill `browser-bug-testing-workflow` - remember to use visual diffs and screenshots to evaluate the problem
 You must use the skill `run-long-running-processes-in-tmux`
@@ -61,3 +62,4 @@ When making changes, you can safely assume that backward compatibility is not ne
 # Code Auditing Guidance
 
 When auditing for dead routes, check both literal usage (API endpoint calls from frontend) AND semantic liveness (does the route lead to functionality that has been replaced by inline components or other mechanisms). A route that is technically reachable but leads to replaced functionality is dead.
+

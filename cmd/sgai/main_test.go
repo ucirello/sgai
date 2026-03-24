@@ -2308,9 +2308,10 @@ func TestUpdateProjectManagementWithRetrospectiveDir(t *testing.T) {
 
 func TestExtractRetrospectiveDirFromProjectManagement(t *testing.T) {
 	tests := []struct {
-		name     string
-		content  string
-		expected string
+		name            string
+		content         string
+		expected        string
+		wantErrContains string
 	}{
 		{
 			name:     "validHeader",
@@ -2318,24 +2319,39 @@ func TestExtractRetrospectiveDirFromProjectManagement(t *testing.T) {
 			expected: ".sgai/retrospectives/2026-03-05-10-00.abc1",
 		},
 		{
-			name:     "noHeader",
-			content:  "## No header here\n",
-			expected: "",
+			name:            "emptyRetrospectiveSession",
+			content:         "---\nRetrospective Session: \n---\n",
+			wantErrContains: "empty Retrospective Session in PROJECT_MANAGEMENT.md",
 		},
 		{
-			name:     "emptyFile",
-			content:  "",
-			expected: "",
+			name:            "noHeader",
+			content:         "## No header here\n",
+			wantErrContains: "missing frontmatter header in PROJECT_MANAGEMENT.md",
 		},
 		{
-			name:     "headerWithoutRetrospectiveSession",
-			content:  "---\nTitle: Some Title\n---\n\n## Content\n",
-			expected: "",
+			name:            "emptyFile",
+			content:         "",
+			wantErrContains: "missing frontmatter header in PROJECT_MANAGEMENT.md",
 		},
 		{
-			name:     "nonExistentFile",
-			content:  "",
-			expected: "",
+			name:            "headerWithoutRetrospectiveSession",
+			content:         "---\nTitle: Some Title\n---\n\n## Content\n",
+			wantErrContains: "missing Retrospective Session in PROJECT_MANAGEMENT.md",
+		},
+		{
+			name:            "missingClosingFrontmatterDelimiter",
+			content:         "---\nRetrospective Session: .sgai/retrospectives/2026-03-05-10-00.abc1\n## Content\n",
+			wantErrContains: "missing closing frontmatter delimiter in PROJECT_MANAGEMENT.md",
+		},
+		{
+			name:            "malformedClosingFrontmatterDelimiter",
+			content:         "---\nRetrospective Session: .sgai/retrospectives/2026-03-05-10-00.abc1\n----\n",
+			wantErrContains: "missing closing frontmatter delimiter in PROJECT_MANAGEMENT.md",
+		},
+		{
+			name:            "nonExistentFile",
+			content:         "",
+			wantErrContains: "read PROJECT_MANAGEMENT.md",
 		},
 	}
 
@@ -2345,14 +2361,20 @@ func TestExtractRetrospectiveDirFromProjectManagement(t *testing.T) {
 			pmPath := filepath.Join(tmpDir, "PROJECT_MANAGEMENT.md")
 
 			if tt.name == "nonExistentFile" {
-				result := extractRetrospectiveDirFromProjectManagement(filepath.Join(tmpDir, "nonexistent.md"))
+				result, errExtract := extractRetrospectiveDirFromProjectManagement(filepath.Join(tmpDir, "nonexistent.md"))
 				assert.Equal(t, "", result)
+				require.ErrorContains(t, errExtract, tt.wantErrContains)
 				return
 			}
 
 			require.NoError(t, os.WriteFile(pmPath, []byte(tt.content), 0644))
-			result := extractRetrospectiveDirFromProjectManagement(pmPath)
+			result, errExtract := extractRetrospectiveDirFromProjectManagement(pmPath)
 			assert.Equal(t, tt.expected, result)
+			if tt.wantErrContains == "" {
+				require.NoError(t, errExtract)
+				return
+			}
+			require.ErrorContains(t, errExtract, tt.wantErrContains)
 		})
 	}
 }
