@@ -3773,6 +3773,40 @@ func TestJSONPrettyWriterProcessEventToolCompletedTodo(t *testing.T) {
 	assert.Contains(t, output, "task2")
 }
 
+func TestJSONPrettyWriterProcessEventToolCompletedTodoUpdatesWorkflowState(t *testing.T) {
+	dir := t.TempDir()
+	coord, errCoord := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+	require.NoError(t, errCoord)
+
+	var buf bytes.Buffer
+	w := &jsonPrettyWriter{
+		prefix:       " ",
+		w:            &buf,
+		startTime:    time.Now(),
+		coord:        coord,
+		currentAgent: "test-agent",
+	}
+
+	w.processEvent(streamEvent{
+		Type: "tool",
+		Part: part{
+			Tool: "todowrite",
+			State: &toolState{
+				Status: "completed",
+				Input:  map[string]any{},
+				Output: `[{"id":"todo-1","content":"trace state","status":"in_progress","priority":"high"}]`,
+			},
+		},
+	})
+
+	wfState := coord.State()
+	require.Len(t, wfState.Todos, 1)
+	assert.Equal(t, "todo-1", wfState.Todos[0].ID)
+	assert.Equal(t, "trace state", wfState.Todos[0].Content)
+	assert.Equal(t, "in_progress", wfState.Todos[0].Status)
+	assert.Equal(t, "high", wfState.Todos[0].Priority)
+}
+
 func TestJSONPrettyWriterProcessEventToolError(t *testing.T) {
 	var buf bytes.Buffer
 	w := &jsonPrettyWriter{
