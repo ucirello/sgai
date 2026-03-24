@@ -370,7 +370,7 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 		Task:              wfState.Task,
 		GoalContent:       goalContent,
 		Title:             titleState.Title,
-		ComputedTitle:     titleState.ComputedTitle,
+		ComputedTitle:     workspaceComputedTitle(ws, groups, titleState),
 		RawGoalContent:    rawGoalContent,
 		FullGoalContent:   fullGoalContent,
 		PMContent:         pmContent,
@@ -399,6 +399,44 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 
 	return full
 }
+
+func workspaceComputedTitle(ws workspaceInfo, groups []workspaceGroup, titleState goalTitleState) string {
+	if rootDirName, ok := forkRootDirName(ws.Directory, groups); ok {
+		forkLabel := titleState.label()
+		if forkLabel == "" {
+			return rootDirName
+		}
+		return rootDirName + "/" + forkLabel
+	}
+	if rootHasForks(ws, groups) {
+		return ws.DirName
+	}
+	return titleState.ComputedTitle
+}
+
+func rootHasForks(ws workspaceInfo, groups []workspaceGroup) bool {
+	if !ws.IsRoot {
+		return false
+	}
+	for _, grp := range groups {
+		if grp.Root.Directory == ws.Directory {
+			return len(grp.Forks) > 0
+		}
+	}
+	return false
+}
+
+func forkRootDirName(workspaceDir string, groups []workspaceGroup) (string, bool) {
+	for _, grp := range groups {
+		for _, fork := range grp.Forks {
+			if fork.Directory == workspaceDir {
+				return grp.Root.DirName, true
+			}
+		}
+	}
+	return "", false
+}
+
 func (s *Server) collectForksForAPIFromGroups(rootDir string, groups []workspaceGroup) []apiForkEntry {
 	for _, grp := range groups {
 		if grp.Root.Directory != rootDir {
@@ -421,7 +459,7 @@ func (s *Server) collectForksForAPIFromGroups(rootDir string, groups []workspace
 					InProgress:    fork.InProgress,
 					Pinned:        fork.Pinned,
 					Title:         titleState.Title,
-					ComputedTitle: titleState.ComputedTitle,
+					ComputedTitle: workspaceComputedTitle(fork, groups, titleState),
 				}
 			})
 		}

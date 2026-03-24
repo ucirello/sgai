@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
-import { render, screen, waitFor, cleanup, within } from "@testing-library/react";
+import { act, render, screen, waitFor, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route, useLocation } from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -531,6 +531,111 @@ describe("Dashboard", () => {
   });
 
   describe("pinned fork with unpinned root", () => {
+    it("uses computedTitle for sidebar labels, including in-progress items, and avoids orphan pinned double-prefixes", async () => {
+      const user = userEvent.setup();
+      const workspaceWithForks = mockWorkspaces.find((workspace) => workspace.name === "workspace-2");
+      const unpinnedRoot = mockWorkspaces.find((workspace) => workspace.name === "root-unpinned");
+      const orphanPinnedFork = mockWorkspaces.find((workspace) => workspace.name === "orphan-pinned-fork");
+      const inProgressWorkspace = mockWorkspaces.find((workspace) => workspace.name === "workspace-3");
+
+      if (!workspaceWithForks || !workspaceWithForks.forks?.[0] || !unpinnedRoot || !unpinnedRoot.forks?.[0] || !orphanPinnedFork || !inProgressWorkspace) {
+        throw new Error("Expected dashboard fixture workspaces are missing");
+      }
+
+      const originalWorkspaceWithForks = {
+        title: workspaceWithForks.title,
+        computedTitle: workspaceWithForks.computedTitle,
+        forkTitle: workspaceWithForks.forks[0].title,
+        forkComputedTitle: workspaceWithForks.forks[0].computedTitle,
+      };
+      const originalUnpinnedRoot = {
+        title: unpinnedRoot.title,
+        computedTitle: unpinnedRoot.computedTitle,
+        forkTitle: unpinnedRoot.forks[0].title,
+        forkComputedTitle: unpinnedRoot.forks[0].computedTitle,
+      };
+      const originalOrphanPinnedFork = {
+        title: orphanPinnedFork.title,
+        computedTitle: orphanPinnedFork.computedTitle,
+      };
+      const originalInProgressWorkspace = {
+        title: inProgressWorkspace.title,
+        computedTitle: inProgressWorkspace.computedTitle,
+      };
+
+      try {
+        workspaceWithForks.title = "Legacy Root Title";
+        workspaceWithForks.computedTitle = "workspace-2";
+        workspaceWithForks.forks[0].title = "Legacy Nested Fork Title";
+        workspaceWithForks.forks[0].computedTitle = "workspace-2/Nested Fork Title";
+
+        unpinnedRoot.title = "Legacy Unpinned Root Title";
+        unpinnedRoot.computedTitle = "root-unpinned";
+        unpinnedRoot.forks[0].title = "Legacy Orphan Fork Title";
+        unpinnedRoot.forks[0].computedTitle = "root-unpinned/Orphan Pinned Fork Title";
+
+        orphanPinnedFork.title = "Legacy Orphan Fork Title";
+        orphanPinnedFork.computedTitle = "root-unpinned/Orphan Pinned Fork Title";
+
+        inProgressWorkspace.title = "Legacy In Progress Title";
+        inProgressWorkspace.computedTitle = "Computed In Progress Title";
+
+        renderDashboard();
+
+        await waitFor(() => {
+          const inProgressRegions = screen.queryAllByRole("region", { name: "In progress" });
+          expect(inProgressRegions.length).toBeGreaterThan(0);
+        });
+
+        const inProgressRegion = screen.getAllByRole("region", { name: "In progress" })[0];
+
+        await waitFor(() => {
+          expect(within(inProgressRegion).getByText("Computed In Progress Title")).toBeTruthy();
+        });
+
+        expect(within(inProgressRegion).queryByText("Legacy In Progress Title")).toBeNull();
+
+        await waitFor(() => {
+          const rootLabels = screen.queryAllByText("root-unpinned");
+          expect(rootLabels.length).toBeGreaterThan(0);
+        });
+
+        const expandButtons = screen.getAllByRole("button", { name: /forks for workspace-2/i });
+        await user.click(expandButtons[0]);
+
+        await waitFor(() => {
+          const nestedForkLabels = screen.queryAllByText("workspace-2/Nested Fork Title");
+          expect(nestedForkLabels.length).toBeGreaterThan(0);
+        });
+
+        await waitFor(() => {
+          const orphanForkLabels = screen.queryAllByText("root-unpinned/Orphan Pinned Fork Title");
+          expect(orphanForkLabels.length).toBeGreaterThan(0);
+        });
+
+        expect(screen.queryByText("root-unpinned/root-unpinned/Orphan Pinned Fork Title")).toBeNull();
+        expect(screen.queryByText("Legacy Root Title")).toBeNull();
+        expect(screen.queryByText("Legacy Nested Fork Title")).toBeNull();
+        expect(screen.queryByText("Legacy Unpinned Root Title/Legacy Orphan Fork Title")).toBeNull();
+      } finally {
+        workspaceWithForks.title = originalWorkspaceWithForks.title;
+        workspaceWithForks.computedTitle = originalWorkspaceWithForks.computedTitle;
+        workspaceWithForks.forks[0].title = originalWorkspaceWithForks.forkTitle;
+        workspaceWithForks.forks[0].computedTitle = originalWorkspaceWithForks.forkComputedTitle;
+
+        unpinnedRoot.title = originalUnpinnedRoot.title;
+        unpinnedRoot.computedTitle = originalUnpinnedRoot.computedTitle;
+        unpinnedRoot.forks[0].title = originalUnpinnedRoot.forkTitle;
+        unpinnedRoot.forks[0].computedTitle = originalUnpinnedRoot.forkComputedTitle;
+
+        orphanPinnedFork.title = originalOrphanPinnedFork.title;
+        orphanPinnedFork.computedTitle = originalOrphanPinnedFork.computedTitle;
+
+        inProgressWorkspace.title = originalInProgressWorkspace.title;
+        inProgressWorkspace.computedTitle = originalInProgressWorkspace.computedTitle;
+      }
+    });
+
     it("shows pinned forks with root title and fork title when root is not pinned", async () => {
       renderDashboard();
 
@@ -565,6 +670,42 @@ describe("Dashboard", () => {
       await waitFor(() => {
         const tooltipRootName = screen.queryAllByText("Root: Unpinned Root Title");
         expect(tooltipRootName.length).toBeGreaterThan(0);
+      });
+
+      const tooltipForkName = screen.getAllByText("Name: orphan-pinned-fork")[0];
+      const tooltipRootName = screen.getAllByText("Root: Unpinned Root Title")[0];
+
+      expect(String(tooltipForkName.getAttribute("class") ?? "")).toContain("text-background");
+      expect(String(tooltipForkName.getAttribute("class") ?? "")).not.toContain("text-background/80");
+      expect(String(tooltipRootName.getAttribute("class") ?? "")).toContain("text-background");
+      expect(String(tooltipRootName.getAttribute("class") ?? "")).not.toContain("text-background/80");
+    });
+
+    it("shows nested fork tooltip metadata when the sidebar link receives keyboard focus", async () => {
+      const user = userEvent.setup();
+      renderDashboard();
+
+      const expandForksButton = screen.getByRole("button", {
+        name: /expand forks for workspace two title/i,
+      });
+
+      await user.click(expandForksButton);
+
+      await waitFor(() => {
+        expect(screen.getByText("Workspace Two Fork Title")).toBeTruthy();
+      });
+
+      const forkLink = screen.getByRole("link", { name: /workspace two fork title/i });
+
+      expect(forkLink.getAttribute("href")).toBe("/workspaces/workspace-2-fork-1/progress");
+      act(() => {
+        forkLink.focus();
+      });
+      expect(document.activeElement).toBe(forkLink);
+
+      await waitFor(() => {
+        const tooltipForkName = screen.queryAllByText("Name: workspace-2-fork-1");
+        expect(tooltipForkName.length).toBeGreaterThan(0);
       });
     });
   });
