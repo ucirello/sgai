@@ -119,11 +119,10 @@ type composeDraftResult struct {
 	Saved bool
 }
 
-func (s *Server) composeDraftService(workspacePath string, state composerState, wizard wizardState) composeDraftResult {
+func (s *Server) composeDraftService(workspacePath string, state composerState) composeDraftResult {
 	cs := s.getComposerSession(workspacePath)
 	cs.mu.Lock()
 	cs.state = state
-	cs.wizard = wizard
 	cs.mu.Unlock()
 
 	s.notifyStateChange()

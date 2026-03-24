@@ -600,7 +600,7 @@ func cmdServe(args []string) {
 
 	mux := http.NewServeMux()
 	srv.registerAPIRoutes(mux)
-	mux.Handle("/mcp/external", buildExternalMCPHandler(srv))
+	mux.Handle("/mcp/external", buildExternalMCPHandler())
 	handler := srv.spaMiddleware(mux)
 
 	httpServer := &http.Server{Handler: handler}
