@@ -205,7 +205,7 @@ export function InlineForkEditor({ workspaceName }: InlineForkEditorProps) {
         setHasUserDraft(false);
         hasUnsavedChangesRef.current = false;
         triggerFactoryRefresh();
-        navigate(`/workspaces/${encodeURIComponent(result.name)}/goal/edit`);
+        navigate(`/workspaces/${encodeURIComponent(result.name)}/progress`);
       } catch (err) {
         if (err instanceof ApiError) {
           setSubmitError(err.message);
@@ -258,6 +258,7 @@ export function InlineForkEditor({ workspaceName }: InlineForkEditorProps) {
       <MarkdownEditor
         value={content}
         onChange={handleContentChange}
+        onSubmitShortcut={handleSubmit}
         minHeight={300}
         defaultHeight={400}
         disabled={isTemplateLoading || isSubmitting}

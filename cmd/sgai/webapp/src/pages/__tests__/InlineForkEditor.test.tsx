@@ -50,16 +50,23 @@ mock.module("@/lib/api", () => ({
 }));
 
 mock.module("@/components/MarkdownEditor", () => ({
-  MarkdownEditor: ({ value, onChange, disabled, placeholder }: {
+  MarkdownEditor: ({ value, onChange, disabled, placeholder, onSubmitShortcut }: {
     value: string;
     onChange: (v: string | undefined) => void;
     disabled: boolean;
     placeholder?: string;
+    onSubmitShortcut?: () => void;
   }) => (
     <div data-testid="markdown-editor">
       <textarea
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(event) => {
+          if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+            event.preventDefault();
+            onSubmitShortcut?.();
+          }
+        }}
         disabled={disabled}
         data-testid="fork-editor-textarea"
         placeholder={placeholder}
@@ -448,9 +455,45 @@ describe("InlineForkEditor", () => {
 
         await waitFor(() => {
           expect(mockTriggerFactoryRefresh).toHaveBeenCalled();
-          expect(mockNavigate).toHaveBeenCalledWith("/workspaces/new-fork/goal/edit");
+          expect(mockNavigate).toHaveBeenCalledWith("/workspaces/new-fork/progress");
         });
       }
+    });
+
+    it("submits the fork when Ctrl+S is pressed in the editor", async () => {
+      const user = userEvent.setup();
+
+      await renderInlineForkEditor();
+
+      await waitFor(() => {
+        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toContain("Goal");
+      });
+
+      const textarea = screen.getByTestId("fork-editor-textarea");
+      textarea.focus();
+      await user.keyboard("{Control>}s{/Control}");
+
+      await waitFor(() => {
+        expect(mockFork).toHaveBeenCalledWith("test-workspace", expect.stringContaining("# Goal"));
+        expect(mockNavigate).toHaveBeenCalledWith("/workspaces/new-fork/progress");
+      });
+    });
+
+    it("submits the fork when Cmd+S is pressed in the editor", async () => {
+      await renderInlineForkEditor();
+
+      await waitFor(() => {
+        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toContain("Goal");
+      });
+
+      const textarea = screen.getByTestId("fork-editor-textarea");
+      textarea.focus();
+      fireEvent.keyDown(textarea, { key: "s", metaKey: true });
+
+      await waitFor(() => {
+        expect(mockFork).toHaveBeenCalledWith("test-workspace", expect.stringContaining("# Goal"));
+        expect(mockNavigate).toHaveBeenCalledWith("/workspaces/new-fork/progress");
+      });
     });
 
     it("persists the draft to sessionStorage", async () => {

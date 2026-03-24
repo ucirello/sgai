@@ -181,6 +181,7 @@ export function EditGoal(): JSX.Element {
         <MarkdownEditor
           value={content}
           onChange={(v) => setContent(v ?? "")}
+          onSubmitShortcut={handleSave}
           disabled={isSaving || saveSuccess}
           workspaceName={workspaceName}
           fillHeight
