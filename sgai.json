@@ -29,6 +29,12 @@
       "model": "openai/gpt-5.4",
       "prompt": "run bash(`make deploy`)",
       "description": "Deploy the current build"
+    },
+    {
+      "name": "Deleted Unused Branches",
+      "model": "openai/gpt-5.4",
+      "prompt": "store the git path (by querying jj) into GIT_DIR, and using gh, find all branches that have already been merged or have been unused for more than 1 week and delete them",
+      "description": "Delete unused and dead branches"
     }
   ]
 }
