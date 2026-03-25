@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestHandleAPIStateIncludesRepositoryActionPolicy(t *testing.T) {
+func TestHandleAPIWorkspaceListIncludesRepositoryActionPolicy(t *testing.T) {
 	server, _ := setupTestServer(t)
 	baseDir := t.TempDir()
 
@@ -31,10 +31,10 @@ func TestHandleAPIStateIncludesRepositoryActionPolicy(t *testing.T) {
 	rootDir, forkDir := setupNamedAttachedJJRootAndFork(t, server, "root-ws", "fork-ws")
 	server.invalidateWorkspaceScanCache()
 
-	response := serveHTTP(server, http.MethodGet, "/api/v1/state", "")
+	response := serveHTTP(server, http.MethodGet, "/api/v1/workspaces", "")
 	require.Equal(t, http.StatusOK, response.Code)
 
-	workspaces := decodeWorkspaceStateByName(t, response.Body.Bytes())
+	workspaces := decodeWorkspaceListByName(t, response.Body.Bytes())
 
 	standalone := workspaces[filepath.Base(standaloneDir)]
 	assert.True(t, standalone.IsExternal)
@@ -79,7 +79,7 @@ func TestHandleAPIStateIncludesRepositoryActionPolicy(t *testing.T) {
 	})
 }
 
-func TestHandleAPIStateIncludesRepositoryActionPresentationMetadata(t *testing.T) {
+func TestHandleAPIWorkspaceListIncludesRepositoryActionPresentationMetadata(t *testing.T) {
 	server, _ := setupTestServer(t)
 	baseDir := t.TempDir()
 
@@ -87,10 +87,10 @@ func TestHandleAPIStateIncludesRepositoryActionPresentationMetadata(t *testing.T
 	attachWorkspaceFixture(t, server, standaloneDir, workspaceStandalone)
 	_, forkDir := setupNamedAttachedJJRootAndFork(t, server, "root-ws", "fork-ws")
 
-	response := serveHTTP(server, http.MethodGet, "/api/v1/state", "")
+	response := serveHTTP(server, http.MethodGet, "/api/v1/workspaces", "")
 	require.Equal(t, http.StatusOK, response.Code)
 
-	workspaces := decodeWorkspaceStateByName(t, response.Body.Bytes())
+	workspaces := decodeWorkspaceListByName(t, response.Body.Bytes())
 
 	standalonePresentation := workspaces[filepath.Base(standaloneDir)].RepositoryAction.Presentation
 	assert.Equal(t, "Detach", standalonePresentation.DetailTriggerLabel)
@@ -130,7 +130,7 @@ func TestHandleAPIStateIncludesRepositoryActionPresentationMetadata(t *testing.T
 	assert.Equal(t, "destructive", forkDeleteOperation.Tone)
 }
 
-func TestHandleAPIStateClassifiesZeroChildRootFromJJMetadata(t *testing.T) {
+func TestHandleAPIWorkspaceListClassifiesZeroChildRootFromJJMetadata(t *testing.T) {
 	server, _ := setupTestServer(t)
 	rootDir, forkDir := setupAttachedJJRootAndFork(t, server)
 	runJJForTest(t, rootDir, "workspace", "forget", filepath.Base(forkDir))
@@ -141,10 +141,10 @@ func TestHandleAPIStateClassifiesZeroChildRootFromJJMetadata(t *testing.T) {
 	freshServer.externalDirs[resolveSymlinks(rootDir)] = true
 	freshServer.mu.Unlock()
 
-	response := serveHTTP(freshServer, http.MethodGet, "/api/v1/state", "")
+	response := serveHTTP(freshServer, http.MethodGet, "/api/v1/workspaces", "")
 	require.Equal(t, http.StatusOK, response.Code)
 
-	workspaces := decodeWorkspaceStateByName(t, response.Body.Bytes())
+	workspaces := decodeWorkspaceListByName(t, response.Body.Bytes())
 	root := workspaces[filepath.Base(rootDir)]
 	assert.False(t, root.IsRoot)
 	assert.Empty(t, root.Forks)
@@ -158,7 +158,7 @@ func TestHandleAPIStateClassifiesZeroChildRootFromJJMetadata(t *testing.T) {
 	})
 }
 
-func TestHandleAPIStateHidesRootActionWhenWorkspaceTopologyUnavailable(t *testing.T) {
+func TestHandleAPIWorkspaceListHidesRootActionWhenWorkspaceTopologyUnavailable(t *testing.T) {
 	server, _ := setupTestServer(t)
 	rootDir, forkDir := setupAttachedJJRootAndFork(t, server)
 	server.mu.Lock()
@@ -167,10 +167,10 @@ func TestHandleAPIStateHidesRootActionWhenWorkspaceTopologyUnavailable(t *testin
 	t.Setenv("PATH", t.TempDir())
 	server.invalidateWorkspaceScanCache()
 
-	response := serveHTTP(server, http.MethodGet, "/api/v1/state", "")
+	response := serveHTTP(server, http.MethodGet, "/api/v1/workspaces", "")
 	require.Equal(t, http.StatusOK, response.Code)
 
-	workspaces := decodeWorkspaceStateByName(t, response.Body.Bytes())
+	workspaces := decodeWorkspaceListByName(t, response.Body.Bytes())
 	root := workspaces[filepath.Base(rootDir)]
 	assert.True(t, root.IsRoot)
 	assertRepositoryAction(t, &root.RepositoryAction, &repositoryActionExpectation{
@@ -368,9 +368,9 @@ func TestHandleAPIDeleteForkKeepsFactoryStateHealthy(t *testing.T) {
 	assert.False(t, stillAttached)
 	assert.False(t, stillPinned)
 
-	stateResponse := serveHTTP(server, http.MethodGet, "/api/v1/state", "")
+	stateResponse := serveHTTP(server, http.MethodGet, "/api/v1/workspaces", "")
 	require.Equal(t, http.StatusOK, stateResponse.Code)
-	workspaces := decodeWorkspaceStateByName(t, stateResponse.Body.Bytes())
+	workspaces := decodeWorkspaceListByName(t, stateResponse.Body.Bytes())
 	root := workspaces[filepath.Base(rootDir)]
 	require.NotNil(t, root)
 	_, forkPresent := workspaces[filepath.Base(forkDir)]
@@ -449,9 +449,9 @@ func TestHandleAPIDeleteWorkspaceForkDetachOperationKeepsFiles(t *testing.T) {
 	assert.False(t, stillAttached)
 	assert.False(t, stillPinned)
 
-	stateResponse := serveHTTP(server, http.MethodGet, "/api/v1/state", "")
+	stateResponse := serveHTTP(server, http.MethodGet, "/api/v1/workspaces", "")
 	require.Equal(t, http.StatusOK, stateResponse.Code)
-	workspaces := decodeWorkspaceStateByName(t, stateResponse.Body.Bytes())
+	workspaces := decodeWorkspaceListByName(t, stateResponse.Body.Bytes())
 	require.NotNil(t, workspaces[filepath.Base(rootDir)])
 	_, forkPresent := workspaces[filepath.Base(forkDir)]
 	assert.False(t, forkPresent)
@@ -491,7 +491,7 @@ func TestHandleAPIDeleteWorkspaceRollsBackWhenPinnedPersistenceFails(t *testing.
 	assert.True(t, pathListContains(readJSONPathList(t, filepath.Join(server.externalConfigDir, "external.json")), workspaceDir))
 }
 
-func TestBuildFullFactoryStatePrunesMissingAttachedWorkspace(t *testing.T) {
+func TestBuildWorkspaceListResponsePrunesMissingAttachedWorkspace(t *testing.T) {
 	server, _ := setupTestServer(t)
 	server.externalConfigDir = t.TempDir()
 	server.pinnedConfigDir = t.TempDir()
@@ -508,7 +508,7 @@ func TestBuildFullFactoryStatePrunesMissingAttachedWorkspace(t *testing.T) {
 	require.NoError(t, server.savePinnedProjects())
 	server.invalidateWorkspaceScanCache()
 
-	state := server.buildFullFactoryState()
+	state := server.buildWorkspaceListResponse()
 	require.Len(t, state.Workspaces, 1)
 	assert.Equal(t, filepath.Base(validDir), state.Workspaces[0].Name)
 
@@ -522,7 +522,7 @@ func TestBuildFullFactoryStatePrunesMissingAttachedWorkspace(t *testing.T) {
 	assert.NotContains(t, readJSONPathList(t, filepath.Join(server.pinnedConfigDir, "pinned.json")), missingCanonical)
 }
 
-func TestBuildFullFactoryStateDoesNotEmitPhantomRootAfterPruningMissingAttachedRoot(t *testing.T) {
+func TestBuildWorkspaceListResponseDoesNotEmitPhantomRootAfterPruningMissingAttachedRoot(t *testing.T) {
 	server, _ := setupTestServer(t)
 	server.externalConfigDir = t.TempDir()
 	server.pinnedConfigDir = t.TempDir()
@@ -554,7 +554,7 @@ func TestBuildFullFactoryStateDoesNotEmitPhantomRootAfterPruningMissingAttachedR
 	require.NoError(t, server.savePinnedProjects())
 	server.invalidateWorkspaceScanCache()
 
-	state := server.buildFullFactoryState()
+	state := server.buildWorkspaceListResponse()
 	require.Len(t, state.Workspaces, 1)
 	assert.Equal(t, filepath.Base(forkDir), state.Workspaces[0].Name)
 	assert.Equal(t, forkCanonical, state.Workspaces[0].Dir)
@@ -581,7 +581,7 @@ func TestBuildFullFactoryStateDoesNotEmitPhantomRootAfterPruningMissingAttachedR
 	assert.NotContains(t, readJSONPathList(t, filepath.Join(server.pinnedConfigDir, "pinned.json")), missingRootCanonical)
 }
 
-func TestBuildFullFactoryStateKeepsUnreadableAttachedWorkspaceState(t *testing.T) {
+func TestBuildWorkspaceListResponseKeepsUnreadableAttachedWorkspaceState(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("skipping permission test as root")
 	}
@@ -614,7 +614,7 @@ func TestBuildFullFactoryStateKeepsUnreadableAttachedWorkspaceState(t *testing.T
 	require.Error(t, errStat)
 	require.False(t, os.IsNotExist(errStat))
 
-	state := server.buildFullFactoryState()
+	state := server.buildWorkspaceListResponse()
 	require.Len(t, state.Workspaces, 1)
 	assert.Equal(t, filepath.Base(validDir), state.Workspaces[0].Name)
 
@@ -628,7 +628,7 @@ func TestBuildFullFactoryStateKeepsUnreadableAttachedWorkspaceState(t *testing.T
 	assert.Contains(t, readJSONPathList(t, filepath.Join(server.pinnedConfigDir, "pinned.json")), lockedCanonical)
 }
 
-func TestBuildFullFactoryStateDoesNotEmitUnreadableAttachedRoot(t *testing.T) {
+func TestBuildWorkspaceListResponseDoesNotEmitUnreadableAttachedRoot(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("skipping permission test as root")
 	}
@@ -669,7 +669,7 @@ func TestBuildFullFactoryStateDoesNotEmitUnreadableAttachedRoot(t *testing.T) {
 	require.Error(t, errStat)
 	require.False(t, os.IsNotExist(errStat))
 
-	state := server.buildFullFactoryState()
+	state := server.buildWorkspaceListResponse()
 	require.Len(t, state.Workspaces, 1)
 	assert.Equal(t, filepath.Base(forkDir), state.Workspaces[0].Name)
 	assert.Equal(t, forkCanonical, state.Workspaces[0].Dir)
@@ -722,13 +722,13 @@ func assertRepositoryAction(t *testing.T, repositoryAction *apiRepositoryAction,
 	assert.ElementsMatch(t, want.allowedOperations, repositoryAction.AllowedOps)
 }
 
-func decodeWorkspaceStateByName(t *testing.T, data []byte) map[string]apiWorkspaceFullState {
+func decodeWorkspaceListByName(t *testing.T, data []byte) map[string]apiWorkspaceListEntry {
 	t.Helper()
 
-	var response apiFactoryState
+	var response apiWorkspaceListResponse
 	require.NoError(t, json.Unmarshal(data, &response))
 
-	result := make(map[string]apiWorkspaceFullState, len(response.Workspaces))
+	result := make(map[string]apiWorkspaceListEntry, len(response.Workspaces))
 	for i := range response.Workspaces {
 		workspace := response.Workspaces[i]
 		result[workspace.Name] = workspace

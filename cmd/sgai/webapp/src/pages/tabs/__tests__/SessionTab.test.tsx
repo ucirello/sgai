@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
-import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode, Suspense, startTransition, useEffect, type ReactNode, type TextareaHTMLAttributes } from "react";
 import { MemoryRouter } from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import * as factoryStateModule from "@/lib/factory-state";
+import * as textareaModule from "@/components/ui/textarea";
+import * as workspacePageStateModule from "@/lib/workspace-page-state";
 import { api } from "@/lib/api";
 import * as markdownContentModule from "@/components/MarkdownContent";
 import { SessionTab } from "../SessionTab";
@@ -14,6 +16,19 @@ beforeEach(() => {
 
 const mockSteer = mock(() => Promise.resolve({ success: true, message: "ok" }));
 const mockTriggerFactoryRefresh = mock(() => {});
+let markdownRenderCount = 0;
+let steeringTextareaRenderCount = 0;
+let steeringTextareaMountCount = 0;
+
+function InstrumentedTextarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  steeringTextareaRenderCount += 1;
+
+  useEffect(() => {
+    steeringTextareaMountCount += 1;
+  }, []);
+
+  return <textarea data-slot="textarea" {...props} />;
+}
 
 const createDollarBreakdown = (overrides = {}) => ({
   input: 0,
@@ -74,24 +89,62 @@ const createMockWorkspace = (overrides = {}) => ({
 let mockWorkspaces = [createMockWorkspace()];
 
 const mockMarkdownContent = ({ content }: { content: string }) => (
-  <div data-testid="markdown-content">{content}</div>
+  (() => {
+    markdownRenderCount += 1;
+    return <div data-testid="markdown-content">{content}</div>;
+  })()
 );
 
-function renderSessionTab(props = {}) {
+function maybeWrapStrictMode(children: ReactNode, strictMode: boolean) {
+  if (!strictMode) {
+    return children;
+  }
+
+  return <StrictMode>{children}</StrictMode>;
+}
+
+const neverSettlingPromise = new Promise<never>(() => {});
+
+function deferredValue<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function SuspendOnDemand({ active }: { active: boolean }) {
+  if (active) {
+    throw neverSettlingPromise;
+  }
+
+  return null;
+}
+
+function renderSessionTab(props = {}, { strictMode = false }: { strictMode?: boolean } = {}) {
+  const workspace = mockWorkspaces[0] ?? createMockWorkspace();
   const defaultProps = {
     workspaceName: "test-workspace",
-    pmContent: undefined as string | undefined,
-    hasProjectMgmt: false,
+    agentSequence: workspace.agentSequence,
+    cost: workspace.cost,
+    modelStatuses: workspace.modelStatuses,
+    projectTodos: workspace.projectTodos,
+    agentTodos: workspace.agentTodos,
+    pmContent: workspace.pmContent as string | undefined,
+    hasProjectMgmt: workspace.hasProjectMgmt,
     ...props,
   };
 
-  return render(
+  return render(maybeWrapStrictMode(
     <MemoryRouter>
       <TooltipProvider>
         <SessionTab {...defaultProps} />
       </TooltipProvider>
-    </MemoryRouter>
-  );
+    </MemoryRouter>,
+    strictMode,
+  ));
 }
 
 afterEach(() => {
@@ -104,15 +157,14 @@ describe("SessionTab", () => {
     mockWorkspaces = [createMockWorkspace()];
     mockSteer.mockClear();
     mockTriggerFactoryRefresh.mockClear();
+    markdownRenderCount = 0;
+    steeringTextareaRenderCount = 0;
+    steeringTextareaMountCount = 0;
 
-    spyOn(factoryStateModule, "useFactoryState").mockImplementation(() => ({
-      workspaces: mockWorkspaces,
-      fetchStatus: "idle",
-      lastFetchedAt: Date.now(),
-    }));
-    spyOn(factoryStateModule, "triggerFactoryRefresh").mockImplementation(() => mockTriggerFactoryRefresh());
+    spyOn(workspacePageStateModule, "triggerWorkspacePageRefresh").mockImplementation(() => mockTriggerFactoryRefresh());
     spyOn(api.workspaces, "steer").mockImplementation((...args) => mockSteer(...args));
     spyOn(markdownContentModule, "MarkdownContent").mockImplementation((...args) => mockMarkdownContent(...args));
+    spyOn(textareaModule, "Textarea").mockImplementation((props) => <InstrumentedTextarea {...props} />);
   });
 
   describe("steer next turn", () => {
@@ -182,6 +234,8 @@ describe("SessionTab", () => {
       await waitFor(() => {
         expect(screen.getByText("Steering instruction sent.")).toBeTruthy();
       });
+
+      expect(mockTriggerFactoryRefresh).not.toHaveBeenCalled();
     });
 
     it("shows error when steer fails", async () => {
@@ -199,6 +253,97 @@ describe("SessionTab", () => {
       await waitFor(() => {
         expect(screen.getByText("Steer failed")).toBeTruthy();
       });
+    });
+
+    it("keeps the steering controls disabled until the request settles", async () => {
+      const user = userEvent.setup();
+      const pendingSteer = deferredValue<{ success: boolean; message: string }>();
+      mockSteer.mockImplementationOnce(() => pendingSteer.promise);
+
+      renderSessionTab();
+
+      const textarea = screen.getByPlaceholderText("Enter re-steering instruction...") as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "go faster" } });
+
+      const submitButton = screen.getByRole("button", { name: "Submit" });
+      await user.click(submitButton);
+
+      await waitFor(() => {
+        expect(textarea.disabled).toBe(true);
+        expect(submitButton.hasAttribute("disabled")).toBe(true);
+      });
+
+      await act(async () => {
+        pendingSteer.resolve({ success: true, message: "ok" });
+        await pendingSteer.promise;
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Steering instruction sent.")).toBeTruthy();
+      });
+    });
+
+    it("does not rerender project management markdown while typing a steering draft", async () => {
+      const user = userEvent.setup();
+
+      renderSessionTab({ hasProjectMgmt: true, pmContent: "# PM" });
+
+      await waitFor(() => {
+        expect(screen.getByText("PROJECT_MANAGEMENT.md")).toBeTruthy();
+      });
+
+      expect(markdownRenderCount).toBe(1);
+
+      const textarea = screen.getByPlaceholderText("Enter re-steering instruction...");
+      await user.type(textarea, "go faster");
+
+      expect((screen.getByPlaceholderText("Enter re-steering instruction...") as HTMLTextAreaElement).value).toBe("go faster");
+      expect(markdownRenderCount).toBe(1);
+    });
+
+    it("keeps the steering composer stable while internals props refresh during typing", async () => {
+      const user = userEvent.setup();
+
+      const view = renderSessionTab({
+        hasProjectMgmt: true,
+        pmContent: "# PM 0",
+        agentSequence: [{ agent: "coordinator", model: "opencode/glm-5", elapsedTime: "0m", isCurrent: true }],
+        modelStatuses: [{ modelId: "opencode/glm-5", status: "model-working" }],
+        projectTodos: [{ id: "todo-0", content: "Todo 0", status: "pending", priority: "medium" }],
+      });
+
+      const textarea = await screen.findByRole("textbox", { name: /re-steering instruction/i });
+      textarea.focus();
+
+      expect(steeringTextareaMountCount).toBe(1);
+
+      await user.type(textarea, "abc");
+      const renderCountAfterFirstChunk = steeringTextareaRenderCount;
+
+      view.rerender(
+        <MemoryRouter>
+          <TooltipProvider>
+            <SessionTab
+              workspaceName="test-workspace"
+              hasProjectMgmt
+              pmContent="# PM 1"
+              agentSequence={[{ agent: "coordinator", model: "opencode/glm-5", elapsedTime: "1m", isCurrent: true }]}
+              modelStatuses={[{ modelId: "opencode/glm-5", status: "model-done" }]}
+              projectTodos={[{ id: "todo-1", content: "Todo 1", status: "pending", priority: "medium" }]}
+              agentTodos={[]}
+            />
+          </TooltipProvider>
+        </MemoryRouter>
+      );
+
+      const refreshedTextarea = screen.getByRole("textbox", { name: /re-steering instruction/i }) as HTMLTextAreaElement;
+      expect(steeringTextareaRenderCount).toBe(renderCountAfterFirstChunk);
+      expect(steeringTextareaMountCount).toBe(1);
+      expect(refreshedTextarea.value).toBe("abc");
+      expect(refreshedTextarea).toBe(document.activeElement);
+
+      await user.type(refreshedTextarea, "defghij");
+      expect((screen.getByRole("textbox", { name: /re-steering instruction/i }) as HTMLTextAreaElement).value).toBe("abcdefghij");
     });
   });
 
@@ -255,6 +400,255 @@ describe("SessionTab", () => {
       await waitFor(() => {
         expect(screen.getByText("Write tests")).toBeTruthy();
       });
+    });
+
+    it("does not emit duplicate-key warnings when persisted agent todos are missing ids", async () => {
+      const consoleErrorSpy = spyOn(console, "error").mockImplementation(() => {});
+
+      mockWorkspaces = [createMockWorkspace({
+        agentTodos: [
+          { id: "", content: "First todo", status: "pending", priority: "high" },
+          { id: "", content: "Second todo", status: "pending", priority: "medium" },
+        ],
+      })];
+
+      renderSessionTab();
+
+      await waitFor(() => {
+        expect(screen.getByText("First todo")).toBeTruthy();
+        expect(screen.getByText("Second todo")).toBeTruthy();
+      });
+
+      const duplicateKeyWarnings = consoleErrorSpy.mock.calls.filter(([message]) => (
+        typeof message === "string" && message.includes("Encountered two children with the same key")
+      ));
+
+      expect(duplicateKeyWarnings).toHaveLength(0);
+    });
+
+    it("keeps the original blank-id agent todo row mounted when a same-signature blank-id todo is inserted ahead of it", async () => {
+      const view = renderSessionTab({
+        agentTodos: [
+          { id: "", content: "Duplicate todo", status: "pending", priority: "medium" },
+        ],
+      });
+
+      const originalRow = await waitFor(() => {
+        const row = screen.getByText("Duplicate todo").closest("li");
+        expect(row).toBeTruthy();
+        return row as HTMLLIElement;
+      });
+
+      view.rerender(
+        <MemoryRouter>
+          <TooltipProvider>
+            <SessionTab
+              workspaceName="test-workspace"
+              agentSequence={[]}
+              cost={createMockWorkspace().cost}
+              modelStatuses={[]}
+              projectTodos={[]}
+              agentTodos={[
+                { id: "", content: "Duplicate todo", status: "pending", priority: "medium" },
+                { id: "", content: "Duplicate todo", status: "pending", priority: "medium" },
+              ]}
+            />
+          </TooltipProvider>
+        </MemoryRouter>
+      );
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Duplicate todo")).toHaveLength(2);
+      });
+
+      const rows = screen.getAllByRole("listitem") as HTMLLIElement[];
+      const updatedRow = rows[1] as HTMLLIElement;
+
+      expect(updatedRow).toBe(originalRow);
+      expect(rows).toHaveLength(2);
+      expect(rows[0]?.textContent).toContain("Duplicate todo");
+      expect(rows[1]).toBe(updatedRow);
+    });
+
+    it("keeps the original blank-id agent todo row mounted when its mutable display fields change", async () => {
+      const view = renderSessionTab({
+        agentTodos: [
+          { id: "", content: "Original todo", status: "pending", priority: "medium" },
+        ],
+      });
+
+      const originalRow = await waitFor(() => {
+        const row = screen.getByText("Original todo").closest("li");
+        expect(row).toBeTruthy();
+        return row as HTMLLIElement;
+      });
+
+      view.rerender(
+        <MemoryRouter>
+          <TooltipProvider>
+            <SessionTab
+              workspaceName="test-workspace"
+              agentSequence={[]}
+              cost={createMockWorkspace().cost}
+              modelStatuses={[]}
+              projectTodos={[]}
+              agentTodos={[
+                { id: "", content: "Updated todo", status: "in_progress", priority: "high" },
+              ]}
+            />
+          </TooltipProvider>
+        </MemoryRouter>
+      );
+
+      const updatedRow = await waitFor(() => {
+        const row = screen.getByText("Updated todo").closest("li");
+        expect(row).toBeTruthy();
+        return row as HTMLLIElement;
+      });
+
+      expect(updatedRow).toBe(originalRow);
+      expect(updatedRow.textContent).toContain("Updated todo");
+      expect(updatedRow.textContent).toContain("high");
+    });
+
+    it("keeps the original blank-id agent todo row mounted under StrictMode when a same-signature blank-id todo is inserted ahead of it", async () => {
+      const view = renderSessionTab({
+        agentTodos: [
+          { id: "", content: "Duplicate todo", status: "pending", priority: "medium" },
+        ],
+      }, { strictMode: true });
+
+      const originalRow = await waitFor(() => {
+        const row = screen.getByText("Duplicate todo").closest("li");
+        expect(row).toBeTruthy();
+        return row as HTMLLIElement;
+      });
+
+      view.rerender(maybeWrapStrictMode(
+        <MemoryRouter>
+          <TooltipProvider>
+            <SessionTab
+              workspaceName="test-workspace"
+              agentSequence={[]}
+              cost={createMockWorkspace().cost}
+              modelStatuses={[]}
+              projectTodos={[]}
+              agentTodos={[
+                { id: "", content: "Duplicate todo", status: "pending", priority: "medium" },
+                { id: "", content: "Duplicate todo", status: "pending", priority: "medium" },
+              ]}
+            />
+          </TooltipProvider>
+        </MemoryRouter>,
+        true,
+      ));
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Duplicate todo")).toHaveLength(2);
+      });
+
+      const rows = screen.getAllByRole("listitem") as HTMLLIElement[];
+      expect(rows[1]).toBe(originalRow);
+    });
+
+    it("keeps the original blank-id agent todo row mounted under StrictMode when its mutable display fields change", async () => {
+      const view = renderSessionTab({
+        agentTodos: [
+          { id: "", content: "Original todo", status: "pending", priority: "medium" },
+        ],
+      }, { strictMode: true });
+
+      const originalRow = await waitFor(() => {
+        const row = screen.getByText("Original todo").closest("li");
+        expect(row).toBeTruthy();
+        return row as HTMLLIElement;
+      });
+
+      view.rerender(maybeWrapStrictMode(
+        <MemoryRouter>
+          <TooltipProvider>
+            <SessionTab
+              workspaceName="test-workspace"
+              agentSequence={[]}
+              cost={createMockWorkspace().cost}
+              modelStatuses={[]}
+              projectTodos={[]}
+              agentTodos={[
+                { id: "", content: "Updated todo", status: "in_progress", priority: "high" },
+              ]}
+            />
+          </TooltipProvider>
+        </MemoryRouter>,
+        true,
+      ));
+
+      const updatedRow = await waitFor(() => {
+        const row = screen.getByText("Updated todo").closest("li");
+        expect(row).toBeTruthy();
+        return row as HTMLLIElement;
+      });
+
+      expect(updatedRow).toBe(originalRow);
+      expect(updatedRow.textContent).toContain("Updated todo");
+      expect(updatedRow.textContent).toContain("high");
+    });
+
+    it("ignores abandoned StrictMode duplicate-insertion renders when later committing a mutable blank-id todo update", async () => {
+      const renderTree = (agentTodos: Array<{ id: string; content: string; status: string; priority: string }>, shouldSuspend: boolean) => (
+        maybeWrapStrictMode(
+          <MemoryRouter>
+            <TooltipProvider>
+              <Suspense fallback={null}>
+                <SessionTab
+                  workspaceName="test-workspace"
+                  agentSequence={[]}
+                  cost={createMockWorkspace().cost}
+                  modelStatuses={[]}
+                  projectTodos={[]}
+                  agentTodos={agentTodos}
+                />
+                <SuspendOnDemand active={shouldSuspend} />
+              </Suspense>
+            </TooltipProvider>
+          </MemoryRouter>,
+          true,
+        )
+      );
+
+      const view = render(renderTree([
+        { id: "", content: "Original todo", status: "pending", priority: "medium" },
+      ], false));
+
+      const originalRow = await waitFor(() => {
+        const row = screen.getByText("Original todo").closest("li");
+        expect(row).toBeTruthy();
+        return row as HTMLLIElement;
+      });
+
+      startTransition(() => {
+        view.rerender(renderTree([
+          { id: "", content: "Original todo", status: "pending", priority: "medium" },
+          { id: "", content: "Original todo", status: "pending", priority: "medium" },
+        ], true));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Original todo").closest("li")).toBe(originalRow);
+      });
+
+      view.rerender(renderTree([
+        { id: "", content: "Updated todo", status: "in_progress", priority: "high" },
+      ], false));
+
+      const updatedRow = await waitFor(() => {
+        const row = screen.getByText("Updated todo").closest("li");
+        expect(row).toBeTruthy();
+        return row as HTMLLIElement;
+      });
+
+      expect(updatedRow).toBe(originalRow);
+      expect(updatedRow.textContent).toContain("Updated todo");
+      expect(updatedRow.textContent).toContain("high");
     });
   });
 
@@ -429,6 +823,85 @@ describe("SessionTab", () => {
         expect(screen.getByText("coordinator")).toBeTruthy();
         expect(screen.getByText("developer")).toBeTruthy();
       });
+    });
+
+    it("keeps the same agent sequence row mounted when only elapsed time changes", async () => {
+      const view = renderSessionTab({
+        agentSequence: [{ agent: "coordinator", model: "opencode/glm-5", elapsedTime: "1m", isCurrent: true }],
+      });
+
+      const originalRow = await waitFor(() => {
+        const row = screen.getByText("coordinator").closest("li");
+        expect(row).toBeTruthy();
+        expect(screen.getByText("(1m)")).toBeTruthy();
+        return row as HTMLLIElement;
+      });
+
+      view.rerender(
+        <MemoryRouter>
+          <TooltipProvider>
+            <SessionTab
+              workspaceName="test-workspace"
+              agentSequence={[{ agent: "coordinator", model: "opencode/glm-5", elapsedTime: "2m", isCurrent: true }]}
+              cost={createMockWorkspace().cost}
+              modelStatuses={[]}
+              projectTodos={[]}
+              agentTodos={[]}
+            />
+          </TooltipProvider>
+        </MemoryRouter>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText("(2m)")).toBeTruthy();
+      });
+
+      const updatedRow = screen.getByText("coordinator").closest("li") as HTMLLIElement;
+      expect(updatedRow).toBe(originalRow);
+      expect(screen.queryByText("(1m)")).toBeNull();
+    });
+
+    it("keeps the original agent sequence row mounted when a new newest-first handoff is inserted at the top", async () => {
+      const view = renderSessionTab({
+        agentSequence: [{ agent: "coordinator", model: "opencode/glm-5", elapsedTime: "1m", isCurrent: true }],
+      });
+
+      const originalRow = await waitFor(() => {
+        const row = screen.getByText("coordinator").closest("li");
+        expect(row).toBeTruthy();
+        return row as HTMLLIElement;
+      });
+
+      view.rerender(
+        <MemoryRouter>
+          <TooltipProvider>
+            <SessionTab
+              workspaceName="test-workspace"
+              agentSequence={[
+                { agent: "developer", model: "opencode/glm-5", elapsedTime: "10s", isCurrent: true },
+                { agent: "coordinator", model: "opencode/glm-5", elapsedTime: "1m", isCurrent: false },
+              ]}
+              cost={createMockWorkspace().cost}
+              modelStatuses={[]}
+              projectTodos={[]}
+              agentTodos={[]}
+            />
+          </TooltipProvider>
+        </MemoryRouter>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText("developer")).toBeTruthy();
+        expect(screen.getByText("coordinator")).toBeTruthy();
+      });
+
+      const updatedRow = screen.getByText("coordinator").closest("li") as HTMLLIElement;
+      const rows = screen.getAllByRole("listitem") as HTMLLIElement[];
+
+      expect(updatedRow).toBe(originalRow);
+      expect(rows).toHaveLength(2);
+      expect(rows[0]?.textContent).toContain("developer");
+      expect(rows[1]).toBe(updatedRow);
     });
   });
 

@@ -3,7 +3,7 @@ import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/re
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import * as factoryStateModule from "@/lib/factory-state";
+import * as workspacePageStateModule from "@/lib/workspace-page-state";
 import { api } from "@/lib/api";
 import * as markdownEditorModule from "@/components/MarkdownEditor";
 import { ResponseMultiChoice } from "../ResponseMultiChoice";
@@ -76,7 +76,7 @@ const mockWorkspace = {
 };
 
 const mockRespond = mock(() => Promise.resolve({ success: true, message: "Response submitted" }));
-const mockTriggerFactoryRefresh = mock(() => {});
+const mockTriggerWorkspacePageRefresh = mock(() => {});
 
 const mockMarkdownEditor = ({ value, onChange, disabled }: { value: string; onChange: (v: string) => void; disabled: boolean }) => (
   <div data-testid="markdown-editor">
@@ -95,6 +95,7 @@ function renderResponseMultiChoice(workspaceName = "test-workspace") {
       <TooltipProvider>
         <Routes>
           <Route path="/workspaces/:name/respond" element={<ResponseMultiChoice />} />
+          <Route path="/workspaces/:name/progress" element={<div>Workspace Progress</div>} />
         </Routes>
       </TooltipProvider>
     </MemoryRouter>
@@ -120,14 +121,14 @@ describe("ResponseMultiChoice", () => {
   beforeEach(() => {
     sessionStorage.clear();
     mockRespond.mockClear();
-    mockTriggerFactoryRefresh.mockClear();
+    mockTriggerWorkspacePageRefresh.mockClear();
 
-    spyOn(factoryStateModule, "useFactoryState").mockImplementation(() => ({
-      workspaces: [mockWorkspace],
-      fetchStatus: "idle",
+    spyOn(workspacePageStateModule, "useWorkspacePageState").mockImplementation(() => ({
+      workspace: mockWorkspace,
+      fetchStatus: "idle" as const,
       lastFetchedAt: Date.now(),
     }));
-    spyOn(factoryStateModule, "triggerFactoryRefresh").mockImplementation(() => mockTriggerFactoryRefresh());
+    spyOn(workspacePageStateModule, "triggerWorkspacePageRefresh").mockImplementation(() => mockTriggerWorkspacePageRefresh());
     spyOn(api.workspaces, "respond").mockImplementation((...args) => mockRespond(...args));
     spyOn(markdownEditorModule, "MarkdownEditor").mockImplementation((...args) => mockMarkdownEditor(...args));
   });
@@ -289,6 +290,8 @@ describe("ResponseMultiChoice", () => {
           selectedChoices: [],
         });
       });
+
+      expect(mockTriggerWorkspacePageRefresh).not.toHaveBeenCalled();
     });
 
     it("shows sending state during submission", async () => {

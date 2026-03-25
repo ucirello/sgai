@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, spyOn } from "bun:test";
 import { render, screen } from "@testing-library/react";
 import { Navigate, RouterProvider, createMemoryRouter } from "react-router";
 import { router } from "../router";
@@ -31,6 +31,7 @@ describe("router", () => {
 
   it("renders a product-safe recovery UI instead of the default developer error page", async () => {
     const rootRoute = router.routes[0];
+    const consoleErrorSpy = spyOn(console, "error").mockImplementation(() => {});
 
     function Boom() {
       throw new Error("boom");
@@ -51,10 +52,14 @@ describe("router", () => {
       initialEntries: ["/boom"],
     });
 
-    render(<RouterProvider router={memoryRouter} />);
+    try {
+      render(<RouterProvider router={memoryRouter} />);
 
-    expect(await screen.findByRole("heading", { name: "Something went wrong" })).toBeTruthy();
-    expect(screen.getByText(/The workspace view hit an unexpected error/i)).toBeTruthy();
-    expect(screen.queryByText("Unexpected Application Error!")).toBeNull();
+      expect(await screen.findByRole("heading", { name: "Something went wrong" })).toBeTruthy();
+      expect(screen.getByText(/The workspace view hit an unexpected error/i)).toBeTruthy();
+      expect(screen.queryByText("Unexpected Application Error!")).toBeNull();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 });

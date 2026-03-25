@@ -3,36 +3,73 @@ package main
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
-	"time"
+	"testing/synctest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/ucirello/sgai/pkg/state"
 )
 
+func openSignalStream(t *testing.T, server *Server) (*lockedResponseRecorder, context.CancelFunc, <-chan struct{}) {
+	t.Helper()
+	mux := http.NewServeMux()
+	server.registerAPIRoutes(mux)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/signal", http.NoBody).WithContext(ctx)
+	w := newLockedResponseRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		mux.ServeHTTP(w, req)
+		close(done)
+	}()
+
+	synctest.Wait()
+	server.signals.mu.Lock()
+	defer server.signals.mu.Unlock()
+	require.Len(t, server.signals.subscribers, 1)
+
+	return w, cancel, done
+}
+
+func completeStartedSessionForTest(t *testing.T, server *Server, workspacePath string, sess *session, coord *state.Coordinator) {
+	t.Helper()
+	server.finishSessionRun(workspacePath, sess, coord)
+}
+
 func startCoordinatorQuestion(t *testing.T, coord *state.Coordinator, question *state.MultiChoiceQuestion, humanMessage string) (<-chan error, context.CancelFunc) {
 	t.Helper()
+	ready := make(chan struct{}, 1)
+	coord.OnUpdate(func() {
+		if coord.State().NeedsHumanInput() {
+			select {
+			case ready <- struct{}{}:
+			default:
+			}
+		}
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
 		_, err := coord.AskAndWait(ctx, question, humanMessage)
 		errCh <- err
 	}()
-	require.Eventually(t, func() bool {
-		return coord.State().NeedsHumanInput()
-	}, time.Second, 10*time.Millisecond)
+	<-ready
+	require.True(t, coord.State().NeedsHumanInput())
 	return errCh, cancel
 }
 
 func waitForSessionPromptToken(t *testing.T, coord *state.Coordinator) string {
 	t.Helper()
-	require.Eventually(t, func() bool {
-		return coord.CurrentPromptToken() != ""
-	}, time.Second, 10*time.Millisecond)
-	return coord.CurrentPromptToken()
+	promptToken := coord.CurrentPromptToken()
+	require.NotEmpty(t, promptToken)
+	return promptToken
 }
 
 func TestStopSessionService(t *testing.T) {
@@ -94,6 +131,7 @@ func TestRespondService(t *testing.T) {
 		selectedChoices []string
 		setupFunc       func(*testing.T, string)
 		wantErr         bool
+		expectedErr     error
 		errContains     string
 		validate        func(*testing.T, respondResult)
 	}{
@@ -107,6 +145,7 @@ func TestRespondService(t *testing.T) {
 				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			wantErr:     true,
+			expectedErr: errNoPendingQuestion,
 			errContains: "no pending question",
 			validate:    nil,
 		},
@@ -120,6 +159,7 @@ func TestRespondService(t *testing.T) {
 				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			wantErr:     true,
+			expectedErr: errNoPendingQuestion,
 			errContains: "no pending question",
 			validate:    nil,
 		},
@@ -138,6 +178,9 @@ func TestRespondService(t *testing.T) {
 
 			if tt.wantErr {
 				require.Error(t, err)
+				if tt.expectedErr != nil {
+					require.ErrorIs(t, err, tt.expectedErr)
+				}
 				if tt.errContains != "" {
 					assert.Contains(t, err.Error(), tt.errContains)
 				}
@@ -158,6 +201,7 @@ func TestSteerService(t *testing.T) {
 		message     string
 		setupFunc   func(*testing.T, string)
 		wantErr     bool
+		expectedErr error
 		errContains string
 		validate    func(*testing.T, steerResult)
 	}{
@@ -169,6 +213,7 @@ func TestSteerService(t *testing.T) {
 				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			wantErr:     false,
+			expectedErr: nil,
 			errContains: "",
 			validate: func(t *testing.T, result steerResult) {
 				t.Helper()
@@ -184,6 +229,7 @@ func TestSteerService(t *testing.T) {
 				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			wantErr:     true,
+			expectedErr: errSteerMessageEmpty,
 			errContains: "message cannot be empty",
 			validate:    nil,
 		},
@@ -195,6 +241,7 @@ func TestSteerService(t *testing.T) {
 				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			wantErr:     true,
+			expectedErr: errSteerMessageEmpty,
 			errContains: "message cannot be empty",
 			validate:    nil,
 		},
@@ -213,6 +260,9 @@ func TestSteerService(t *testing.T) {
 
 			if tt.wantErr {
 				require.Error(t, err)
+				if tt.expectedErr != nil {
+					require.ErrorIs(t, err, tt.expectedErr)
+				}
 				if tt.errContains != "" {
 					assert.Contains(t, err.Error(), tt.errContains)
 				}
@@ -254,6 +304,7 @@ func TestRespondServiceValidation(t *testing.T) {
 		selectedChoices []string
 		setupFunc       func(*testing.T, string)
 		wantErr         bool
+		expectedErr     error
 		errContains     string
 	}{
 		{
@@ -266,6 +317,7 @@ func TestRespondServiceValidation(t *testing.T) {
 				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			wantErr:     true,
+			expectedErr: errNoPendingQuestion,
 			errContains: "no pending question",
 		},
 		{
@@ -278,6 +330,7 @@ func TestRespondServiceValidation(t *testing.T) {
 				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			wantErr:     true,
+			expectedErr: errNoPendingQuestion,
 			errContains: "no pending question",
 		},
 		{
@@ -290,6 +343,7 @@ func TestRespondServiceValidation(t *testing.T) {
 				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			wantErr:     true,
+			expectedErr: errNoPendingQuestion,
 			errContains: "no pending question",
 		},
 	}
@@ -307,6 +361,9 @@ func TestRespondServiceValidation(t *testing.T) {
 
 			if tt.wantErr {
 				require.Error(t, err)
+				if tt.expectedErr != nil {
+					require.ErrorIs(t, err, tt.expectedErr)
+				}
 				if tt.errContains != "" {
 					assert.Contains(t, err.Error(), tt.errContains)
 				}
@@ -333,8 +390,9 @@ func TestRespondViaCoordinatorServiceNoQuestion(t *testing.T) {
 		request.Answer = "Test answer"
 	})
 
-	_, err := server.respondViaCoordinatorService(coord, req)
+	_, err := server.respondViaCoordinatorService(workspacePath, coord, req)
 	require.Error(t, err)
+	require.ErrorIs(t, err, errNoPendingQuestion)
 	assert.Contains(t, err.Error(), "no pending question")
 }
 
@@ -355,87 +413,96 @@ func TestRespondViaCoordinatorServiceEmptyResponse(t *testing.T) {
 		request.Answer = ""
 	})
 
-	_, err := server.respondViaCoordinatorService(coord, req)
+	_, err := server.respondViaCoordinatorService(workspacePath, coord, req)
 	require.Error(t, err)
+	require.ErrorIs(t, err, errResponseCannotBeEmpty)
 	assert.Contains(t, err.Error(), "response cannot be empty")
 }
 
 func TestRespondViaCoordinatorServiceWorkGateApproval(t *testing.T) {
-	rootDir := t.TempDir()
-	server := NewServer(rootDir, newTestServerPaths(), "")
+	synctest.Test(t, func(t *testing.T) {
+		rootDir := t.TempDir()
+		server := NewServer(rootDir, newTestServerPaths(), "")
 
-	workspacePath := filepath.Join(rootDir, "test-workspace")
-	require.NoError(t, os.MkdirAll(workspacePath, 0o755))
-	require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
+		workspacePath := filepath.Join(rootDir, "test-workspace")
+		require.NoError(t, os.MkdirAll(workspacePath, 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 
-	coord := state.NewCoordinatorEmpty(statePath(workspacePath))
-	require.NoError(t, coord.UpdateState(func(wf *state.Workflow) {
-		wf.InteractionMode = state.ModeBrainstorming
-	}))
-	errCh, cancel := startCoordinatorQuestion(t, coord, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
-		question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
-			item.Question = "Approve this definition?"
-			item.Choices = []string{workGateApprovalText, "Not ready"}
-		})}
-		question.IsWorkGate = true
-	}), "Approve this definition?")
-	defer cancel()
+		coord := state.NewCoordinatorEmpty(statePath(workspacePath))
+		require.NoError(t, coord.UpdateState(func(wf *state.Workflow) {
+			wf.InteractionMode = state.ModeBrainstorming
+		}))
+		errCh, cancel := startCoordinatorQuestion(t, coord, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+			question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
+				item.Question = "Approve this definition?"
+				item.Choices = []string{workGateApprovalText, "Not ready"}
+			})}
+			question.IsWorkGate = true
+		}), "Approve this definition?")
+		defer cancel()
 
-	req := respondRequestWith(func(request *apiRespondRequest) {
-		request.SelectedChoices = []string{workGateApprovalText}
+		req := respondRequestWith(func(request *apiRespondRequest) {
+			request.SelectedChoices = []string{workGateApprovalText}
+		})
+
+		result, err := server.respondViaCoordinatorService(workspacePath, coord, req)
+		require.NoError(t, err)
+		assert.True(t, result.Success)
+		synctest.Wait()
+		require.NoError(t, <-errCh)
+
+		wfState := coord.State()
+		assert.Equal(t, state.ModeBuilding, wfState.InteractionMode)
 	})
-
-	result, err := server.respondViaCoordinatorService(coord, req)
-	require.NoError(t, err)
-	assert.True(t, result.Success)
-	require.NoError(t, <-errCh)
-
-	wfState := coord.State()
-	assert.Equal(t, state.ModeBuilding, wfState.InteractionMode)
 }
 
 func TestRespondViaCoordinatorServiceRejectsStalePromptToken(t *testing.T) {
-	rootDir := t.TempDir()
-	server := NewServer(rootDir, newTestServerPaths(), "")
-	workspacePath := filepath.Join(rootDir, "test-workspace")
-	require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
+	synctest.Test(t, func(t *testing.T) {
+		rootDir := t.TempDir()
+		server := NewServer(rootDir, newTestServerPaths(), "")
+		workspacePath := filepath.Join(rootDir, "test-workspace")
+		require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 
-	coord := state.NewCoordinatorEmpty(statePath(workspacePath))
-	firstErrCh, cancelFirst := startCoordinatorQuestion(t, coord, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
-		question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
-			item.Question = "Pick one"
-			item.Choices = []string{"A", "B"}
-		})}
-	}), "Pick one")
-	firstToken := waitForSessionPromptToken(t, coord)
-	cancelFirst()
-	require.ErrorIs(t, <-firstErrCh, context.Canceled)
+		coord := state.NewCoordinatorEmpty(statePath(workspacePath))
+		firstErrCh, cancelFirst := startCoordinatorQuestion(t, coord, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+			question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
+				item.Question = "Pick one"
+				item.Choices = []string{"A", "B"}
+			})}
+		}), "Pick one")
+		firstToken := waitForSessionPromptToken(t, coord)
+		cancelFirst()
+		synctest.Wait()
+		require.ErrorIs(t, <-firstErrCh, context.Canceled)
 
-	secondErrCh, cancelSecond := startCoordinatorQuestion(t, coord, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
-		question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
-			item.Question = "Pick one"
-			item.Choices = []string{"A", "B"}
-		})}
-	}), "Pick one")
-	defer cancelSecond()
-	secondToken := waitForSessionPromptToken(t, coord)
-	require.NotEqual(t, firstToken, secondToken)
+		secondErrCh, cancelSecond := startCoordinatorQuestion(t, coord, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+			question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
+				item.Question = "Pick one"
+				item.Choices = []string{"A", "B"}
+			})}
+		}), "Pick one")
+		defer cancelSecond()
+		secondToken := waitForSessionPromptToken(t, coord)
+		require.NotEqual(t, firstToken, secondToken)
 
-	_, err := server.respondViaCoordinatorService(coord, respondRequestWith(func(request *apiRespondRequest) {
-		request.PromptToken = firstToken
-		request.Answer = "stale answer"
-	}))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "question not available")
-	assert.True(t, coord.State().NeedsHumanInput())
+		_, err := server.respondViaCoordinatorService(workspacePath, coord, respondRequestWith(func(request *apiRespondRequest) {
+			request.PromptToken = firstToken
+			request.Answer = "stale answer"
+		}))
+		require.Error(t, err)
+		require.ErrorIs(t, err, errQuestionNotAvailable)
+		assert.Contains(t, err.Error(), "question not available")
+		assert.True(t, coord.State().NeedsHumanInput())
 
-	result, err := server.respondViaCoordinatorService(coord, respondRequestWith(func(request *apiRespondRequest) {
-		request.PromptToken = secondToken
-		request.Answer = "current answer"
-	}))
-	require.NoError(t, err)
-	assert.True(t, result.Success)
-	require.NoError(t, <-secondErrCh)
+		result, err := server.respondViaCoordinatorService(workspacePath, coord, respondRequestWith(func(request *apiRespondRequest) {
+			request.PromptToken = secondToken
+			request.Answer = "current answer"
+		}))
+		require.NoError(t, err)
+		assert.True(t, result.Success)
+		synctest.Wait()
+		require.NoError(t, <-secondErrCh)
+	})
 }
 
 func TestHandleRespondViaCoordinatorNoQuestion(t *testing.T) {
@@ -485,35 +552,38 @@ func TestRespondViaCoordinatorEmptyResponse(t *testing.T) {
 }
 
 func TestRespondViaCoordinatorWorkGateApproval(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, srv, rootDir, "respond-gate")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
+	synctest.Test(t, func(t *testing.T) {
+		srv, rootDir := setupTestServer(t)
+		wsDir := setupTestWorkspace(t, srv, rootDir, "respond-gate")
+		require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
-	statePath := filepath.Join(wsDir, ".sgai", "state.json")
-	coord, errCoord := state.NewCoordinatorWith(statePath, workflowWith(func(workflow *state.Workflow) {
-		workflow.InteractionMode = state.ModeBrainstorming
-	}))
-	require.NoError(t, errCoord)
-	errCh, cancel := startCoordinatorQuestion(t, coord, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
-		question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
-			item.Question = "Is ready?"
-			item.Choices = []string{workGateApprovalText, "Not ready"}
-		})}
-		question.IsWorkGate = true
-	}), "Is this ready?")
-	defer cancel()
+		statePath := filepath.Join(wsDir, ".sgai", "state.json")
+		coord, errCoord := state.NewCoordinatorWith(statePath, workflowWith(func(workflow *state.Workflow) {
+			workflow.InteractionMode = state.ModeBrainstorming
+		}))
+		require.NoError(t, errCoord)
+		errCh, cancel := startCoordinatorQuestion(t, coord, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+			question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
+				item.Question = "Is ready?"
+				item.Choices = []string{workGateApprovalText, "Not ready"}
+			})}
+			question.IsWorkGate = true
+		}), "Is this ready?")
+		defer cancel()
 
-	srv.mu.Lock()
-	srv.sessions[wsDir] = newTestServeSession(coord, false)
-	srv.mu.Unlock()
+		srv.mu.Lock()
+		srv.sessions[wsDir] = newTestServeSession(coord, false)
+		srv.mu.Unlock()
 
-	body := `{"answer":"","selectedChoices":["` + workGateApprovalText + `"]}`
-	w := serveHTTP(srv, "POST", "/api/v1/workspaces/respond-gate/respond", body)
-	assert.Equal(t, http.StatusOK, w.Code)
-	require.NoError(t, <-errCh)
+		body := `{"answer":"","selectedChoices":["` + workGateApprovalText + `"]}`
+		w := serveHTTP(srv, "POST", "/api/v1/workspaces/respond-gate/respond", body)
+		assert.Equal(t, http.StatusOK, w.Code)
+		synctest.Wait()
+		require.NoError(t, <-errCh)
 
-	updatedState := coord.State()
-	assert.Equal(t, state.ModeBuilding, updatedState.InteractionMode)
+		updatedState := coord.State()
+		assert.Equal(t, state.ModeBuilding, updatedState.InteractionMode)
+	})
 }
 
 func TestStopSessionServiceRunningSession(t *testing.T) {
@@ -527,6 +597,62 @@ func TestStopSessionServiceRunningSession(t *testing.T) {
 	assert.False(t, result.Running)
 }
 
+func TestStopSessionPublishesSingleReloadAndWorkspaceSignals(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		server, rootDir := setupTestServer(t)
+		wsDir := setupTestWorkspace(t, server, rootDir, "stop-signal-ws")
+
+		coord := state.NewCoordinatorEmpty(statePath(wsDir))
+		coord.OnUpdate(func() {
+			wfState := coord.State()
+			server.notifyWorkspaceChangeForState(wsDir, &wfState, server.sessionRunning(wsDir))
+		})
+
+		ctx, cancelWait := context.WithCancel(context.Background())
+		sess := newTestServeSession(coord, true)
+		sess.cancel = cancelWait
+		sess.mcpCloseFn = func() {}
+
+		server.mu.Lock()
+		server.sessions[wsDir] = sess
+		server.mu.Unlock()
+
+		errCh := make(chan error, 1)
+		go func() {
+			_, err := coord.AskAndWait(ctx, nil, "question?")
+			errCh <- err
+		}()
+
+		synctest.Wait()
+		require.True(t, coord.State().NeedsHumanInput())
+
+		_ = server.loadWorkspaceListResponse()
+		_, errLoad := server.loadWorkspacePageState(wsDir)
+		require.NoError(t, errLoad)
+
+		w, cancelStream, done := openSignalStream(t, server)
+		server.stopSession(wsDir)
+		synctest.Wait()
+		require.ErrorIs(t, <-errCh, context.Canceled)
+
+		completeStartedSessionForTest(t, server, wsDir, sess, coord)
+		synctest.Wait()
+
+		cancelStream()
+		synctest.Wait()
+		<-done
+
+		body := w.BodyString()
+		assert.Equal(t, 1, strings.Count(body, "event: reload"))
+		assert.Equal(t, 1, strings.Count(body, "event: workspace"))
+		assert.Contains(t, body, filepath.Base(wsDir))
+
+		wfState := coord.State()
+		assert.Empty(t, wfState.HumanMessage)
+		assert.Nil(t, wfState.MultiChoiceQuestion)
+	})
+}
+
 func TestRespondServiceNoSession(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
@@ -537,6 +663,7 @@ func TestRespondServiceNoSession(t *testing.T) {
 	require.NoError(t, errCoord)
 	_, errRespond := server.respondService(wsDir, "wrong-id", "answer", nil)
 	require.Error(t, errRespond)
+	require.ErrorIs(t, errRespond, errNoPendingQuestion)
 }
 
 func TestSteerServiceSuccessful(t *testing.T) {
@@ -555,6 +682,7 @@ func TestSteerServiceEmptyMessageFails(t *testing.T) {
 	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	_, errSteer := server.steerService(wsDir, "  ")
 	require.Error(t, errSteer)
+	require.ErrorIs(t, errSteer, errSteerMessageEmpty)
 }
 
 func TestStopSessionServiceNotRunning(t *testing.T) {

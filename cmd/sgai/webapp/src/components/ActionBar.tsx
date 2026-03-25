@@ -15,7 +15,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import type { ApiActionEntry } from "@/types";
 
-export interface ActionBarProps {
+interface ActionBarProps {
   actions: ApiActionEntry[];
   isRunning: boolean;
   onActionClick: (action: ApiActionEntry, variables: Record<string, string>) => void;

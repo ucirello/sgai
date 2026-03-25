@@ -16,6 +16,10 @@ import (
 var (
 	errRootWorkspaceCannotStart = errors.New("root workspace cannot start agentic work")
 	errSessionResetWhileRunning = errors.New("cannot reset while session is running")
+	errNoPendingQuestion        = errors.New("no pending question")
+	errResponseCannotBeEmpty    = errors.New("response cannot be empty")
+	errQuestionNotAvailable     = errors.New("question not available")
+	errSteerMessageEmpty        = errors.New("message cannot be empty")
 )
 
 type sessionStartResult struct {
@@ -81,8 +85,6 @@ func (s *Server) startSessionService(workspacePath string, auto bool) (sessionSt
 	if result.startError != nil {
 		return sessionStartResult{}, result.startError
 	}
-
-	s.notifyStateChange()
 
 	return sessionStartResult{
 		Name:           name,
@@ -179,8 +181,6 @@ func (s *Server) stopSessionService(workspacePath string) stopSessionResult {
 		message = "session already stopped"
 	}
 
-	s.notifyStateChange()
-
 	return stopSessionResult{
 		Name:    filepath.Base(workspacePath),
 		Status:  "stopped",
@@ -217,7 +217,7 @@ func (s *Server) resetSessionService(workspacePath string) (resetSessionResult, 
 		return resetSessionResult{}, fmt.Errorf("failed to reset state: %w", errUpdate)
 	}
 
-	s.notifyStateChange()
+	s.notifyWorkspaceChangeAfterCoordinatorUpdate(workspacePath, coord)
 
 	return resetSessionResult{
 		Name:    filepath.Base(workspacePath),
@@ -243,28 +243,28 @@ func (s *Server) respondService(workspacePath, promptToken, answer string, selec
 	coord := s.sessionCoordinator(workspacePath)
 	if coord != nil {
 		log.Println("respond-service:", wsName, "delivering via session coordinator")
-		return s.respondViaCoordinatorService(coord, req)
+		return s.respondViaCoordinatorService(workspacePath, coord, req)
 	}
 
 	log.Println("respond-service:", wsName, "rejected, no session coordinator found")
-	return respondResult{}, errors.New("no pending question")
+	return respondResult{}, errNoPendingQuestion
 }
 
-func (s *Server) respondViaCoordinatorService(coord *state.Coordinator, req apiRespondRequest) (respondResult, error) {
+func (s *Server) respondViaCoordinatorService(workspacePath string, coord *state.Coordinator, req apiRespondRequest) (respondResult, error) {
 	wfState := coord.State()
 
 	if !wfState.NeedsHumanInput() {
 		log.Println("respond-service: coordinator path rejected, no pending question, status:", wfState.Status)
-		return respondResult{}, errors.New("no pending question")
+		return respondResult{}, errNoPendingQuestion
 	}
 
 	responseText := buildAPIResponseText(req)
 	if responseText == "" {
-		return respondResult{}, errors.New("response cannot be empty")
+		return respondResult{}, errResponseCannotBeEmpty
 	}
 
 	if !coord.RespondIfCurrent(req.PromptToken, responseText) {
-		return respondResult{}, errors.New("question not available")
+		return respondResult{}, errQuestionNotAvailable
 	}
 
 	if wfState.MultiChoiceQuestion != nil && wfState.MultiChoiceQuestion.IsWorkGate {
@@ -279,7 +279,7 @@ func (s *Server) respondViaCoordinatorService(coord *state.Coordinator, req apiR
 			}
 		}
 	}
-	s.notifyStateChange()
+	s.notifyWorkspaceChangeAfterCoordinatorUpdate(workspacePath, coord)
 
 	return respondResult{Success: true, Message: "response submitted"}, nil
 }
@@ -291,7 +291,7 @@ type steerResult struct {
 
 func (s *Server) steerService(workspacePath, message string) (steerResult, error) {
 	if strings.TrimSpace(message) == "" {
-		return steerResult{}, errors.New("message cannot be empty")
+		return steerResult{}, errSteerMessageEmpty
 	}
 
 	coord := s.workspaceCoordinator(workspacePath)
@@ -315,7 +315,7 @@ func (s *Server) steerService(workspacePath, message string) (steerResult, error
 		return steerResult{}, fmt.Errorf("failed to save state: %w", errUpdate)
 	}
 
-	s.notifyStateChange()
+	s.notifyWorkspaceChangeAfterCoordinatorUpdate(workspacePath, coord)
 
 	return steerResult{Success: true, Message: "steering instruction added"}, nil
 }

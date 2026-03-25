@@ -3,7 +3,6 @@ import { render, screen, waitFor, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import * as factoryStateModule from "@/lib/factory-state";
 import { api } from "@/lib/api";
 import * as markdownContentModule from "@/components/MarkdownContent";
 import * as useAdhocRunModule from "@/hooks/useAdhocRun";
@@ -65,11 +64,8 @@ const createMockWorkspace = (overrides = {}) => ({
 });
 
 let mockWorkspaces = [createMockWorkspace()];
-let mockFetchStatus = "idle";
 const mockActionRun = mock(() => Promise.resolve({ output: "", running: false }));
 const mockStartActionRun = mock(() => Promise.resolve());
-
-const mockTriggerFactoryRefresh = mock(() => {});
 const mockAdhoc = mock(() => Promise.resolve({ output: "", running: false }));
 const mockAdhocStatus = mock(() => Promise.resolve({ output: "", running: false }));
 const mockAdhocStop = mock(() => Promise.resolve({ output: "", running: false }));
@@ -102,9 +98,17 @@ const mockUseAdhocRun = () => ({
   });
 
 function renderEventsTab(props = {}) {
+  const workspace = mockWorkspaces[0] ?? createMockWorkspace();
   const defaultProps = {
-    workspaceName: "test-workspace",
-    goalContent: undefined as string | undefined,
+    workspaceName: workspace.name,
+    svgHash: workspace.svgHash,
+    agentModels: workspace.agentModels,
+    modelStatuses: workspace.modelStatuses,
+    needsInput: workspace.needsInput,
+    humanMessage: workspace.humanMessage,
+    currentAgent: workspace.currentAgent,
+    events: workspace.events,
+    goalContent: workspace.goalContent || undefined,
     actions: undefined as any[] | undefined,
     ...props,
   };
@@ -126,21 +130,13 @@ afterEach(() => {
 describe("EventsTab", () => {
   beforeEach(() => {
     mockWorkspaces = [createMockWorkspace()];
-    mockFetchStatus = "idle";
     mockActionRun.mockClear();
     mockStartActionRun.mockClear();
-    mockTriggerFactoryRefresh.mockClear();
     mockAdhoc.mockClear();
     mockAdhocStatus.mockClear();
     mockAdhocStop.mockClear();
     mockModelsList.mockClear();
 
-    spyOn(factoryStateModule, "useFactoryState").mockImplementation(() => ({
-      workspaces: mockWorkspaces,
-      fetchStatus: mockFetchStatus,
-      lastFetchedAt: Date.now(),
-    }));
-    spyOn(factoryStateModule, "triggerFactoryRefresh").mockImplementation(() => mockTriggerFactoryRefresh());
     spyOn(api.workspaces, "adhoc").mockImplementation((...args) => mockAdhoc(...args));
     spyOn(api.workspaces, "actionRun").mockImplementation((...args) => mockActionRun(...args));
     spyOn(api.workspaces, "adhocStatus").mockImplementation((...args) => mockAdhocStatus(...args));
@@ -316,34 +312,12 @@ describe("EventsTab", () => {
     });
   });
 
-  describe("loading state", () => {
-    it("shows skeleton when fetching and no workspace", () => {
-      mockWorkspaces = [];
-      mockFetchStatus = "fetching";
-
-      renderEventsTab({ workspaceName: "nonexistent" });
-      // The skeleton component renders with role="status" and aria-live
-      const statusElements = screen.queryAllByRole("status");
-      // Skeleton component uses div wrappers, check for loading state
-      expect(statusElements.length > 0 || screen.queryByText("No events recorded yet") === null).toBe(true);
-    });
-
-    it("shows error message when fetch fails and no workspace", () => {
-      mockWorkspaces = [];
-      mockFetchStatus = "error";
-
-      renderEventsTab({ workspaceName: "nonexistent" });
-      expect(screen.getByText("Failed to load events")).toBeTruthy();
-    });
-  });
-
   describe("empty state", () => {
-    it("returns null when workspace not found and not fetching/error", () => {
+    it("shows the empty events state when no event data is provided", () => {
       mockWorkspaces = [];
-      mockFetchStatus = "idle";
 
-      const { container } = renderEventsTab({ workspaceName: "nonexistent" });
-      expect(container.innerHTML).toBe("");
+      renderEventsTab({ workspaceName: "nonexistent" });
+      expect(screen.getByText("No events recorded yet")).toBeTruthy();
     });
   });
 

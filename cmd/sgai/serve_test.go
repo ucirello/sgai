@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -44,6 +45,21 @@ func timestampProgressEntries(timestamps ...string) []state.ProgressEntry {
 		}))
 	}
 	return entries
+}
+
+func assertWorkspaceChangeInvalidatesWorkspaceCaches(t *testing.T, srv *Server, wsDir string, wfState *state.Workflow, running bool) {
+	t.Helper()
+
+	_ = srv.loadWorkspaceListResponse()
+	_, errLoad := srv.loadWorkspacePageState(wsDir)
+	require.NoError(t, errLoad)
+
+	srv.notifyWorkspaceChangeForState(wsDir, wfState, running)
+
+	_, okList := srv.workspaceListCache.get("workspaces")
+	assert.False(t, okList)
+	_, okPage := srv.workspacePageCache.get(wsDir)
+	assert.False(t, okPage)
 }
 
 func describedProgressEntries(descriptions ...string) []state.ProgressEntry {
@@ -224,6 +240,7 @@ func TestSignalBrokerSubscribe(t *testing.T) {
 	broker := newSignalBroker()
 
 	sub := broker.subscribe()
+	defer broker.unsubscribe(sub)
 	require.NotNil(t, sub)
 	require.NotNil(t, sub.ch)
 	require.NotNil(t, sub.done)
@@ -257,35 +274,82 @@ func TestSignalBrokerNotify(t *testing.T) {
 
 	sub1 := broker.subscribe()
 	sub2 := broker.subscribe()
+	defer broker.unsubscribe(sub1)
+	defer broker.unsubscribe(sub2)
 
-	broker.notify()
+	broker.notify(signalEvent{Name: "workspace", Workspace: "ws-1"})
 
-	select {
-	case <-sub1.ch:
-	default:
-		t.Fatal("subscriber 1 should receive notification")
-	}
+	var got1, got2 signalEvent
+	require.Eventually(t, func() bool {
+		select {
+		case got1 = <-sub1.ch:
+		default:
+		}
+		select {
+		case got2 = <-sub2.ch:
+		default:
+		}
+		return got1.Name != "" && got2.Name != ""
+	}, time.Second, 10*time.Millisecond)
 
-	select {
-	case <-sub2.ch:
-	default:
-		t.Fatal("subscriber 2 should receive notification")
-	}
+	assert.Equal(t, "workspace", got1.Name)
+	assert.Equal(t, "ws-1", got1.Workspace)
+	assert.Equal(t, "workspace", got2.Name)
+	assert.Equal(t, "ws-1", got2.Workspace)
 }
 
 func TestSignalBrokerNotifyWithFullChannel(t *testing.T) {
 	broker := newSignalBroker()
 
 	sub := broker.subscribe()
+	defer broker.unsubscribe(sub)
 
-	sub.ch <- struct{}{}
-	broker.notify()
+	preloaded := signalEvent{Name: "reload", Workspace: ""}
+	queued := signalEvent{Name: "workspace", Workspace: "ws-queued"}
+	sub.ch <- preloaded
+	broker.notify(queued)
 
 	select {
-	case <-sub.ch:
+	case got := <-sub.ch:
+		assert.Equal(t, preloaded, got)
 	default:
-		t.Fatal("should have one notification")
+		t.Fatal("should read the preloaded event first")
 	}
+
+	var got signalEvent
+	require.Eventually(t, func() bool {
+		select {
+		case got = <-sub.ch:
+			return got == queued
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond)
+
+	assert.Equal(t, queued, got)
+}
+
+func TestSignalBrokerNotifyPreservesReloadAndWorkspaceSemantics(t *testing.T) {
+	broker := newSignalBroker()
+	sub := broker.subscribe()
+	defer broker.unsubscribe(sub)
+
+	broker.notify(signalEvent{Name: "reload", Workspace: ""})
+	broker.notify(signalEvent{Name: "workspace", Workspace: "ws-1"})
+
+	var events []signalEvent
+	require.Eventually(t, func() bool {
+		for {
+			select {
+			case event := <-sub.ch:
+				events = append(events, event)
+			default:
+				return len(events) == 2
+			}
+		}
+	}, time.Second, 10*time.Millisecond)
+
+	assert.Equal(t, []signalEvent{{Name: "reload", Workspace: ""}, {Name: "workspace", Workspace: "ws-1"}}, events)
 }
 
 func TestWorkspaceDagAgents(t *testing.T) {
@@ -668,6 +732,36 @@ func TestResolveServerPaths(t *testing.T) {
 	want := filepath.Join(configHome, "sgai")
 	assert.Equal(t, want, paths.pinnedConfigDir)
 	assert.Equal(t, want, paths.externalConfigDir)
+}
+
+func TestParseServeOptions(t *testing.T) {
+	t.Run("usesWorkingDirectoryWhenRootIsOmitted", func(t *testing.T) {
+		cwd := t.TempDir()
+		configHome := t.TempDir()
+
+		options, errParse := parseServeOptions([]string{"--listen-addr", "127.0.0.1:0"}, func() (string, error) {
+			return cwd, nil
+		}, configHome)
+		require.NoError(t, errParse)
+		assert.Equal(t, "127.0.0.1:0", options.listenAddr)
+		assert.Equal(t, cwd, options.rootDir)
+		assert.Equal(t, filepath.Join(configHome, "sgai"), options.paths.pinnedConfigDir)
+		assert.Equal(t, filepath.Join(configHome, "sgai"), options.paths.externalConfigDir)
+	})
+
+	t.Run("usesCustomSharedConfigDirectory", func(t *testing.T) {
+		cwd := t.TempDir()
+		sharedConfigDir := t.TempDir()
+		rootDir := t.TempDir()
+
+		options, errParse := parseServeOptions([]string{"--shared-config-dir", sharedConfigDir, rootDir}, func() (string, error) {
+			return cwd, nil
+		}, t.TempDir())
+		require.NoError(t, errParse)
+		assert.Equal(t, rootDir, options.rootDir)
+		assert.Equal(t, sharedConfigDir, options.paths.pinnedConfigDir)
+		assert.Equal(t, sharedConfigDir, options.paths.externalConfigDir)
+	})
 }
 
 func TestAddGitExcludeNoGitDir(t *testing.T) {
@@ -1183,17 +1277,228 @@ func TestClassifyWorkspaceCachedNonExistent(t *testing.T) {
 	assert.Equal(t, workspaceStandalone, kind)
 }
 
-func TestNotifyStateChangeInvalidatesCache(t *testing.T) {
+func TestNotifyStateChangeInvalidatesWorkspaceCaches(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, srv, rootDir, "notify-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "notify-ws")
 
-	srv.warmStateCache()
-	_, ok := srv.stateCache.get("state")
-	assert.True(t, ok)
+	var listEntry apiWorkspaceListEntry
+	listEntry.Name = "notify-ws"
+	var pageState apiWorkspaceFullState
+	pageState.Name = "notify-ws"
+
+	srv.workspaceListCache.set("workspaces", apiWorkspaceListResponse{Workspaces: []apiWorkspaceListEntry{listEntry}})
+	srv.workspacePageCache.set(wsDir, pageState)
 
 	srv.notifyStateChange()
-	_, ok2 := srv.stateCache.get("state")
-	assert.False(t, ok2)
+	_, okList := srv.workspaceListCache.get("workspaces")
+	assert.False(t, okList)
+	_, okPage := srv.workspacePageCache.get(wsDir)
+	assert.False(t, okPage)
+}
+
+func TestNotifyWorkspacePageChangeKeepsWorkspaceListCache(t *testing.T) {
+	srv, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, srv, rootDir, "notify-workspace-ws")
+
+	var listEntry apiWorkspaceListEntry
+	listEntry.Name = "notify-workspace-ws"
+	var pageState apiWorkspaceFullState
+	pageState.Name = "notify-workspace-ws"
+
+	srv.workspaceListCache.set("workspaces", apiWorkspaceListResponse{Workspaces: []apiWorkspaceListEntry{listEntry}})
+	srv.workspacePageCache.set(wsDir, pageState)
+
+	srv.notifyWorkspacePageChange(wsDir)
+	_, okList := srv.workspaceListCache.get("workspaces")
+	assert.True(t, okList)
+	_, okPage := srv.workspacePageCache.get(wsDir)
+	assert.False(t, okPage)
+}
+
+func TestNotifyWorkspacePageChangeSignalsStableWorkspacePathForDuplicateBasenames(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, _ := setupTestServer(t)
+		firstDir := filepath.Join(t.TempDir(), "first", "shared-ws")
+		secondDir := filepath.Join(t.TempDir(), "second", "shared-ws")
+		require.NoError(t, os.MkdirAll(firstDir, 0o755))
+		require.NoError(t, os.MkdirAll(secondDir, 0o755))
+
+		sub := srv.signals.subscribe()
+		defer func() {
+			srv.signals.unsubscribe(sub)
+			synctest.Wait()
+		}()
+
+		eventsCh := make(chan []signalEvent, 1)
+		go func() {
+			events := make([]signalEvent, 0, 2)
+			for len(events) < 2 {
+				events = append(events, <-sub.ch)
+			}
+			eventsCh <- events
+		}()
+		synctest.Wait()
+
+		srv.notifyWorkspacePageChange(firstDir)
+		srv.notifyWorkspacePageChange(secondDir)
+		synctest.Wait()
+
+		assert.Equal(t, []signalEvent{
+			{Name: "workspace", Workspace: workspaceSignalPath(firstDir)},
+			{Name: "workspace", Workspace: workspaceSignalPath(secondDir)},
+		}, <-eventsCh)
+	})
+}
+
+func TestNotifyWorkspaceListChangeInvalidatesWorkspaceListCache(t *testing.T) {
+	srv, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, srv, rootDir, "notify-workspace-list")
+
+	var listEntry apiWorkspaceListEntry
+	listEntry.Name = "notify-workspace-list"
+	var pageState apiWorkspaceFullState
+	pageState.Name = "notify-workspace-list"
+
+	srv.workspaceListCache.set("workspaces", apiWorkspaceListResponse{Workspaces: []apiWorkspaceListEntry{listEntry}})
+	srv.workspacePageCache.set(wsDir, pageState)
+
+	srv.notifyWorkspaceListChange(wsDir)
+	_, okList := srv.workspaceListCache.get("workspaces")
+	assert.False(t, okList)
+	_, okPage := srv.workspacePageCache.get(wsDir)
+	assert.False(t, okPage)
+}
+
+func TestNotifyWorkspaceChangeForStateKeepsWorkspaceListCacheWhenSummaryMatches(t *testing.T) {
+	srv, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, srv, rootDir, "notify-workspace-summary")
+	attachRunningSessionCoordinator(t, srv, wsDir, workflowRef(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.CurrentAgent = "go-developer"
+		workflow.Task = "stable summary"
+	}))
+
+	_ = srv.loadWorkspaceListResponse()
+	_, errLoad := srv.loadWorkspacePageState(wsDir)
+	require.NoError(t, errLoad)
+
+	wfState := workflowWith(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.CurrentAgent = "go-developer"
+		workflow.Task = "stable summary"
+		workflow.Messages = []state.Message{messageWith(func(message *state.Message) {
+			message.ID = 1
+			message.FromAgent = "go-developer"
+			message.ToAgent = "coordinator"
+			message.Body = "page-only change"
+		})}
+	})
+	srv.notifyWorkspaceChangeForState(wsDir, &wfState, true)
+
+	_, okList := srv.workspaceListCache.get("workspaces")
+	assert.True(t, okList)
+	_, okPage := srv.workspacePageCache.get(wsDir)
+	assert.False(t, okPage)
+}
+
+func TestNotifyWorkspaceChangeForStateKeepsWorkspaceListCacheWhenOnlyElapsedTimeDiffers(t *testing.T) {
+	srv, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, srv, rootDir, "notify-workspace-elapsed")
+	attachRunningSessionCoordinator(t, srv, wsDir, workflowRef(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.CurrentAgent = "go-developer"
+		workflow.Task = "stable summary"
+		workflow.Progress = []state.ProgressEntry{progressEntryWith(func(entry *state.ProgressEntry) {
+			entry.Timestamp = time.Now().UTC().Format(time.RFC3339)
+			entry.Agent = "go-developer"
+			entry.Description = "still running"
+		})}
+		workflow.AgentSequence = []state.AgentSequenceEntry{agentSequenceEntryWith(func(entry *state.AgentSequenceEntry) {
+			entry.Agent = "go-developer"
+			entry.StartTime = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+			entry.IsCurrent = true
+		})}
+	}))
+
+	_ = srv.loadWorkspaceListResponse()
+	_, errLoad := srv.loadWorkspacePageState(wsDir)
+	require.NoError(t, errLoad)
+
+	cached, okCache := srv.workspaceListCache.get("workspaces")
+	require.True(t, okCache)
+	require.Len(t, cached.Workspaces, 1)
+	cached.Workspaces[0].TotalExecTime = "stale elapsed time"
+	srv.workspaceListCache.set("workspaces", cached)
+
+	wfState := workflowWith(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.CurrentAgent = "go-developer"
+		workflow.Task = "stable summary"
+		workflow.Progress = []state.ProgressEntry{progressEntryWith(func(entry *state.ProgressEntry) {
+			entry.Timestamp = time.Now().UTC().Format(time.RFC3339)
+			entry.Agent = "go-developer"
+			entry.Description = "still running"
+		})}
+		workflow.AgentSequence = []state.AgentSequenceEntry{agentSequenceEntryWith(func(entry *state.AgentSequenceEntry) {
+			entry.Agent = "go-developer"
+			entry.StartTime = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+			entry.IsCurrent = true
+		})}
+		workflow.Messages = []state.Message{messageWith(func(message *state.Message) {
+			message.ID = 1
+			message.FromAgent = "go-developer"
+			message.ToAgent = "coordinator"
+			message.Body = "page-only change"
+		})}
+	})
+	srv.notifyWorkspaceChangeForState(wsDir, &wfState, true)
+
+	_, okList := srv.workspaceListCache.get("workspaces")
+	assert.True(t, okList)
+	_, okPage := srv.workspacePageCache.get(wsDir)
+	assert.False(t, okPage)
+}
+
+func TestNotifyWorkspaceChangeForStateInvalidatesWorkspaceListCacheWhenRunningChanges(t *testing.T) {
+	srv, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, srv, rootDir, "notify-workspace-running-change")
+	attachSessionCoordinator(t, srv, wsDir, workflowRef(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.CurrentAgent = "go-developer"
+		workflow.Task = "resume work"
+	}))
+
+	_ = srv.loadWorkspaceListResponse()
+	_, errLoad := srv.loadWorkspacePageState(wsDir)
+	require.NoError(t, errLoad)
+
+	wfState := workflowWith(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.CurrentAgent = "go-developer"
+		workflow.Task = "resume work"
+	})
+	assertWorkspaceChangeInvalidatesWorkspaceCaches(t, srv, wsDir, &wfState, true)
+}
+
+func TestNotifyWorkspaceChangeForStateInvalidatesWorkspaceListCacheWhenSummaryChanges(t *testing.T) {
+	srv, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, srv, rootDir, "notify-workspace-summary-change")
+	attachRunningSessionCoordinator(t, srv, wsDir, workflowRef(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.CurrentAgent = "go-developer"
+		workflow.Task = "before"
+	}))
+
+	_ = srv.loadWorkspaceListResponse()
+	_, errLoad := srv.loadWorkspacePageState(wsDir)
+	require.NoError(t, errLoad)
+
+	wfState := workflowWith(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.CurrentAgent = "go-developer"
+		workflow.Task = "after"
+	})
+	assertWorkspaceChangeInvalidatesWorkspaceCaches(t, srv, wsDir, &wfState, true)
 }
 
 func TestWorkspaceCoordinator(t *testing.T) {

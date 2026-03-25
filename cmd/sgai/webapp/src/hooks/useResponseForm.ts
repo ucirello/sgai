@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { api, ApiError } from "@/lib/api";
-import { useFactoryState, triggerFactoryRefresh } from "@/lib/factory-state";
+import { useWorkspacePageState } from "@/lib/workspace-page-state";
 import type { ApiPendingQuestionResponse, ApiWorkspaceEntry } from "@/types";
 
-export interface StoredResponseState {
+interface StoredResponseState {
   selections: Record<string, string[]>;
   otherText: string;
   promptToken: string;
@@ -13,7 +13,7 @@ function getStorageKey(prefix: string, workspaceName: string): string {
   return `${prefix}${workspaceName}`;
 }
 
-export function loadStoredState(prefix: string, workspaceName: string): StoredResponseState | null {
+function loadStoredState(prefix: string, workspaceName: string): StoredResponseState | null {
   try {
     const stored = sessionStorage.getItem(getStorageKey(prefix, workspaceName));
     if (stored) {
@@ -25,7 +25,7 @@ export function loadStoredState(prefix: string, workspaceName: string): StoredRe
   return null;
 }
 
-export function saveStoredState(prefix: string, workspaceName: string, state: StoredResponseState): void {
+function saveStoredState(prefix: string, workspaceName: string, state: StoredResponseState): void {
   try {
     sessionStorage.setItem(getStorageKey(prefix, workspaceName), JSON.stringify(state));
   } catch {
@@ -33,7 +33,7 @@ export function saveStoredState(prefix: string, workspaceName: string, state: St
   }
 }
 
-export function clearStoredState(prefix: string, workspaceName: string): void {
+function clearStoredState(prefix: string, workspaceName: string): void {
   try {
     sessionStorage.removeItem(getStorageKey(prefix, workspaceName));
   } catch {
@@ -77,8 +77,7 @@ export function useResponseForm({
   const hasUnsavedChangesRef = useRef(false);
   const previousPromptTokenRef = useRef<string | null>(null);
 
-  const { workspaces, fetchStatus } = useFactoryState();
-  const workspace = workspaces.find((ws) => ws.name === workspaceName) ?? null;
+  const { workspace, fetchStatus } = useWorkspacePageState(workspaceName);
   const question = workspace?.pendingQuestion ?? null;
   const promptToken = question?.promptToken ?? null;
   const loading = fetchStatus === "fetching" && workspace === null;
@@ -175,7 +174,6 @@ export function useResponseForm({
           answer: otherText.trim(),
           selectedChoices: allSelectedChoices,
         });
-        triggerFactoryRefresh();
 
         clearStoredState(storagePrefix, workspaceName);
         hasUnsavedChangesRef.current = false;

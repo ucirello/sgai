@@ -1,22 +1,9 @@
 import { useEffect, useRef } from "react";
-import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { useFactoryState } from "@/lib/factory-state";
-import { resolveWorkspaceByName } from "@/lib/workspace-identity";
 import type { ApiLogEntry } from "@/types";
 
 interface LogTabProps {
-  workspaceName: string;
-}
-
-function LogTabSkeleton() {
-  return (
-    <div className="space-y-1">
-      {Array.from({ length: 10 }, (_, i) => (
-        <Skeleton key={i} className="h-5 w-full rounded" />
-      ))}
-    </div>
-  );
+  lines?: ApiLogEntry[];
 }
 
 function LogLine({ line }: { line: ApiLogEntry }) {
@@ -28,31 +15,14 @@ function LogLine({ line }: { line: ApiLogEntry }) {
   );
 }
 
-export function LogTab({ workspaceName }: LogTabProps) {
+export function LogTab({ lines = [] }: LogTabProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
-
-  const { workspaces, fetchStatus } = useFactoryState();
-  const workspace = resolveWorkspaceByName(workspaces, workspaceName);
-  const lines = workspace?.log ?? [];
 
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [lines]);
-
-  if (fetchStatus === "fetching" && !workspace) return <LogTabSkeleton />;
-
-  if (!workspace) {
-    if (fetchStatus === "error") {
-      return (
-        <p className="text-sm text-destructive">
-          Failed to load log
-        </p>
-      );
-    }
-    return null;
-  }
 
   if (lines.length === 0) {
     return <p className="text-sm italic text-muted-foreground">No logs available</p>;

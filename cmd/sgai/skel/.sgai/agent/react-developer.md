@@ -435,11 +435,11 @@ You MUST use Playwright screenshots to verify your work. This is not optional.
 
 ### Screenshot Storage
 
-All screenshots must be stored in the retrospective's screenshots directory:
+All Playwright evidence examples must use the retrospective session path declared in `.sgai/PROJECT_MANAGEMENT.md` frontmatter and store screenshots under:
 ```
-.sgai/retrospectives/screenshots/<retrospective-id>/
+.sgai/retrospectives/<retrospective-id>/screenshots/
 ```
-(the full path for the current session retrospective directory can be found in .sgai/PROJECT_MANAGEMENT.md frontmatter)
+For example, if frontmatter declares `Retrospective Session: .sgai/retrospectives/2026-03-30-07-22.2io5`, the screenshot directory is `.sgai/retrospectives/2026-03-30-07-22.2io5/screenshots/`.
 
 ### Verification Workflow
 
@@ -450,7 +450,7 @@ await playwright_browser_wait_for({time: 2});
 
 // Take screenshot for visual verification
 await playwright_browser_take_screenshot({
-  filename: ".sgai/retrospectives/screenshots/<id>/react-component-check.png"
+  filename: ".sgai/retrospectives/<id>/screenshots/react-component-check.png"
 });
 
 // Verify interactive behavior

@@ -142,13 +142,14 @@ func newTestMessage() state.Message {
 
 func newTestSession() *session {
 	return &session{
-		mu:           sync.Mutex{},
-		cancel:       nil,
-		running:      false,
-		outputLog:    nil,
-		mcpCloseOnce: sync.Once{},
-		mcpCloseFn:   nil,
-		coord:        nil,
+		mu:                   sync.Mutex{},
+		cancel:               nil,
+		running:              false,
+		skipExitNotification: false,
+		outputLog:            nil,
+		mcpCloseOnce:         sync.Once{},
+		mcpCloseFn:           nil,
+		coord:                nil,
 	}
 }
 

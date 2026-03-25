@@ -12,3 +12,4 @@ vendor/
 cover*.out
 /*.png
 opencode-src/
+.playwright-mcp/

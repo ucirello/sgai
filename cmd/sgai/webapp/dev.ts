@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, watch } from "fs";
+import { existsSync, mkdirSync, rmSync, watch } from "fs";
 import { relative, resolve } from "path";
 import postcss from "postcss";
 import tailwindcss from "@tailwindcss/postcss";
@@ -41,6 +41,7 @@ function formatBuildError(logs: Array<{ message?: string }>): string {
 }
 
 async function buildDevBundle(): Promise<void> {
+  rmSync(devDistDir, { recursive: true, force: true });
   mkdirSync(devDistDir, { recursive: true });
 
   const result = await Bun.build({

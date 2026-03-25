@@ -308,6 +308,6 @@ func (s *Server) repairGoalTitle(workspacePath string) error {
 		}
 		return fmt.Errorf("write GOAL.md: %w", errWrite)
 	}
-	s.notifyStateChange()
+	s.notifyWorkspaceListChange(workspacePath)
 	return nil
 }

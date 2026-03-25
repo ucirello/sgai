@@ -2,9 +2,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { MarkdownContent } from "@/components/MarkdownContent";
-import { useFactoryState, triggerFactoryRefresh } from "@/lib/factory-state";
 import { api } from "@/lib/api";
-import { resolveWorkspaceByName } from "@/lib/workspace-identity";
 import { cn } from "@/lib/utils";
 import { Trash2 } from "lucide-react";
 import { useTransition, useState, useCallback } from "react";
@@ -12,6 +10,7 @@ import type { ApiMessageEntry } from "@/types";
 
 interface MessagesTabProps {
   workspaceName: string;
+  messages?: ApiMessageEntry[];
 }
 
 function MessagesTabSkeleton() {
@@ -26,12 +25,11 @@ function MessagesTabSkeleton() {
 
 interface MessageItemProps {
   message: ApiMessageEntry;
-  workspaceName: string;
   onDelete: (messageId: number) => void;
   isDeleting: boolean;
 }
 
-function MessageItem({ message, workspaceName, onDelete, isDeleting }: MessageItemProps) {
+function MessageItem({ message, onDelete, isDeleting }: MessageItemProps) {
   const isUnread = !message.read;
   return (
     <details className="border rounded-lg">
@@ -84,9 +82,7 @@ function MessageItem({ message, workspaceName, onDelete, isDeleting }: MessageIt
   );
 }
 
-export function MessagesTab({ workspaceName }: MessagesTabProps) {
-  const { workspaces, fetchStatus } = useFactoryState();
-  const workspace = resolveWorkspaceByName(workspaces, workspaceName);
+export function MessagesTab({ workspaceName, messages = [] }: MessagesTabProps) {
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -97,7 +93,6 @@ export function MessagesTab({ workspaceName }: MessagesTabProps) {
     startTransition(async () => {
       try {
         const response = await api.workspaces.deleteMessage(workspaceName, messageId);
-        triggerFactoryRefresh();
         if (!response.deleted) {
           setDeleteError(response.message || "Failed to delete message");
         }
@@ -108,21 +103,6 @@ export function MessagesTab({ workspaceName }: MessagesTabProps) {
       }
     });
   }, [workspaceName]);
-
-  if (fetchStatus === "fetching" && !workspace) return <MessagesTabSkeleton />;
-
-  if (!workspace) {
-    if (fetchStatus === "error") {
-      return (
-        <p className="text-sm text-destructive">
-          Failed to load messages
-        </p>
-      );
-    }
-    return null;
-  }
-
-  const messages = workspace.messages ?? [];
 
   if (messages.length === 0) {
     return <p className="text-sm italic text-muted-foreground">No messages</p>;
@@ -137,7 +117,6 @@ export function MessagesTab({ workspaceName }: MessagesTabProps) {
         <MessageItem 
           key={msg.id} 
           message={msg} 
-          workspaceName={workspaceName}
           onDelete={handleDelete}
           isDeleting={deletingId === msg.id || isPending}
         />

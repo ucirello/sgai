@@ -30,7 +30,7 @@ export function EditGoal(): JSX.Element {
   const titleRef = useRef<HTMLHeadingElement | null>(null);
   const goalRequestRef = useRef<{
     target: string;
-      promise: ReturnType<typeof api.workspaces.getGoal>;
+    promise: ReturnType<typeof api.workspaces.getGoal>;
   } | null>(null);
   const matchingWorkspaces = workspaceSnapshot.workspaces.filter((candidate) => candidate.name === workspaceRouteName);
   const isAmbiguousWorkspaceRoute = matchingWorkspaces.length > 1;
@@ -246,7 +246,7 @@ export function EditGoal(): JSX.Element {
         <h1 ref={titleRef} tabIndex={-1} className="text-sm font-medium rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
           Edit GOAL.md
         </h1>
-        
+
         <FocusableTooltipText
           as="span"
           className="text-sm text-muted-foreground max-w-xs cursor-help"

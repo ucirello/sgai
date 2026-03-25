@@ -1,21 +1,36 @@
-import { useState, useTransition } from "react";
+import { memo, useLayoutEffect, useRef, useState, useTransition } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { ChevronRight } from "lucide-react";
 import { api } from "@/lib/api";
-import { useFactoryState, triggerFactoryRefresh } from "@/lib/factory-state";
-import { resolveWorkspaceByName } from "@/lib/workspace-identity";
 import type { ApiAgentCost, ApiDollarBreakdown, ApiStepCost, ApiTodoEntry, ApiSessionCost, ApiTokenUsage } from "@/types";
 
 interface SessionTabProps {
   workspaceName: string;
+  agentSequence?: Array<{ agent: string; model: string; elapsedTime: string; isCurrent: boolean }>;
+  cost?: ApiSessionCost;
+  modelStatuses?: Array<{ modelId: string; status: string }>;
+  projectTodos?: ApiTodoEntry[];
+  agentTodos?: ApiTodoEntry[];
   pmContent?: string;
   hasProjectMgmt?: boolean;
+}
+
+type AgentSequenceEntry = NonNullable<SessionTabProps["agentSequence"]>[number];
+
+const EMPTY_AGENT_SEQUENCE: NonNullable<SessionTabProps["agentSequence"]> = [];
+const EMPTY_MODEL_STATUSES: NonNullable<SessionTabProps["modelStatuses"]> = [];
+const EMPTY_TODOS: ApiTodoEntry[] = [];
+
+function agentSequenceEntryKey(entry: AgentSequenceEntry, displayedIndex: number, totalEntries: number): string {
+  const sourceOrdinal = totalEntries - displayedIndex - 1;
+  return `${entry.agent}-${entry.model}-${sourceOrdinal}`;
 }
 
 function formatCost(cost: number): string {
@@ -209,22 +224,213 @@ function TodoStatusIcon({ status }: { status: string }) {
   }
 }
 
+function todoSnapshotSignature(todo: ApiTodoEntry): string {
+  return `${todo.content}\u001f${todo.status}\u001f${todo.priority}`;
+}
+
+interface BlankTodoKeyEntry {
+  key: string;
+  todo: ApiTodoEntry;
+}
+
+interface BlankTodoKeyState {
+  entries: BlankTodoKeyEntry[];
+  nextSyntheticKey: number;
+}
+
+function nextBlankTodoKey(state: BlankTodoKeyState): string {
+  const key = `missing-id-${state.nextSyntheticKey}`;
+  state.nextSyntheticKey += 1;
+  return key;
+}
+
+function buildRightAnchoredTodoMatches(
+  previousEntries: BlankTodoKeyEntry[],
+  currentTodos: ApiTodoEntry[],
+): Array<{ previousIndex: number; currentIndex: number }> {
+  const previousLength = previousEntries.length;
+  const currentLength = currentTodos.length;
+  const previousSignatures = previousEntries.map((entry) => todoSnapshotSignature(entry.todo)).reverse();
+  const currentSignatures = currentTodos.map((todo) => todoSnapshotSignature(todo)).reverse();
+  const lcsLengths = Array.from({ length: previousLength + 1 }, () => Array<number>(currentLength + 1).fill(0));
+
+  for (let previousIndex = previousLength - 1; previousIndex >= 0; previousIndex -= 1) {
+    for (let currentIndex = currentLength - 1; currentIndex >= 0; currentIndex -= 1) {
+      if (previousSignatures[previousIndex] === currentSignatures[currentIndex]) {
+        lcsLengths[previousIndex][currentIndex] = lcsLengths[previousIndex + 1]?.[currentIndex + 1] ?? 0;
+        lcsLengths[previousIndex][currentIndex] += 1;
+        continue;
+      }
+
+      const skipPrevious = lcsLengths[previousIndex + 1]?.[currentIndex] ?? 0;
+      const skipCurrent = lcsLengths[previousIndex]?.[currentIndex + 1] ?? 0;
+      lcsLengths[previousIndex][currentIndex] = Math.max(skipPrevious, skipCurrent);
+    }
+  }
+
+  const reversedMatches: Array<{ previousIndex: number; currentIndex: number }> = [];
+  let previousIndex = 0;
+  let currentIndex = 0;
+
+  while (previousIndex < previousLength && currentIndex < currentLength) {
+    if (previousSignatures[previousIndex] === currentSignatures[currentIndex]) {
+      reversedMatches.push({ previousIndex, currentIndex });
+      previousIndex += 1;
+      currentIndex += 1;
+      continue;
+    }
+
+    const skipPrevious = lcsLengths[previousIndex + 1]?.[currentIndex] ?? 0;
+    const skipCurrent = lcsLengths[previousIndex]?.[currentIndex + 1] ?? 0;
+    if (skipPrevious >= skipCurrent) {
+      previousIndex += 1;
+      continue;
+    }
+    currentIndex += 1;
+  }
+
+  return reversedMatches
+    .map((match) => ({
+      previousIndex: previousLength - match.previousIndex - 1,
+      currentIndex: currentLength - match.currentIndex - 1,
+    }))
+    .reverse();
+}
+
+function assignBlankTodoGapKeys(
+  nextEntries: BlankTodoKeyEntry[],
+  previousEntries: BlankTodoKeyEntry[],
+  currentTodos: ApiTodoEntry[],
+  blankKeyState: BlankTodoKeyState,
+  previousStart: number,
+  previousEnd: number,
+  currentStart: number,
+  currentEnd: number,
+): void {
+  const previousCount = previousEnd - previousStart;
+  const currentCount = currentEnd - currentStart;
+  const reusedCount = Math.min(previousCount, currentCount);
+  const insertedCount = currentCount - reusedCount;
+
+  for (let offset = 0; offset < currentCount; offset += 1) {
+    const currentIndex = currentStart + offset;
+    if (offset < insertedCount) {
+      nextEntries[currentIndex] = {
+        key: nextBlankTodoKey(blankKeyState),
+        todo: currentTodos[currentIndex] as ApiTodoEntry,
+      };
+      continue;
+    }
+
+    const previousIndex = previousStart + offset - insertedCount;
+    nextEntries[currentIndex] = {
+      key: previousEntries[previousIndex]?.key ?? nextBlankTodoKey(blankKeyState),
+      todo: currentTodos[currentIndex] as ApiTodoEntry,
+    };
+  }
+}
+
+function reconcileBlankTodoKeyEntries(
+  previousEntries: BlankTodoKeyEntry[],
+  currentTodos: ApiTodoEntry[],
+  nextSyntheticKey: number,
+): BlankTodoKeyState {
+  const blankKeyState: BlankTodoKeyState = {
+    entries: Array<BlankTodoKeyEntry>(currentTodos.length),
+    nextSyntheticKey,
+  };
+  const matches = buildRightAnchoredTodoMatches(previousEntries, currentTodos);
+  let previousCursor = 0;
+  let currentCursor = 0;
+
+  for (const match of matches) {
+    assignBlankTodoGapKeys(
+      blankKeyState.entries,
+      previousEntries,
+      currentTodos,
+      blankKeyState,
+      previousCursor,
+      match.previousIndex,
+      currentCursor,
+      match.currentIndex,
+    );
+
+    blankKeyState.entries[match.currentIndex] = {
+      key: previousEntries[match.previousIndex]?.key ?? nextBlankTodoKey(blankKeyState),
+      todo: currentTodos[match.currentIndex] as ApiTodoEntry,
+    };
+    previousCursor = match.previousIndex + 1;
+    currentCursor = match.currentIndex + 1;
+  }
+
+  assignBlankTodoGapKeys(
+    blankKeyState.entries,
+    previousEntries,
+    currentTodos,
+    blankKeyState,
+    previousCursor,
+    previousEntries.length,
+    currentCursor,
+    currentTodos.length,
+  );
+
+  return blankKeyState;
+}
+
+function useStableTodoItemKeys(todos: ApiTodoEntry[]): string[] {
+  const nextSyntheticKeyRef = useRef(0);
+  const previousBlankKeyEntriesRef = useRef<BlankTodoKeyEntry[]>([]);
+  const blankTodoIndexes: number[] = [];
+  const blankTodos: ApiTodoEntry[] = [];
+  const todoKeys = todos.map((todo, index) => {
+    const todoId = typeof todo.id === "string" ? todo.id.trim() : "";
+    if (todoId) {
+      return todoId;
+    }
+
+    blankTodoIndexes.push(index);
+    blankTodos.push(todo);
+    return "";
+  });
+
+  const nextBlankKeyState = reconcileBlankTodoKeyEntries(
+    previousBlankKeyEntriesRef.current,
+    blankTodos,
+    nextSyntheticKeyRef.current,
+  );
+
+  for (const [blankIndex, todoIndex] of blankTodoIndexes.entries()) {
+    todoKeys[todoIndex] = nextBlankKeyState.entries[blankIndex]?.key ?? nextBlankTodoKey(nextBlankKeyState);
+  }
+
+  useLayoutEffect(() => {
+    previousBlankKeyEntriesRef.current = nextBlankKeyState.entries;
+    nextSyntheticKeyRef.current = nextBlankKeyState.nextSyntheticKey;
+  }, [nextBlankKeyState]);
+
+  return todoKeys;
+}
+
 function TodoList({ todos, emptyMessage }: { todos: ApiTodoEntry[]; emptyMessage: string }) {
+  const todoKeys = useStableTodoItemKeys(todos);
+
   if (!todos || todos.length === 0) {
     return <p className="text-sm italic text-muted-foreground">{emptyMessage}</p>;
   }
 
   return (
     <ul className="space-y-1.5">
-      {todos.map((todo) => (
-        <li key={`${todo.id}-${todo.content}-${todo.status}-${todo.priority}`} className="flex items-start gap-2 text-sm">
-          <TodoStatusIcon status={todo.status} />
-          <span className="flex-1">
-            {todo.content}
-            <span className="text-xs text-muted-foreground ml-1">({todo.priority})</span>
-          </span>
-        </li>
-      ))}
+      {todos.map((todo, index) => {
+        return (
+          <li key={todoKeys[index]} className="flex items-start gap-2 text-sm">
+            <TodoStatusIcon status={todo.status} />
+            <span className="flex-1">
+              {todo.content}
+              <span className="text-xs text-muted-foreground ml-1">({todo.priority})</span>
+            </span>
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -253,19 +459,11 @@ function TasksSection({ projectTodos, agentTodos }: { projectTodos: ApiTodoEntry
   );
 }
 
-export function SessionTab({ workspaceName, pmContent, hasProjectMgmt }: SessionTabProps) {
+const SteeringCard = memo(function SteeringCard({ workspaceName }: { workspaceName: string }) {
   const [steerMessage, setSteerMessage] = useState("");
   const [steerError, setSteerError] = useState<string | null>(null);
   const [steerSuccess, setSteerSuccess] = useState(false);
   const [isSteering, startSteerTransition] = useTransition();
-  const { workspaces } = useFactoryState();
-  const workspace = resolveWorkspaceByName(workspaces, workspaceName);
-
-  const agentSequence = workspace?.agentSequence ?? [];
-  const cost = workspace?.cost;
-  const modelStatuses = workspace?.modelStatuses;
-  const projectTodos = workspace?.projectTodos ?? [];
-  const agentTodos = workspace?.agentTodos ?? [];
 
   const submitSteer = () => {
     if (!workspaceName || !steerMessage.trim()) return;
@@ -274,7 +472,6 @@ export function SessionTab({ workspaceName, pmContent, hasProjectMgmt }: Session
     startSteerTransition(async () => {
       try {
         const response = await api.workspaces.steer(workspaceName, steerMessage.trim());
-        triggerFactoryRefresh();
         if (response.success) {
           setSteerSuccess(true);
           setSteerMessage("");
@@ -300,38 +497,61 @@ export function SessionTab({ workspaceName, pmContent, hasProjectMgmt }: Session
   };
 
   return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Steer Next Turn</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSteerSubmit} className="space-y-3">
-            <div className="space-y-2">
-              <Textarea
-                id="steer-message"
-                value={steerMessage}
-                onChange={(event) => setSteerMessage(event.target.value)}
-                onKeyDown={handleSteerKeyDown}
-                placeholder="Enter re-steering instruction..."
-                rows={4}
-                className="resize-y"
-                disabled={isSteering}
-              />
-            </div>
-            {steerError && (
-              <p className="text-sm text-destructive">{steerError}</p>
-            )}
-            {steerSuccess && !steerError && (
-              <p className="text-sm text-primary">Steering instruction sent.</p>
-            )}
-            <Button type="submit" disabled={isSteering || !steerMessage.trim()}>
-              Submit
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">Steer Next Turn</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <form onSubmit={handleSteerSubmit} className="space-y-3">
+          <div className="space-y-2">
+            <Label htmlFor="steer-message">Re-steering instruction</Label>
+            <Textarea
+              id="steer-message"
+              value={steerMessage}
+              onChange={(event) => setSteerMessage(event.target.value)}
+              onKeyDown={handleSteerKeyDown}
+              placeholder="Enter re-steering instruction..."
+              rows={4}
+              className="resize-y"
+              disabled={isSteering}
+            />
+          </div>
+          {steerError && (
+            <p className="text-sm text-destructive">{steerError}</p>
+          )}
+          {steerSuccess && !steerError && (
+            <p className="text-sm text-primary">Steering instruction sent.</p>
+          )}
+          <Button type="submit" disabled={isSteering || !steerMessage.trim()}>
+            Submit
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  );
+});
 
+interface SessionStaticContentProps {
+  agentSequence: NonNullable<SessionTabProps["agentSequence"]>;
+  cost?: ApiSessionCost;
+  modelStatuses: NonNullable<SessionTabProps["modelStatuses"]>;
+  projectTodos: ApiTodoEntry[];
+  agentTodos: ApiTodoEntry[];
+  pmContent?: string;
+  hasProjectMgmt?: boolean;
+}
+
+const SessionStaticContent = memo(function SessionStaticContent({
+  agentSequence,
+  cost,
+  modelStatuses,
+  projectTodos,
+  agentTodos,
+  pmContent,
+  hasProjectMgmt,
+}: SessionStaticContentProps) {
+  return (
+    <>
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base">Tasks</CardTitle>
@@ -351,8 +571,8 @@ export function SessionTab({ workspaceName, pmContent, hasProjectMgmt }: Session
           {agentSequence && agentSequence.length > 0 ? (
             <ScrollArea className="max-h-[300px]">
               <ol className="list-decimal list-inside space-y-1 text-sm">
-                {agentSequence.map((entry) => (
-                  <li key={`${entry.agent}-${entry.elapsedTime}`} className="flex items-center gap-2">
+                {agentSequence.map((entry, index) => (
+                  <li key={agentSequenceEntryKey(entry, index, agentSequence.length)} className="flex items-center gap-2">
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <span className={entry.isCurrent ? "font-bold" : ""}>
@@ -382,7 +602,7 @@ export function SessionTab({ workspaceName, pmContent, hasProjectMgmt }: Session
           <CardContent>
             <ul className="space-y-1 text-sm">
               {modelStatuses.map((ms) => (
-                <li key={`${ms.modelId}-${ms.status}`} className="flex items-center gap-2">
+                <li key={ms.modelId} className="flex items-center gap-2">
                   <span>
                     {ms.status === "model-working" ? "◐" : ms.status === "model-done" ? "●" : "✕"}
                   </span>
@@ -421,6 +641,32 @@ export function SessionTab({ workspaceName, pmContent, hasProjectMgmt }: Session
           )}
         </details>
       )}
+    </>
+  );
+});
+
+export function SessionTab({
+  workspaceName,
+  agentSequence,
+  cost,
+  modelStatuses,
+  projectTodos,
+  agentTodos,
+  pmContent,
+  hasProjectMgmt,
+}: SessionTabProps) {
+  return (
+    <div className="space-y-4">
+      <SteeringCard key={workspaceName} workspaceName={workspaceName} />
+      <SessionStaticContent
+        agentSequence={agentSequence ?? EMPTY_AGENT_SEQUENCE}
+        cost={cost}
+        modelStatuses={modelStatuses ?? EMPTY_MODEL_STATUSES}
+        projectTodos={projectTodos ?? EMPTY_TODOS}
+        agentTodos={agentTodos ?? EMPTY_TODOS}
+        pmContent={pmContent}
+        hasProjectMgmt={hasProjectMgmt}
+      />
     </div>
   );
 }

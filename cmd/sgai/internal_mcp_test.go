@@ -27,6 +27,14 @@ func TestPrintUsageOmitsInternalMCPCommand(t *testing.T) {
 	assert.NotContains(t, output, "internal-mcp")
 }
 
+func TestPrintUsageIncludesRunAndSharedConfigHelp(t *testing.T) {
+	output := captureStdout(t, printUsage)
+	assert.Contains(t, output, "sgai run [--config path] [--var key=value] <action-name>")
+	assert.Contains(t, output, "--shared-config-dir")
+	assert.Contains(t, output, "sgai run --config ./verification/sgai.json --var Name=Ada Summarize")
+	assert.Contains(t, output, "sgai --shared-config-dir ./verification/shared-config")
+}
+
 func TestRequiresOpencode(t *testing.T) {
 	tests := []struct {
 		name       string

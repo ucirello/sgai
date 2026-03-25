@@ -125,13 +125,13 @@ export interface AgentsResponse {
   agents: Agent[];
 }
 
-export interface SkillSummary {
+interface SkillSummary {
   name: string;
   fullPath: string;
   description: string;
 }
 
-export interface SkillCategory {
+interface SkillCategory {
   name: string;
   skills: SkillSummary[];
 }
@@ -148,7 +148,7 @@ export interface Skill {
   rawContent: string;
 }
 
-export interface SnippetSummary {
+interface SnippetSummary {
   name: string;
   fileName: string;
   fullPath: string;
@@ -156,7 +156,7 @@ export interface SnippetSummary {
   language: string;
 }
 
-export interface SnippetLanguage {
+interface SnippetLanguage {
   name: string;
   snippets: SnippetSummary[];
 }
