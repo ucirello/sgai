@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -341,9 +342,14 @@ func TestGenerateRepositoryTitleRejectsNonHeadingBody(t *testing.T) {
 	assert.Equal(t, original, string(data))
 }
 
+func waitForTestCondition(t *testing.T, condition func() bool) {
+	t.Helper()
+	require.Eventually(t, condition, 2*time.Second, 10*time.Millisecond)
+}
+
 func TestBuildWorkspaceFullStateKeepsDirectoryNameForLookup(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "repo-dir")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "repo-dir")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\ntitle: Display Title\n---\n# Goal\n"), 0o644))
 
 	fullState := srv.buildWorkspaceFullState(workspaceInfo{

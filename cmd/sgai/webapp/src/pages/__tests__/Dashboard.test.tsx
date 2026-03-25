@@ -1,15 +1,36 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
 import { act, render, screen, waitFor, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route, useLocation } from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider } from "@/components/ui/sidebar";
+import * as factoryStateModule from "@/lib/factory-state";
+import { api } from "@/lib/api";
+import * as sidebarResizeModule from "@/hooks/useSidebarResize";
+import * as mobileModule from "@/hooks/use-mobile";
 import { Dashboard } from "../Dashboard";
 
 // Override pointer-events on body to allow interactions in tests
 beforeEach(() => {
   document.body.style.pointerEvents = "auto";
 });
+
+function deferredValue<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitForForksRedirect(expectedPath: string) {
+  await waitFor(() => {
+    expect(screen.getByTestId("route-path").textContent).toBe(expectedPath);
+    expect(screen.getByTestId("redirect-target").textContent).toBe("Redirected to forks");
+  });
+}
 
 const createRepositoryAction = (overrides: Record<string, unknown> = {}) => ({
   repositoryMode: "standalone",
@@ -276,56 +297,24 @@ function createDefaultMockWorkspaces() {
 }
 
 let mockWorkspaces = createDefaultMockWorkspaces();
-
-mock.module("@/lib/factory-state", () => ({
-  useFactoryState: () => ({
-    workspaces: mockWorkspaces,
-    fetchStatus: "idle",
-    lastFetchedAt: Date.now(),
-  }),
-  triggerFactoryRefresh: mock(() => {}),
-}));
+const mockTriggerFactoryRefresh = mock(() => {});
 
 const mockDeleteWorkspace = mock(() => Promise.resolve({ deleted: true }));
+const mockHandleMouseDown = mock(() => {});
 
-mock.module("@/lib/api", () => ({
-  api: {
-    workspaces: {
-      deleteWorkspace: mockDeleteWorkspace,
-    },
-  },
-  ApiError: class ApiError extends Error {
-    constructor(public status: number, message: string) {
-      super(message);
-      this.name = "ApiError";
-    }
-  },
-}));
-
-mock.module("@/hooks/useSidebarResize", () => ({
-  useSidebarResize: () => ({
-    sidebarWidth: 280,
-    handleMouseDown: mock(() => {}),
-  }),
-}));
-
-mock.module("@/hooks/use-mobile", () => ({
-  useIsMobile: () => false,
-}));
-
-function renderDashboard(initialRoute = "/") {
+function dashboardTestView(initialRoute = "/") {
   function RoutePathProbe() {
     const location = useLocation();
     return <div data-testid="route-path">{location.pathname}</div>;
   }
 
-  return render(
+  return (
     <MemoryRouter initialEntries={[initialRoute]}>
         <TooltipProvider>
           <SidebarProvider>
           <Routes>
             <Route path="/workspaces/attach" element={<Dashboard><div data-testid="attach-page">Attach page</div></Dashboard>} />
-            <Route path="/workspaces/:name/forks" element={<Dashboard><div data-testid="redirect-target">Redirected to forks</div></Dashboard>} />
+            <Route path="/workspaces/:name/forks" element={<Dashboard><><RoutePathProbe /><div data-testid="redirect-target">Redirected to forks</div></></Dashboard>} />
             <Route path="/workspaces/:name/*" element={<Dashboard><RoutePathProbe /></Dashboard>} />
             <Route path="*" element={<Dashboard><div data-testid="dashboard-content">Content</div></Dashboard>} />
           </Routes>
@@ -335,13 +324,33 @@ function renderDashboard(initialRoute = "/") {
   );
 }
 
+function renderDashboard(initialRoute = "/") {
+  return render(dashboardTestView(initialRoute));
+}
+
 describe("Dashboard", () => {
   beforeEach(() => {
     mockDeleteWorkspace.mockClear();
+    mockTriggerFactoryRefresh.mockClear();
+    mockHandleMouseDown.mockClear();
     mockWorkspaces = createDefaultMockWorkspaces();
+
+    spyOn(factoryStateModule, "useFactoryState").mockImplementation(() => ({
+      workspaces: mockWorkspaces,
+      fetchStatus: "idle",
+      lastFetchedAt: Date.now(),
+    }));
+    spyOn(factoryStateModule, "triggerFactoryRefresh").mockImplementation(() => mockTriggerFactoryRefresh());
+    spyOn(api.workspaces, "deleteWorkspace").mockImplementation((...args) => mockDeleteWorkspace(...args));
+    spyOn(sidebarResizeModule, "useSidebarResize").mockImplementation(() => ({
+      sidebarWidth: 280,
+      handleMouseDown: mockHandleMouseDown,
+    }));
+    spyOn(mobileModule, "useIsMobile").mockImplementation(() => false);
   });
 
   afterEach(() => {
+    mock.restore();
     cleanup();
   });
 
@@ -730,6 +739,7 @@ describe("Dashboard", () => {
 
     it("keeps the root visible and turns it into detach-only after deleting the last fork", async () => {
       const user = userEvent.setup();
+      const deleteCompletion = deferredValue<{ deleted: boolean }>();
 
       mockWorkspaces = [
         createMockWorkspace({
@@ -789,18 +799,41 @@ describe("Dashboard", () => {
             forks: [],
           }),
         ];
-        return { deleted: true };
+        return deleteCompletion.promise;
       });
 
-      renderDashboard("/workspaces/root-ws-fork-1/progress");
+      const view = renderDashboard("/workspaces/root-ws-fork-1/progress");
+
+      mockTriggerFactoryRefresh.mockImplementationOnce(() => {
+        view.rerender(dashboardTestView("/workspaces/root-ws-fork-1/progress"));
+      });
 
       await user.click(screen.getByRole("button", { name: "Choose action for fork root-ws-fork-1" }));
       await user.click(await screen.findByRole("button", { name: /^Delete$/ }));
 
       await waitFor(() => {
-        expect(screen.getByTestId("redirect-target").textContent).toBe("Redirected to forks");
+        expect(mockDeleteWorkspace).toHaveBeenCalledWith("root-ws-fork-1", "delete", "/path/to/root-ws-fork-1");
+      });
+
+      await act(async () => {
+        deleteCompletion.resolve({ deleted: true });
+        await deleteCompletion.promise;
+      });
+
+      await waitFor(() => {
+        expect(mockTriggerFactoryRefresh).toHaveBeenCalledTimes(1);
+        expect(screen.getByRole("button", { name: "Detach root-ws" })).toBeTruthy();
+        expect(screen.queryByRole("button", { name: "Choose action for fork root-ws-fork-1" })).toBeNull();
+      });
+
+      await waitForForksRedirect("/workspaces/root-ws/forks");
+
+      await waitFor(() => {
+        expect(screen.getByTestId("route-path").textContent).toBe("/workspaces/root-ws/forks");
         expect(screen.getByText("Root Workspace")).toBeTruthy();
         expect(screen.getByRole("button", { name: "Detach root-ws" })).toBeTruthy();
+        expect(screen.queryByRole("button", { name: "Choose action for fork root-ws-fork-1" })).toBeNull();
+        expect(screen.queryByText("Last Fork")).toBeNull();
       });
     });
 

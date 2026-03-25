@@ -1,8 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
 import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import * as factoryStateModule from "@/lib/factory-state";
+import { api } from "@/lib/api";
+import * as markdownContentModule from "@/components/MarkdownContent";
 import { SessionTab } from "../SessionTab";
 
 beforeEach(() => {
@@ -71,35 +74,9 @@ const createMockWorkspace = (overrides = {}) => ({
 
 let mockWorkspaces = [createMockWorkspace()];
 
-mock.module("@/lib/factory-state", () => ({
-  useFactoryState: () => ({
-    workspaces: mockWorkspaces,
-    fetchStatus: "idle",
-    lastFetchedAt: Date.now(),
-  }),
-  triggerFactoryRefresh: mockTriggerFactoryRefresh,
-}));
-
-mock.module("@/lib/api", () => ({
-  api: {
-    workspaces: {
-      steer: mockSteer,
-      openEditorProjectManagement: mockOpenEditorPM,
-    },
-  },
-  ApiError: class ApiError extends Error {
-    constructor(public status: number, message: string) {
-      super(message);
-      this.name = "ApiError";
-    }
-  },
-}));
-
-mock.module("@/components/MarkdownContent", () => ({
-  MarkdownContent: ({ content }: { content: string }) => (
-    <div data-testid="markdown-content">{content}</div>
-  ),
-}));
+const mockMarkdownContent = ({ content }: { content: string }) => (
+  <div data-testid="markdown-content">{content}</div>
+);
 
 function renderSessionTab(props = {}) {
   const defaultProps = {
@@ -119,6 +96,7 @@ function renderSessionTab(props = {}) {
 }
 
 afterEach(() => {
+  mock.restore();
   cleanup();
 });
 
@@ -128,6 +106,16 @@ describe("SessionTab", () => {
     mockSteer.mockClear();
     mockOpenEditorPM.mockClear();
     mockTriggerFactoryRefresh.mockClear();
+
+    spyOn(factoryStateModule, "useFactoryState").mockImplementation(() => ({
+      workspaces: mockWorkspaces,
+      fetchStatus: "idle",
+      lastFetchedAt: Date.now(),
+    }));
+    spyOn(factoryStateModule, "triggerFactoryRefresh").mockImplementation(() => mockTriggerFactoryRefresh());
+    spyOn(api.workspaces, "steer").mockImplementation((...args) => mockSteer(...args));
+    spyOn(api.workspaces, "openEditorProjectManagement").mockImplementation((...args) => mockOpenEditorPM(...args));
+    spyOn(markdownContentModule, "MarkdownContent").mockImplementation((...args) => mockMarkdownContent(...args));
   });
 
   describe("steer next turn", () => {

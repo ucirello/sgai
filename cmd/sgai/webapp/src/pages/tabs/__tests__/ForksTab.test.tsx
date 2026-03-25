@@ -1,8 +1,12 @@
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
+import * as ReactRouter from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import * as factoryStateModule from "@/lib/factory-state";
+import { api } from "@/lib/api";
+import * as useAdhocRunModule from "@/hooks/useAdhocRun";
 import { ForksTab } from "../ForksTab";
 
 const mockNavigate = mock(() => {});
@@ -183,31 +187,10 @@ const factoryState = {
   fetchStatus: "idle",
 };
 
-mock.module("react-router", () => ({
-  ...require("react-router"),
-  useNavigate: () => mockNavigate,
-}));
+const mockTriggerFactoryRefresh = mock(() => {});
+const mockOpenEditor = mock(() => Promise.resolve({ opened: true }));
 
-mock.module("@/lib/factory-state", () => ({
-  useFactoryState: () => ({
-    workspaces: factoryState.workspaces,
-    fetchStatus: factoryState.fetchStatus,
-    lastFetchedAt: Date.now(),
-  }),
-  triggerFactoryRefresh: mock(() => {}),
-}));
-
-mock.module("@/lib/api", () => ({
-  api: {
-    workspaces: {
-      deleteWorkspace: mockDeleteWorkspace,
-      openEditor: mock(() => Promise.resolve({ opened: true })),
-    },
-  },
-}));
-
-mock.module("@/hooks/useAdhocRun", () => ({
-  useAdhocRun: () => ({
+const mockUseAdhocRun = () => ({
     models: { models: [{ id: "model-1", name: "Model 1" }] },
     modelsLoading: false,
     modelsError: null,
@@ -225,8 +208,7 @@ mock.module("@/hooks/useAdhocRun", () => ({
     promptHistory: [],
     selectFromHistory: mock(() => {}),
     clearHistory: mock(() => {}),
-  }),
-}));
+  });
 
 function forksTabTestView(workspaceName = "workspace-1") {
   return (
@@ -243,8 +225,25 @@ describe("ForksTab", () => {
     cleanup();
     mockNavigate.mockClear();
     mockDeleteWorkspace.mockClear();
+    mockTriggerFactoryRefresh.mockClear();
+    mockOpenEditor.mockClear();
     factoryState.workspaces = [createMockWorkspace()];
     factoryState.fetchStatus = "idle";
+
+    spyOn(ReactRouter, "useNavigate").mockImplementation(() => mockNavigate);
+    spyOn(factoryStateModule, "useFactoryState").mockImplementation(() => ({
+      workspaces: factoryState.workspaces,
+      fetchStatus: factoryState.fetchStatus,
+      lastFetchedAt: Date.now(),
+    }));
+    spyOn(factoryStateModule, "triggerFactoryRefresh").mockImplementation(() => mockTriggerFactoryRefresh());
+    spyOn(api.workspaces, "deleteWorkspace").mockImplementation((...args) => mockDeleteWorkspace(...args));
+    spyOn(api.workspaces, "openEditor").mockImplementation((...args) => mockOpenEditor(...args));
+    spyOn(useAdhocRunModule, "useAdhocRun").mockImplementation((...args) => mockUseAdhocRun(...args));
+  });
+
+  afterEach(() => {
+    mock.restore();
   });
 
   it("does not render commit preview controls for fork rows", () => {

@@ -116,7 +116,7 @@ func TestContentWithInsertedGoalTitleReplacesExistingBlankTitle(t *testing.T) {
 
 func TestRepairGoalTitleSanitizesSynthesizedTitle(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "repair-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "repair-ws")
 	goalPath := filepath.Join(wsDir, "GOAL.md")
 	require.NoError(t, os.WriteFile(goalPath, []byte("---\nflow: test\n---\n# Goal"), 0o644))
 
@@ -136,7 +136,7 @@ func TestRepairGoalTitleSanitizesSynthesizedTitle(t *testing.T) {
 
 func TestRepairGoalTitlePreservesFreshlyAddedTitle(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "repair-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "repair-ws")
 	goalPath := filepath.Join(wsDir, "GOAL.md")
 	original := []byte("---\nflow: test\n---\n# Original Goal")
 	require.NoError(t, os.WriteFile(goalPath, original, 0o644))
@@ -182,7 +182,7 @@ func TestRepairGoalTitlePreservesFreshlyAddedTitle(t *testing.T) {
 
 func TestRepairGoalTitleRecomputesTitleFromLatestGoalContent(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "repair-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "repair-ws")
 	goalPath := filepath.Join(wsDir, "GOAL.md")
 	original := []byte("---\nflow: test\n---\n# First Goal\n\nFirst body")
 	latest := []byte("---\nflow: test\n---\n# Second Goal\n\nSecond body")
@@ -218,9 +218,25 @@ func TestRepairGoalTitleRecomputesTitleFromLatestGoalContent(t *testing.T) {
 	assert.NotContains(t, string(data), "title: First Goal")
 }
 
+func TestRepairGoalTitleDoesNotRecreateGoalAfterConcurrentDeletion(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, server, rootDir, "repair-ws")
+	goalPath := filepath.Join(wsDir, "GOAL.md")
+	require.NoError(t, os.WriteFile(goalPath, []byte("---\nflow: test\n---\n# Goal"), 0o644))
+
+	server.goalTitleComposer = func(_ string, _ []byte) (string, error) {
+		require.NoError(t, os.Remove(goalPath))
+		return "Repaired Goal Title", nil
+	}
+
+	require.NoError(t, server.repairGoalTitle(wsDir))
+	_, errStat := os.Stat(goalPath)
+	assert.True(t, os.IsNotExist(errStat))
+}
+
 func TestEnqueueGoalTitleRepairCollapsesAliasPathsToOneSlot(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "repair-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "repair-ws")
 	goalPath := filepath.Join(wsDir, "GOAL.md")
 	require.NoError(t, os.WriteFile(goalPath, []byte("---\nflow: test\n---\n# Goal"), 0o644))
 

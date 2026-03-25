@@ -546,7 +546,7 @@ func TestCreateWorkspaceInfo(t *testing.T) {
 	require.NoError(t, os.MkdirAll(workspacePath, 0755))
 	require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
 
-	info := server.createWorkspaceInfo(workspacePath, "test-workspace", false, true, false)
+	info := server.createWorkspaceInfo(workspacePath, "test-workspace", workspaceStandalone, true, false)
 
 	assert.Equal(t, "test-workspace", info.DirName)
 	assert.Equal(t, workspacePath, info.Directory)
@@ -1146,7 +1146,7 @@ func TestStatePathGeneration(t *testing.T) {
 
 func TestResolveWorkspaceNameToPath(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "resolve-name")
+	_ = setupTestWorkspace(t, srv, rootDir, "resolve-name")
 
 	result := srv.resolveWorkspaceNameToPath("resolve-name")
 	assert.NotEmpty(t, result)
@@ -1161,7 +1161,7 @@ func TestResolveWorkspaceNameToPathNotFound(t *testing.T) {
 
 func TestClassifyWorkspaceCachedStandalone(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "classify-standalone")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "classify-standalone")
 	kind := srv.classifyWorkspaceCached(wsDir)
 	assert.Equal(t, workspaceStandalone, kind)
 }
@@ -1174,7 +1174,7 @@ func TestClassifyWorkspaceCachedNonExistent(t *testing.T) {
 
 func TestNotifyStateChangeInvalidatesCache(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "notify-ws")
+	_ = setupTestWorkspace(t, srv, rootDir, "notify-ws")
 
 	srv.warmStateCache()
 	_, ok := srv.stateCache.get("state")
@@ -1187,7 +1187,7 @@ func TestNotifyStateChangeInvalidatesCache(t *testing.T) {
 
 func TestWorkspaceCoordinator(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "coord-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "coord-ws")
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{
 		Status: state.StatusComplete,
@@ -1202,7 +1202,7 @@ func TestWorkspaceCoordinator(t *testing.T) {
 
 func TestWorkspaceCoordinatorPreservesWorkingStatusOnDisk(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "coord-working")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "coord-working")
 
 	stoppedCoord := stopCachedSession(t, srv, wsDir, state.Workflow{Status: state.StatusComplete})
 	writeWorkflowStateToDisk(t, wsDir, state.Workflow{
@@ -1220,14 +1220,14 @@ func TestWorkspaceCoordinatorPreservesWorkingStatusOnDisk(t *testing.T) {
 
 func TestWorkspaceCoordinatorNoState(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "coord-nostate")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "coord-nostate")
 	coord := srv.workspaceCoordinator(wsDir)
 	assert.NotNil(t, coord)
 }
 
 func TestStopSessionIdempotent(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "stop-idem")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "stop-idem")
 	srv.stopSession(wsDir)
 	srv.stopSession(wsDir)
 }
@@ -1368,7 +1368,7 @@ func TestScanWorkspaceGroupsIgnoresLocalWorkspaces(t *testing.T) {
 
 func TestScanWorkspaceGroupsCachingBehavior(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	groups1, err1 := server.scanWorkspaceGroups()
 	require.NoError(t, err1)
 	groups2, err2 := server.scanWorkspaceGroups()
@@ -1383,7 +1383,7 @@ func TestInvalidateWorkspaceScanCache(t *testing.T) {
 
 func TestResetHumanCommunicationWithCoordinator(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "reset-human")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "reset-human")
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
 	coord, errCoord := state.NewCoordinatorWith(sp, state.Workflow{
 		Status:       state.StatusWorking,
@@ -1415,7 +1415,7 @@ func TestValidateDirectoryEmpty(t *testing.T) {
 
 func TestValidateDirectoryValid(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "validate-dir")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "validate-dir")
 	result, err := srv.validateDirectory(wsDir)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, result)
@@ -1473,7 +1473,7 @@ func TestResetHumanCommunicationWithNoCoordinator(t *testing.T) {
 
 func TestStopSessionWithRunningSessionMarksNotRunning(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	coord, errCoord := state.NewCoordinatorWith(filepath.Join(wsDir, ".sgai", "state.json"), state.Workflow{
 		Status:       state.StatusWorking,
 		HumanMessage: "question?",
@@ -2958,7 +2958,7 @@ func TestInitializeWorkspaceExisting(t *testing.T) {
 
 func TestDoScanWorkspaceGroups(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ws1")
+	wsDir := setupTestWorkspace(t, server, rootDir, "ws1")
 	require.NoError(t, os.MkdirAll(filepath.Join(wsDir, ".jj"), 0755))
 
 	groups := server.doScanWorkspaceGroups()
@@ -3022,7 +3022,7 @@ func TestDoScanWorkspaceGroupsEmpty(t *testing.T) {
 
 func TestResolveWorkspaceNameToPathFoundServe(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	result := server.resolveWorkspaceNameToPath("test-ws")
 	assert.NotEmpty(t, result)
 }
@@ -3093,7 +3093,7 @@ func TestResolveWorkspaceNameToPathEmpty(t *testing.T) {
 
 func TestResolveWorkspaceNameToPathFound(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "my-workspace")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "my-workspace")
 	result := srv.resolveWorkspaceNameToPath("my-workspace")
 	assert.Equal(t, wsDir, result)
 }
@@ -3190,14 +3190,14 @@ func TestOrderedModelStatusesWithEntries(t *testing.T) {
 
 func TestResolveRootForDeleteForkStandalone(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "standalone-ws")
+	setupTestWorkspace(t, srv, rootDir, "standalone-ws")
 	result := srv.resolveRootForDeleteFork(filepath.Join(rootDir, "standalone-ws"))
 	assert.Empty(t, result)
 }
 
 func TestResolveForkDirFromRequest(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-resolve")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "test-resolve")
 
 	t.Run("emptyRequestSameAsRoot", func(t *testing.T) {
 		result := srv.resolveForkDir("", wsDir, wsDir)

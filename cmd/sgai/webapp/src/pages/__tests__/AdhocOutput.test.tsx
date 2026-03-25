@@ -1,7 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
 import { render, screen, cleanup } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import * as useAdhocRunModule from "@/hooks/useAdhocRun";
+import * as factoryStateModule from "@/lib/factory-state";
+import * as markdownEditorModule from "@/components/MarkdownEditor";
 import { AdhocOutput } from "../AdhocOutput";
 
 const mockWorkspace = {
@@ -45,8 +48,7 @@ const mockWorkspace = {
   external: false,
 };
 
-mock.module("@/hooks/useAdhocRun", () => ({
-  useAdhocRun: () => ({
+const mockUseAdhocRun = () => ({
     selectedModel: "",
     setSelectedModel: mock(() => {}),
     prompt: "",
@@ -61,28 +63,17 @@ mock.module("@/hooks/useAdhocRun", () => ({
     promptHistory: [],
     selectFromHistory: mock(() => {}),
     clearHistory: mock(() => {}),
-  }),
-}));
+  });
 
-mock.module("@/lib/factory-state", () => ({
-  useFactoryState: () => ({
-    workspaces: [mockWorkspace],
-    fetchStatus: "idle",
-    lastFetchedAt: Date.now(),
-  }),
-}));
-
-mock.module("@/components/MarkdownEditor", () => ({
-  MarkdownEditor: ({ value, onChange, disabled, placeholder }: { value: string; onChange: (value: string | undefined) => void; disabled?: boolean; placeholder?: string }) => (
-    <textarea
-      data-testid="markdown-editor"
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-      disabled={disabled}
-      placeholder={placeholder}
-    />
-  ),
-}));
+const mockMarkdownEditor = ({ value, onChange, disabled, placeholder }: { value: string; onChange: (value: string | undefined) => void; disabled?: boolean; placeholder?: string }) => (
+  <textarea
+    data-testid="markdown-editor"
+    value={value}
+    onChange={(event) => onChange(event.target.value)}
+    disabled={disabled}
+    placeholder={placeholder}
+  />
+);
 
 function renderAdhocOutput() {
   return render(
@@ -99,9 +90,18 @@ function renderAdhocOutput() {
 describe("AdhocOutput", () => {
   beforeEach(() => {
     document.body.style.pointerEvents = "auto";
+
+    spyOn(useAdhocRunModule, "useAdhocRun").mockImplementation((...args) => mockUseAdhocRun(...args));
+    spyOn(factoryStateModule, "useFactoryState").mockImplementation(() => ({
+      workspaces: [mockWorkspace],
+      fetchStatus: "idle",
+      lastFetchedAt: Date.now(),
+    }));
+    spyOn(markdownEditorModule, "MarkdownEditor").mockImplementation((...args) => mockMarkdownEditor(...args));
   });
 
   afterEach(() => {
+    mock.restore();
     cleanup();
   });
 

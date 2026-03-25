@@ -120,8 +120,13 @@ func (s *Server) attachExternalWorkspaceService(path string) (attachExternalResu
 
 	sgaiDir := filepath.Join(path, ".sgai")
 	if _, errSGAI := os.Stat(sgaiDir); os.IsNotExist(errSGAI) {
-		if errInit := initializeWorkspace(path); errInit != nil {
+		if errInit := initializeWorkspaceDir(path); errInit != nil {
 			return attachExternalResult{}, fmt.Errorf("initializing workspace: %w", errInit)
+		}
+		if !hasGoal {
+			if errGoal := writeGoalExample(path); errGoal != nil {
+				return attachExternalResult{}, fmt.Errorf("writing GOAL.md: %w", errGoal)
+			}
 		}
 	}
 

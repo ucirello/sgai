@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
 import { renderHook, act, waitFor } from "@testing-library/react";
+import { api } from "@/lib/api";
 import { useAdhocRun } from "@/hooks/useAdhocRun";
 
 const mockAdhoc = mock(() => Promise.resolve({ output: "result", running: false }));
@@ -7,26 +8,6 @@ const mockActionRun = mock(() => Promise.resolve({ output: "action result", runn
 const mockAdhocStatus = mock(() => Promise.resolve({ output: "", running: false }));
 const mockAdhocStop = mock(() => Promise.resolve({ output: "Stopped.", running: false }));
 const mockModelsList = mock(() => Promise.resolve({ models: [{ id: "model-1" }], defaultModel: "model-1" }));
-
-mock.module("@/lib/api", () => ({
-  api: {
-    workspaces: {
-      adhoc: mockAdhoc,
-      actionRun: mockActionRun,
-      adhocStatus: mockAdhocStatus,
-      adhocStop: mockAdhocStop,
-    },
-    models: {
-      list: mockModelsList,
-    },
-  },
-  ApiError: class ApiError extends Error {
-    constructor(public status: number, message: string) {
-      super(message);
-      this.name = "ApiError";
-    }
-  },
-}));
 
 beforeEach(() => {
   localStorage.clear();
@@ -40,6 +21,16 @@ beforeEach(() => {
   mockAdhocStatus.mockImplementation(() => Promise.resolve({ output: "", running: false }));
   mockAdhocStop.mockImplementation(() => Promise.resolve({ output: "Stopped.", running: false }));
   mockModelsList.mockImplementation(() => Promise.resolve({ models: [{ id: "model-1" }], defaultModel: "model-1" }));
+
+  spyOn(api.workspaces, "adhoc").mockImplementation((...args) => mockAdhoc(...args));
+  spyOn(api.workspaces, "actionRun").mockImplementation((...args) => mockActionRun(...args));
+  spyOn(api.workspaces, "adhocStatus").mockImplementation((...args) => mockAdhocStatus(...args));
+  spyOn(api.workspaces, "adhocStop").mockImplementation((...args) => mockAdhocStop(...args));
+  spyOn(api.models, "list").mockImplementation((...args) => mockModelsList(...args));
+});
+
+afterEach(() => {
+  mock.restore();
 });
 
 describe("useAdhocRun", () => {

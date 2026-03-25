@@ -1,9 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useEffect } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
+import * as MonacoEditorModule from "@monaco-editor/react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
+import { api } from "@/lib/api";
 import { resetFactoryStateStore } from "@/lib/factory-state";
 import { EditGoal } from "@/pages/EditGoal";
 import { InlineForkEditor } from "@/pages/InlineForkEditor";
@@ -74,9 +76,24 @@ const mockGetState = mock(() => ({
 const mockAgentsList = mock(() => ({ agents: [] }));
 const mockModelsList = mock(() => ({ models: [] }));
 
+type RestorableGlobalKey = "fetch" | "EventSource";
+
 let editorValue = "";
-let originalFetch: typeof globalThis.fetch | undefined;
-let originalEventSource: typeof globalThis.EventSource | undefined;
+let originalFetchDescriptor: PropertyDescriptor | undefined;
+let originalEventSourceDescriptor: PropertyDescriptor | undefined;
+
+function captureGlobalDescriptor(key: RestorableGlobalKey) {
+  return Object.getOwnPropertyDescriptor(globalThis, key);
+}
+
+function restoreGlobalDescriptor(key: RestorableGlobalKey, descriptor: PropertyDescriptor | undefined) {
+  if (descriptor) {
+    Object.defineProperty(globalThis, key, descriptor);
+    return;
+  }
+
+  Reflect.deleteProperty(globalThis, key);
+}
 
 if (!globalThis.ResizeObserver) {
   globalThis.ResizeObserver = class ResizeObserver {
@@ -86,108 +103,79 @@ if (!globalThis.ResizeObserver) {
   };
 }
 
-mock.module("@monaco-editor/react", () => {
-  function MockEditor({ value, onChange, onMount }: {
-    value?: string;
-    onChange?: (nextValue: string | undefined) => void;
-    onMount?: (editor: unknown, monaco: unknown) => void;
-  }) {
-    useEffect(() => {
-      editorValue = value ?? "";
-    }, [value]);
+function MockEditor({ value, onChange, onMount }: {
+  value?: string;
+  onChange?: (nextValue: string | undefined) => void;
+  onMount?: (editor: unknown, monaco: unknown) => void;
+}) {
+  useEffect(() => {
+    editorValue = value ?? "";
+  }, [value]);
 
-    useEffect(() => {
-      const model = {
-        getValue: () => editorValue,
-        getValueInRange: () => "",
-        getFullModelRange: () => ({
-          startLineNumber: 1,
-          startColumn: 1,
-          endLineNumber: 1,
-          endColumn: Math.max(editorValue.length, 1),
-        }),
-        getLineContent: () => editorValue,
-      };
+  useEffect(() => {
+    const model = {
+      getValue: () => editorValue,
+      getValueInRange: () => "",
+      getFullModelRange: () => ({
+        startLineNumber: 1,
+        startColumn: 1,
+        endLineNumber: 1,
+        endColumn: Math.max(editorValue.length, 1),
+      }),
+      getLineContent: () => editorValue,
+    };
 
-      const editor = {
-        addAction: () => ({ dispose() {} }),
-        getModel: () => model,
-        getDomNode: () => document.querySelector("[data-testid='monaco-editor-input']"),
-        deltaDecorations: () => [],
-        onDidChangeModelContent: () => ({ dispose() {} }),
-        executeEdits: () => {},
-        getSelection: () => ({
-          startLineNumber: 1,
-          startColumn: 1,
-          endLineNumber: 1,
-          endColumn: 1,
-        }),
-        setSelection: () => {},
-        focus: () => {},
-      };
+    const editor = {
+      addAction: () => ({ dispose() {} }),
+      getModel: () => model,
+      getDomNode: () => document.querySelector("[data-testid='monaco-editor-input']"),
+      deltaDecorations: () => [],
+      onDidChangeModelContent: () => ({ dispose() {} }),
+      executeEdits: () => {},
+      getSelection: () => ({
+        startLineNumber: 1,
+        startColumn: 1,
+        endLineNumber: 1,
+        endColumn: 1,
+      }),
+      setSelection: () => {},
+      focus: () => {},
+    };
 
-      const monaco = {
-        KeyMod: { CtrlCmd: 1 },
-        KeyCode: {
-          KeyA: 65,
-          KeyB: 66,
-          KeyI: 73,
-          KeyK: 75,
-          KeyS: 83,
-        },
-        languages: {
-          registerCompletionItemProvider: () => ({ dispose() {} }),
-        },
-      };
+    const monaco = {
+      KeyMod: { CtrlCmd: 1 },
+      KeyCode: {
+        KeyA: 65,
+        KeyB: 66,
+        KeyI: 73,
+        KeyK: 75,
+        KeyS: 83,
+      },
+      languages: {
+        registerCompletionItemProvider: () => ({ dispose() {} }),
+      },
+    };
 
-      onMount?.(editor, monaco);
-    }, [onMount]);
+    onMount?.(editor, monaco);
+  }, [onMount]);
 
-      return (
-        <textarea
-          data-testid="monaco-editor-input"
-          value={value ?? ""}
-          onKeyDown={(event) => {
-            if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
-              event.preventDefault();
-              event.stopPropagation();
-            }
-          }}
-          onChange={(event) => {
-            editorValue = event.target.value;
-            onChange?.(event.target.value);
-        }}
-      />
-    );
-  }
-
-  return {
-    default: MockEditor,
-  };
-});
-
-mock.module("@/lib/api", () => ({
-  api: {
-    agents: {
-      list: mock(() => Promise.resolve(mockAgentsList())),
-    },
-    models: {
-      list: mock(() => Promise.resolve(mockModelsList())),
-    },
-    workspaces: {
-      getGoal: mock(() => Promise.resolve(mockGetGoal())),
-      updateGoal: mock((_name: string, content: string) => Promise.resolve(mockUpdateGoal(content))),
-      forkTemplate: mock(() => Promise.resolve(mockGetForkTemplate())),
-      fork: mock((_name: string, goalContent: string) => Promise.resolve(mockFork(goalContent))),
-    },
-  },
-  ApiError: class ApiError extends Error {
-    constructor(public status: number, message: string) {
-      super(message);
-      this.name = "ApiError";
-    }
-  },
-}));
+  return (
+    <textarea
+      data-testid="monaco-editor-input"
+      value={value ?? ""}
+      onKeyDown={(event) => {
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      }}
+      onChange={(event) => {
+        editorValue = event.target.value;
+        onChange?.(event.target.value);
+      }}
+    />
+  );
+}
 
 class MockEventSource {
   onopen: ((event: Event) => void) | null = null;
@@ -274,8 +262,8 @@ function renderInlineForkEditor() {
 describe("MarkdownEditor submit shortcut integration", () => {
   beforeEach(() => {
     editorValue = "";
-    originalFetch = globalThis.fetch;
-    originalEventSource = globalThis.EventSource;
+    originalFetchDescriptor = captureGlobalDescriptor("fetch");
+    originalEventSourceDescriptor = captureGlobalDescriptor("EventSource");
     globalThis.fetch = mockFetch as unknown as typeof fetch;
     globalThis.EventSource = MockEventSource as unknown as typeof EventSource;
     sessionStorage.clear();
@@ -289,17 +277,36 @@ describe("MarkdownEditor submit shortcut integration", () => {
     mockGetState.mockClear();
     mockAgentsList.mockClear();
     mockModelsList.mockClear();
+
+    spyOn(MonacoEditorModule, "default").mockImplementation((...args) => MockEditor(...args));
+    spyOn(api.agents, "list").mockImplementation(async () => mockAgentsList());
+    spyOn(api.models, "list").mockImplementation(async () => mockModelsList());
+    spyOn(api.workspaces, "getGoal").mockImplementation(async () => mockGetGoal());
+    spyOn(api.workspaces, "updateGoal").mockImplementation(async (_name: string, content: string) => mockUpdateGoal(content));
+    spyOn(api.workspaces, "forkTemplate").mockImplementation(async () => mockGetForkTemplate());
+    spyOn(api.workspaces, "fork").mockImplementation(async (_name: string, goalContent: string) => mockFork(goalContent));
   });
 
   afterEach(() => {
+    mock.restore();
     resetFactoryStateStore();
-    if (originalFetch) {
-      globalThis.fetch = originalFetch;
-    }
-    if (originalEventSource) {
-      globalThis.EventSource = originalEventSource;
-    }
+    restoreGlobalDescriptor("fetch", originalFetchDescriptor);
+    restoreGlobalDescriptor("EventSource", originalEventSourceDescriptor);
     cleanup();
+  });
+
+  it("removes mocked fetch and EventSource globals when the original state was missing", () => {
+    const mockedFetchDescriptor = captureGlobalDescriptor("fetch");
+    const mockedEventSourceDescriptor = captureGlobalDescriptor("EventSource");
+
+    restoreGlobalDescriptor("fetch", undefined);
+    restoreGlobalDescriptor("EventSource", undefined);
+
+    expect(Object.getOwnPropertyDescriptor(globalThis, "fetch")).toBeUndefined();
+    expect(Object.getOwnPropertyDescriptor(globalThis, "EventSource")).toBeUndefined();
+
+    restoreGlobalDescriptor("fetch", mockedFetchDescriptor);
+    restoreGlobalDescriptor("EventSource", mockedEventSourceDescriptor);
   });
 
   it("submits from MarkdownEditor when Ctrl+S is pressed inside the editor", async () => {

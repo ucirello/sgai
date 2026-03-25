@@ -1,8 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
 import { act, fireEvent, render, screen, waitFor, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
+import * as ReactRouter from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import * as factoryStateModule from "@/lib/factory-state";
+import { api } from "@/lib/api";
+import * as markdownEditorModule from "@/components/MarkdownEditor";
 import { InlineForkEditor } from "../InlineForkEditor";
 
 function deferredValue<T>() {
@@ -25,32 +29,7 @@ const mockForkTemplate = mock(() => Promise.resolve({ content: "---\nflow: |\n  
 const mockTriggerFactoryRefresh = mock(() => {});
 const mockNavigate = mock(() => {});
 
-mock.module("react-router", () => ({
-  ...require("react-router"),
-  useNavigate: () => mockNavigate,
-}));
-
-mock.module("@/lib/factory-state", () => ({
-  triggerFactoryRefresh: mockTriggerFactoryRefresh,
-}));
-
-mock.module("@/lib/api", () => ({
-  api: {
-    workspaces: {
-      fork: mockFork,
-      forkTemplate: mockForkTemplate,
-    },
-  },
-  ApiError: class ApiError extends Error {
-    constructor(public status: number, message: string) {
-      super(message);
-      this.name = "ApiError";
-    }
-  },
-}));
-
-mock.module("@/components/MarkdownEditor", () => ({
-  MarkdownEditor: ({ value, onChange, disabled, placeholder, onSubmitShortcut }: {
+const mockMarkdownEditor = ({ value, onChange, disabled, placeholder, onSubmitShortcut }: {
     value: string;
     onChange: (v: string | undefined) => void;
     disabled: boolean;
@@ -72,8 +51,7 @@ mock.module("@/components/MarkdownEditor", () => ({
         placeholder={placeholder}
       />
     </div>
-  ),
-}));
+  );
 
 async function renderInlineForkEditor(workspaceName = "test-workspace") {
   let view: ReturnType<typeof render> | undefined;
@@ -91,6 +69,7 @@ async function renderInlineForkEditor(workspaceName = "test-workspace") {
 }
 
 afterEach(() => {
+  mock.restore();
   cleanup();
 });
 
@@ -102,6 +81,12 @@ describe("InlineForkEditor", () => {
     mockNavigate.mockClear();
     mockFork.mockImplementation(() => Promise.resolve({ name: "new-fork", dir: "/path/to/new-fork" }));
     mockForkTemplate.mockImplementation(() => Promise.resolve({ content: "---\nflow: |\n  \"a\" -> \"b\"\n---\n# Goal\n\nDescribe your task" }));
+
+    spyOn(ReactRouter, "useNavigate").mockImplementation(() => mockNavigate);
+    spyOn(factoryStateModule, "triggerFactoryRefresh").mockImplementation(() => mockTriggerFactoryRefresh());
+    spyOn(api.workspaces, "fork").mockImplementation((...args) => mockFork(...args));
+    spyOn(api.workspaces, "forkTemplate").mockImplementation((...args) => mockForkTemplate(...args));
+    spyOn(markdownEditorModule, "MarkdownEditor").mockImplementation((...args) => mockMarkdownEditor(...args));
   });
 
   function mockSessionStorage(overrides: Partial<Storage>): () => void {

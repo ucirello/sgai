@@ -417,7 +417,7 @@ func rootHasForks(ws workspaceInfo, groups []workspaceGroup) bool {
 		return false
 	}
 	for _, grp := range groups {
-		if grp.Root.Directory == ws.Directory {
+		if sameWorkspacePath(grp.Root.Directory, ws.Directory) {
 			return len(grp.Forks) > 0
 		}
 	}
@@ -427,7 +427,7 @@ func rootHasForks(ws workspaceInfo, groups []workspaceGroup) bool {
 func forkRootDirName(workspaceDir string, groups []workspaceGroup) (string, bool) {
 	for _, grp := range groups {
 		for _, fork := range grp.Forks {
-			if fork.Directory == workspaceDir {
+			if sameWorkspacePath(fork.Directory, workspaceDir) {
 				return grp.Root.DirName, true
 			}
 		}
@@ -437,7 +437,7 @@ func forkRootDirName(workspaceDir string, groups []workspaceGroup) (string, bool
 
 func (s *Server) collectForksForAPIFromGroups(rootDir string, groups []workspaceGroup) []apiForkEntry {
 	for _, grp := range groups {
-		if grp.Root.Directory != rootDir {
+		if !sameWorkspacePath(grp.Root.Directory, rootDir) {
 			continue
 		}
 		forks := make([]apiForkEntry, len(grp.Forks))
@@ -930,12 +930,37 @@ func (s *Server) resolveWorkspaceFromPath(w http.ResponseWriter, r *http.Request
 		http.Error(w, "workspace name is required", http.StatusBadRequest)
 		return "", false
 	}
-	workspacePath := s.resolveWorkspaceNameToPath(workspaceName)
-	if workspacePath == "" {
+	workspacePaths := s.resolveWorkspaceNameToPaths(workspaceName)
+	switch len(workspacePaths) {
+	case 0:
 		http.Error(w, "workspace not found", http.StatusNotFound)
 		return "", false
+	case 1:
+		return workspacePaths[0], true
+	default:
+		http.Error(w, "workspace name is ambiguous; use routed workspace name", http.StatusConflict)
+		return "", false
 	}
-	return workspacePath, true
+}
+
+func (s *Server) resolveGoalWorkspaceFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {
+	workspaceName := r.PathValue("name")
+	if workspaceName == "" {
+		http.Error(w, "workspace name is required", http.StatusBadRequest)
+		return "", false
+	}
+
+	workspacePaths := s.resolveWorkspaceNameToPaths(workspaceName)
+	switch len(workspacePaths) {
+	case 0:
+		http.Error(w, "workspace not found", http.StatusNotFound)
+		return "", false
+	case 1:
+		return workspacePaths[0], true
+	default:
+		http.Error(w, "workspace name is ambiguous; use routed workspace name", http.StatusConflict)
+		return "", false
+	}
 }
 
 func (s *Server) resolveWorkspaceForAction(workspaceName, workspaceDir string) (string, int, string) {
@@ -963,7 +988,10 @@ func (s *Server) resolveWorkspaceForAction(workspaceName, workspaceDir string) (
 	if workspacePath == "" {
 		return "", http.StatusNotFound, "workspace not found"
 	}
-	if filepath.Base(workspacePath) != workspaceName {
+	matches := s.resolveWorkspaceNameToPaths(workspaceName)
+	if !slices.ContainsFunc(matches, func(match string) bool {
+		return sameWorkspacePath(match, workspacePath)
+	}) {
 		return "", http.StatusBadRequest, "workspaceDir does not match workspace name"
 	}
 	return workspacePath, 0, ""
@@ -1297,34 +1325,9 @@ func (s *Server) handleAPIStopSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
-	sess := s.sessions[workspacePath]
-	s.mu.Unlock()
+	result := s.stopSessionService(workspacePath)
 
-	var alreadyStopped bool
-	if sess == nil {
-		alreadyStopped = true
-	} else {
-		sess.mu.Lock()
-		alreadyStopped = !sess.running
-		sess.mu.Unlock()
-	}
-
-	s.stopSession(workspacePath)
-
-	message := "session stopped"
-	if alreadyStopped {
-		message = "session already stopped"
-	}
-
-	s.notifyStateChange()
-
-	writeJSON(w, apiSessionActionResponse{
-		Name:    filepath.Base(workspacePath),
-		Status:  "stopped",
-		Running: false,
-		Message: message,
-	})
+	writeJSON(w, apiSessionActionResponse(result))
 }
 
 func (s *Server) handleAPIResetSession(w http.ResponseWriter, r *http.Request) {
@@ -1333,36 +1336,17 @@ func (s *Server) handleAPIResetSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
-	sess := s.sessions[workspacePath]
-	s.mu.Unlock()
-
-	if sess != nil {
-		sess.mu.Lock()
-		running := sess.running
-		sess.mu.Unlock()
-		if running {
-			http.Error(w, "cannot reset while session is running", http.StatusConflict)
-			return
+	result, errReset := s.resetSessionService(workspacePath)
+	if errReset != nil {
+		statusCode := http.StatusInternalServerError
+		if errors.Is(errReset, errSessionResetWhileRunning) {
+			statusCode = http.StatusConflict
 		}
-	}
-
-	coord := s.workspaceCoordinator(workspacePath)
-	if errUpdate := coord.UpdateState(func(wf *state.Workflow) {
-		wf.Status = state.StatusComplete
-	}); errUpdate != nil {
-		http.Error(w, "failed to reset state: "+errUpdate.Error(), http.StatusInternalServerError)
+		http.Error(w, errReset.Error(), statusCode)
 		return
 	}
 
-	s.notifyStateChange()
-
-	writeJSON(w, apiSessionActionResponse{
-		Name:    filepath.Base(workspacePath),
-		Status:  state.StatusComplete,
-		Running: false,
-		Message: "session reset successfully",
-	})
+	writeJSON(w, apiSessionActionResponse(result))
 }
 
 type apiForkRequest struct {
@@ -1562,7 +1546,7 @@ type apiGoalResponse struct {
 }
 
 func (s *Server) handleAPIGetGoal(w http.ResponseWriter, r *http.Request) {
-	workspacePath, ok := s.resolveWorkspaceFromPath(w, r)
+	workspacePath, ok := s.resolveGoalWorkspaceFromPath(w, r)
 	if !ok {
 		return
 	}
@@ -1657,7 +1641,7 @@ type apiUpdateGoalResponse struct {
 }
 
 func (s *Server) handleAPIUpdateGoal(w http.ResponseWriter, r *http.Request) {
-	workspacePath, ok := s.resolveWorkspaceFromPath(w, r)
+	workspacePath, ok := s.resolveGoalWorkspaceFromPath(w, r)
 	if !ok {
 		return
 	}
@@ -1673,22 +1657,13 @@ func (s *Server) handleAPIUpdateGoal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	goalPath := filepath.Join(workspacePath, "GOAL.md")
-	if errWrite := os.WriteFile(goalPath, []byte(req.Content), 0644); errWrite != nil {
+	result, errUpdateGoal := s.updateGoalService(workspacePath, req.Content)
+	if errUpdateGoal != nil {
 		http.Error(w, "failed to write GOAL.md", http.StatusInternalServerError)
 		return
 	}
 
-	prefix := workspacePath + "|"
-	s.svgCache.deleteFunc(func(k string) bool {
-		return strings.HasPrefix(k, prefix)
-	})
-	s.notifyStateChange()
-
-	writeJSON(w, apiUpdateGoalResponse{
-		Updated:   true,
-		Workspace: filepath.Base(workspacePath),
-	})
+	writeJSON(w, apiUpdateGoalResponse(result))
 }
 
 type apiAdhocRequest struct {

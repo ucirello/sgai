@@ -49,7 +49,7 @@ func TestHandleAPIStateIncludesRepositoryActionPolicy(t *testing.T) {
 
 	zeroChildRoot := workspaces[filepath.Base(zeroChildRootDir)]
 	assertRepositoryAction(t, zeroChildRoot, repositoryActionExpectation{
-		mode:              "root",
+		mode:              "standalone",
 		entryPoint:        "confirm",
 		defaultOperation:  "detach",
 		allowedOperations: []string{"detach"},
@@ -141,10 +141,10 @@ func TestHandleAPIStateClassifiesZeroChildRootFromJJMetadata(t *testing.T) {
 
 	workspaces := decodeWorkspaceStateByName(t, response.Body.Bytes())
 	root := workspaces[filepath.Base(rootDir)]
-	assert.True(t, root.IsRoot)
+	assert.False(t, root.IsRoot)
 	assert.Empty(t, root.Forks)
 	assertRepositoryAction(t, root, repositoryActionExpectation{
-		mode:              "root",
+		mode:              "standalone",
 		entryPoint:        "confirm",
 		defaultOperation:  "detach",
 		allowedOperations: []string{"detach"},
@@ -421,7 +421,7 @@ func TestHandleAPIDeleteForkKeepsFactoryStateHealthy(t *testing.T) {
 	_, forkPresent := workspaces[filepath.Base(forkDir)]
 	assert.False(t, forkPresent)
 	assertRepositoryAction(t, root, repositoryActionExpectation{
-		mode:              "root",
+		mode:              "standalone",
 		entryPoint:        "confirm",
 		defaultOperation:  "detach",
 		allowedOperations: []string{"detach"},

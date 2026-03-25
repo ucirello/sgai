@@ -13,7 +13,7 @@ import (
 
 func TestAdhocStatusService(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 
 	result := server.adhocStatusService(wsDir)
 	assert.False(t, result.Running)
@@ -23,7 +23,7 @@ func TestAdhocStatusService(t *testing.T) {
 
 func TestAdhocStartServiceEmptyPrompt(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 
 	result := server.adhocStartService(wsDir, "", "claude-opus-4")
 	assert.Error(t, result.Error)
@@ -32,7 +32,7 @@ func TestAdhocStartServiceEmptyPrompt(t *testing.T) {
 
 func TestAdhocStartServiceEmptyModel(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 
 	result := server.adhocStartService(wsDir, "do something", "")
 	assert.Error(t, result.Error)
@@ -41,7 +41,7 @@ func TestAdhocStartServiceEmptyModel(t *testing.T) {
 
 func TestAdhocStopService(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 
 	result := server.adhocStopService(wsDir)
 	assert.False(t, result.Running)
@@ -50,7 +50,7 @@ func TestAdhocStopService(t *testing.T) {
 
 func TestAdhocStartServiceAlreadyRunningReturnsExisting(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws-adhoc-running")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws-adhoc-running")
 	st := server.getAdhocState(wsDir)
 	st.mu.Lock()
 	st.running = true
@@ -64,7 +64,7 @@ func TestAdhocStartServiceAlreadyRunningReturnsExisting(t *testing.T) {
 
 func TestGetAdhocStateCreation(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "adhoc-create")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "adhoc-create")
 	st1 := srv.getAdhocState(wsDir)
 	st2 := srv.getAdhocState(wsDir)
 	assert.Same(t, st1, st2)
@@ -125,7 +125,7 @@ func TestAnsiEscapePatternMatches(t *testing.T) {
 
 func TestRunScriptActionLogsQuotedArguments(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "script-log-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "script-log-ws")
 
 	result := server.runScriptAction(wsDir, "Print", []string{"printf", "%s", "hello world"})
 	require.NoError(t, result.Error)
@@ -148,7 +148,7 @@ func TestRunScriptActionLogsQuotedArguments(t *testing.T) {
 
 func TestAdhocStopServiceDoesNotReportStopAsCommandError(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "stop-coordination-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "stop-coordination-ws")
 
 	result := server.startCommandService(wsDir, commandStartSpec{
 		command:               "sleep",
