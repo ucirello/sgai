@@ -4,24 +4,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
-
-	"github.com/ucirello/sgai/pkg/state"
 )
 
 type workspaceStateSnapshot struct {
-	modTime      time.Time
-	status       string
-	needsInput   bool
-	progressLen  int
-	todosHash    string
-	messagesHash string
-	goalModTime  time.Time
-	goalHash     string
+	modTime     time.Time
+	goalModTime time.Time
+	goalHash    string
 }
 
 func (s *Server) startStateWatcher() {
@@ -82,40 +74,44 @@ func (s *Server) checkWorkspaceState(dir string, snapshots map[string]workspaceS
 	}
 
 	prev, hasPrev := snapshots[dir]
-	if hasPrev && info.ModTime().Equal(prev.modTime) {
-		goalChanged := false
-		if goalInfo != nil {
-			goalChanged = !goalInfo.ModTime().Equal(prev.goalModTime)
-		}
-		if !goalChanged {
-			return
-		}
+	if hasPrev && stateWatcherSnapshotUnchanged(prev, info.ModTime(), goalInfo) {
+		return
 	}
 
-	wfState := s.workspaceCoordinator(dir).State()
-
-	current := buildStateSnapshot(info.ModTime(), &wfState, goalInfo)
+	current := buildStateSnapshot(info.ModTime(), goalInfo)
 
 	if !hasPrev {
 		snapshots[dir] = current
 		return
 	}
 
-	s.emitStateChangeEvents(&prev, &current)
+	s.emitStateChangeEvents(dir, s.sessionRunning(dir), prev, current)
 
 	snapshots[dir] = current
 }
 
-func buildStateSnapshot(modTime time.Time, wfState *state.Workflow, goalInfo os.FileInfo) workspaceStateSnapshot {
+func stateWatcherSnapshotUnchanged(prev workspaceStateSnapshot, modTime time.Time, goalInfo os.FileInfo) bool {
+	if !modTime.Equal(prev.modTime) {
+		return false
+	}
+	return goalSnapshotUnchanged(prev, goalInfo)
+}
+
+func goalSnapshotUnchanged(prev workspaceStateSnapshot, goalInfo os.FileInfo) bool {
+	if goalInfo == nil {
+		return prev.goalHash == ""
+	}
+	if !goalInfo.ModTime().Equal(prev.goalModTime) {
+		return false
+	}
+	return hashGoalFile(goalInfo) == prev.goalHash
+}
+
+func buildStateSnapshot(modTime time.Time, goalInfo os.FileInfo) workspaceStateSnapshot {
 	snapshot := workspaceStateSnapshot{
-		modTime:      modTime,
-		status:       wfState.Status,
-		needsInput:   wfState.NeedsHumanInput(),
-		progressLen:  len(wfState.Progress),
-		todosHash:    hashTodos(wfState.ProjectTodos, wfState.Todos),
-		messagesHash: hashMessages(wfState.Messages),
-		goalModTime:  time.Time{},
-		goalHash:     "",
+		modTime:     modTime,
+		goalModTime: time.Time{},
+		goalHash:    "",
 	}
 	if goalInfo != nil {
 		snapshot.goalModTime = goalInfo.ModTime()
@@ -124,40 +120,15 @@ func buildStateSnapshot(modTime time.Time, wfState *state.Workflow, goalInfo os.
 	return snapshot
 }
 
-func (s *Server) emitStateChangeEvents(prev, current *workspaceStateSnapshot) {
-	changed := prev.status != current.status ||
-		prev.needsInput != current.needsInput ||
-		current.progressLen > prev.progressLen ||
-		prev.todosHash != current.todosHash ||
-		prev.messagesHash != current.messagesHash ||
-		prev.goalHash != current.goalHash
-
-	if changed {
-		s.notifyStateChange()
+func (s *Server) emitStateChangeEvents(workspacePath string, running bool, prev, current workspaceStateSnapshot) {
+	if prev.goalHash != current.goalHash {
+		s.notifyWorkspaceListChange(workspacePath)
+		return
 	}
-}
-
-func hashTodos(projectTodos, agentTodos []state.TodoItem) string {
-	h := sha256.New()
-	data, errMarshal := json.Marshal(struct {
-		Project []state.TodoItem `json:"p"`
-		Agent   []state.TodoItem `json:"a"`
-	}{projectTodos, agentTodos})
-	if errMarshal != nil {
-		return ""
+	if !running && !prev.modTime.Equal(current.modTime) {
+		wfState := s.loadWorkspaceState(workspacePath)
+		s.notifyWorkspaceChangeForState(workspacePath, &wfState, false)
 	}
-	h.Write(data)
-	return hex.EncodeToString(h.Sum(nil))[:16]
-}
-
-func hashMessages(messages []state.Message) string {
-	h := sha256.New()
-	data, errMarshal := json.Marshal(messages)
-	if errMarshal != nil {
-		return ""
-	}
-	h.Write(data)
-	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 func hashGoalFile(goalInfo os.FileInfo) string {

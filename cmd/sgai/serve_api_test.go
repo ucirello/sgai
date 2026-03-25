@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,7 @@ import (
 	"sync"
 	"testing"
 	"testing/fstest"
+	"testing/synctest"
 	"time"
 
 	"github.com/adrg/xdg"
@@ -27,6 +30,50 @@ func newTestServeSession(coord *state.Coordinator, running bool) *session {
 	sess.coord = coord
 	sess.running = running
 	return sess
+}
+
+type lockedResponseRecorder struct {
+	header http.Header
+	body   bytes.Buffer
+	code   int
+	mu     sync.Mutex
+}
+
+func newLockedResponseRecorder() *lockedResponseRecorder {
+	var recorder lockedResponseRecorder
+	recorder.header = make(http.Header)
+	return &recorder
+}
+
+func (w *lockedResponseRecorder) Header() http.Header {
+	return w.header
+}
+
+func (w *lockedResponseRecorder) WriteHeader(statusCode int) {
+	if w.code == 0 {
+		w.code = statusCode
+	}
+}
+
+func (w *lockedResponseRecorder) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.code == 0 {
+		w.code = http.StatusOK
+	}
+	n, errWrite := w.body.Write(p)
+	if errWrite != nil {
+		return n, fmt.Errorf("write locked response body: %w", errWrite)
+	}
+	return n, nil
+}
+
+func (w *lockedResponseRecorder) Flush() {}
+
+func (w *lockedResponseRecorder) BodyString() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.body.String()
 }
 
 func workflowWith(update func(*state.Workflow)) state.Workflow {
@@ -137,10 +184,29 @@ func writeWorkflowStateToDisk(t *testing.T, wsDir string, wf *state.Workflow) {
 	require.NoError(t, errCoord)
 }
 
+func writeWorkflowStateWithLaterModTime(t *testing.T, wsDir string, wf *state.Workflow) {
+	t.Helper()
+
+	info, errStat := os.Stat(statePath(wsDir))
+	require.NoError(t, errStat)
+
+	writeWorkflowStateToDisk(t, wsDir, wf)
+	setLaterFileModTime(t, statePath(wsDir), info.ModTime().Add(time.Second))
+}
+
 func startWaitingSessionQuestion(t *testing.T, srv *Server, wsDir string, question *state.MultiChoiceQuestion, humanMessage string) (*state.Coordinator, <-chan error, context.CancelFunc) {
 	t.Helper()
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	coord := state.NewCoordinatorEmpty(statePath)
+	ready := make(chan struct{}, 1)
+	coord.OnUpdate(func() {
+		if coord.State().NeedsHumanInput() {
+			select {
+			case ready <- struct{}{}:
+			default:
+			}
+		}
+	})
 	srv.mu.Lock()
 	srv.sessions[wsDir] = newTestServeSession(coord, true)
 	srv.mu.Unlock()
@@ -151,9 +217,7 @@ func startWaitingSessionQuestion(t *testing.T, srv *Server, wsDir string, questi
 		_, err := coord.AskAndWait(ctx, question, humanMessage)
 		errCh <- err
 	}()
-	require.Eventually(t, func() bool {
-		return coord.State().NeedsHumanInput()
-	}, time.Second, 10*time.Millisecond)
+	<-ready
 	return coord, errCh, cancel
 }
 
@@ -165,7 +229,7 @@ func TestIsAPIRoute(t *testing.T) {
 	}{
 		{
 			name:     "apiRoute",
-			urlPath:  "/api/v1/state",
+			urlPath:  "/api/v1/workspaces",
 			expected: true,
 		},
 		{
@@ -632,11 +696,6 @@ func TestCoordinatorModelFromWorkspace(t *testing.T) {
 	}
 }
 
-func TestWarmStateCache(t *testing.T) {
-	server, _ := setupTestServer(t)
-	server.warmStateCache()
-}
-
 func TestSessionCoordinator(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, srv, rootDir, "sess-coord-ws")
@@ -654,7 +713,7 @@ func TestWriteJSONResponse(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	_ = setupTestWorkspace(t, srv, rootDir, "json-ws")
 
-	w := serveHTTP(srv, "GET", "/api/v1/state", "")
+	w := serveHTTP(srv, "GET", "/api/v1/workspaces", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 
 	var resp json.RawMessage
@@ -674,7 +733,7 @@ func TestConvertSnippetLanguagesEmpty(t *testing.T) {
 }
 
 func TestIsAPIRouteVariants(t *testing.T) {
-	assert.True(t, isAPIRoute("/api/v1/state"))
+	assert.True(t, isAPIRoute("/api/v1/workspaces"))
 	assert.True(t, isAPIRoute("/api/v1/agents"))
 	assert.False(t, isAPIRoute("/"))
 	assert.False(t, isAPIRoute("/index.html"))
@@ -684,7 +743,7 @@ func TestIsStaticAssetVariants(t *testing.T) {
 	assert.True(t, isStaticAsset("/assets/main.js"))
 	assert.True(t, isStaticAsset("/assets/style.css"))
 	assert.True(t, isStaticAsset("/favicon.ico"))
-	assert.False(t, isStaticAsset("/api/v1/state"))
+	assert.False(t, isStaticAsset("/api/v1/workspaces"))
 	assert.False(t, isStaticAsset("/"))
 }
 
@@ -916,20 +975,12 @@ func TestConvertActionsForAPIEmpty(t *testing.T) {
 	assert.Empty(t, result)
 }
 
-func TestBuildFullFactoryStateWithMultipleWorkspaces(t *testing.T) {
+func TestBuildWorkspaceListResponseWithMultipleWorkspaces(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	setupTestWorkspace(t, server, rootDir, "ws1")
 	setupTestWorkspace(t, server, rootDir, "ws2")
-	result := server.buildFullFactoryState()
+	result := server.buildWorkspaceListResponse()
 	assert.GreaterOrEqual(t, len(result.Workspaces), 2)
-}
-
-func TestWarmStateCacheFillsCache(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, server, rootDir, "test-ws")
-	server.warmStateCache()
-	_, ok := server.stateCache.get("state")
-	assert.True(t, ok)
 }
 
 func TestReadNewestForkGoalEmptyList(t *testing.T) {
@@ -1052,14 +1103,13 @@ func TestQuestionTypeWorkGateFlag(t *testing.T) {
 	assert.Equal(t, "work-gate", questionType(&wf))
 }
 
-func TestLoadWorkspaceStateLargeFileReturnsEmpty(t *testing.T) {
+func TestLoadWorkspaceStateInvalidJSONReturnsWorkingFallback(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws-large")
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
-	largeContent := strings.Repeat("x", maxStateSizeBytes+1)
-	require.NoError(t, os.WriteFile(sp, []byte(largeContent), 0o644))
+	require.NoError(t, os.WriteFile(sp, []byte(`{invalid}`), 0o644))
 	result := server.loadWorkspaceState(wsDir)
-	assert.Empty(t, result.Status)
+	assert.Equal(t, state.StatusWorking, result.Status)
 }
 
 func TestLoadWorkspaceStateNoFileReturnsEmpty(t *testing.T) {
@@ -1499,18 +1549,34 @@ func TestLoadWorkspaceState(t *testing.T) {
 		assert.Equal(t, "test-agent", wf.CurrentAgent)
 	})
 
-	t.Run("oversizedState", func(t *testing.T) {
+	t.Run("largeValidState", func(t *testing.T) {
 		rootDir := t.TempDir()
 		server := NewServer(rootDir, newTestServerPaths(), "")
 		workDir := filepath.Join(rootDir, "ws")
 		sgaiDir := filepath.Join(workDir, ".sgai")
 		require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 
-		bigContent := strings.Repeat("x", 11*1024*1024)
-		require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "state.json"), []byte(bigContent), 0o644))
+		stateFile := filepath.Join(sgaiDir, "state.json")
+		_, err := state.NewCoordinatorWith(stateFile, workflowWith(func(workflow *state.Workflow) {
+			workflow.Status = state.StatusWorking
+			workflow.CurrentAgent = "builder"
+			workflow.Messages = []state.Message{{
+				ID:        1,
+				FromAgent: "coordinator",
+				ToAgent:   "builder",
+				Body:      strings.Repeat("x", 11*1024*1024),
+				Read:      false,
+				ReadAt:    "",
+				ReadBy:    "",
+				CreatedAt: "",
+			}}
+		}))
+		require.NoError(t, err)
 
 		wf := server.loadWorkspaceState(workDir)
-		assert.Empty(t, wf.Status)
+		assert.Equal(t, state.StatusWorking, wf.Status)
+		assert.Equal(t, "builder", wf.CurrentAgent)
+		require.Len(t, wf.Messages, 1)
 	})
 }
 
@@ -1572,15 +1638,112 @@ func serveHTTP(server *Server, method, path, body string) *httptest.ResponseReco
 	return w
 }
 
-func TestHandleAPIState(t *testing.T) {
+func TestHandleAPIWorkspaceListRoute(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	setupTestWorkspace(t, server, rootDir, "test-ws")
 	goalContent := "---\nflow: |\n  \"a\" -> \"b\"\n---\n# Test"
 	require.NoError(t, os.WriteFile(filepath.Join(rootDir, "test-ws", "GOAL.md"), []byte(goalContent), 0o644))
 
-	w := serveHTTP(server, "GET", "/api/v1/state", "")
+	w := serveHTTP(server, "GET", "/api/v1/workspaces", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
+}
+
+func TestHandleAPIWorkspaceList(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
+	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\nflow: |\n  \"a\" -> \"b\"\n---\n# Test"), 0o644))
+	_, errCoord := state.NewCoordinatorWith(filepath.Join(wsDir, ".sgai", "state.json"), workflowWith(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.CurrentAgent = "coordinator"
+		workflow.Progress = []state.ProgressEntry{{Timestamp: time.Now().UTC().Format(time.RFC3339), Agent: "coordinator", Description: "step 1"}}
+		workflow.Messages = []state.Message{{ID: 1, FromAgent: "a", ToAgent: "b", Body: "heavy message payload", Read: false, ReadAt: "", ReadBy: "", CreatedAt: ""}}
+	}))
+	require.NoError(t, errCoord)
+
+	w := serveHTTP(server, http.MethodGet, "/api/v1/workspaces", "")
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp struct {
+		Workspaces []map[string]json.RawMessage `json:"workspaces"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp.Workspaces, 1)
+	workspace := resp.Workspaces[0]
+
+	var name string
+	require.NoError(t, json.Unmarshal(workspace["name"], &name))
+	assert.Equal(t, "test-ws", name)
+	assert.NotContains(t, workspace, "messages")
+	assert.NotContains(t, workspace, "events")
+	assert.NotContains(t, workspace, "log")
+	assert.NotContains(t, workspace, "goalContent")
+	assert.NotContains(t, workspace, "pmContent")
+}
+
+func TestHandleAPIWorkspaceState(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
+	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\nflow: |\n  \"a\" -> \"b\"\n---\n# Test"), 0o644))
+	_, errCoord := state.NewCoordinatorWith(filepath.Join(wsDir, ".sgai", "state.json"), workflowWith(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.CurrentAgent = "coordinator"
+		workflow.Progress = []state.ProgressEntry{{Timestamp: time.Now().UTC().Format(time.RFC3339), Agent: "coordinator", Description: "step 1"}}
+		workflow.Messages = []state.Message{{ID: 1, FromAgent: "a", ToAgent: "b", Body: "hello", Read: false, ReadAt: "", ReadBy: "", CreatedAt: ""}}
+	}))
+	require.NoError(t, errCoord)
+
+	sess := newTestServeSession(nil, true)
+	sess.outputLog = newCircularLogBuffer()
+	sess.outputLog.add(logLine{prefix: "", text: "log line"})
+	server.mu.Lock()
+	server.sessions[wsDir] = sess
+	server.mu.Unlock()
+
+	w := serveHTTP(server, http.MethodGet, "/api/v1/workspaces/test-ws/state", "")
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp apiWorkspaceFullState
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "test-ws", resp.Name)
+	require.Len(t, resp.Messages, 1)
+	require.Len(t, resp.Events, 1)
+	require.Len(t, resp.Log, 1)
+}
+
+func TestHandleAPIWorkspaceStateRejectsAmbiguousBasenameEvenWithWorkspaceHeader(t *testing.T) {
+	server, _ := setupTestServer(t)
+	firstDir := filepath.Join(t.TempDir(), "first", "shared-ws")
+	secondDir := filepath.Join(t.TempDir(), "second", "shared-ws")
+	require.NoError(t, os.MkdirAll(filepath.Join(firstDir, ".sgai"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(secondDir, ".sgai"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(firstDir, "GOAL.md"), []byte("# First Goal"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(secondDir, "GOAL.md"), []byte("# Second Goal"), 0o644))
+
+	server.mu.Lock()
+	server.externalDirs[resolveSymlinks(firstDir)] = true
+	server.externalDirs[resolveSymlinks(secondDir)] = true
+	server.mu.Unlock()
+	server.invalidateWorkspaceScanCache()
+
+	mux := http.NewServeMux()
+	server.registerAPIRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/shared-ws/state", http.NoBody)
+	req.Header.Set("X-Sgai-Workspace-Dir", workspaceSignalPath(secondDir))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	assert.Contains(t, w.Body.String(), "workspace name is ambiguous")
+}
+
+func TestLoadWorkspacePageStateMissingWorkspace(t *testing.T) {
+	server, _ := setupTestServer(t)
+
+	_, err := server.loadWorkspacePageState("/missing/workspace")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workspace not found")
 }
 
 func TestHandleAPIAgents(t *testing.T) {
@@ -2238,7 +2401,7 @@ func TestSPAMiddlewareAPIRoutes(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	setupTestWorkspace(t, server, rootDir, "test-ws")
 
-	w := serveHTTP(server, "GET", "/api/v1/state", "")
+	w := serveHTTP(server, "GET", "/api/v1/workspaces", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
@@ -2750,7 +2913,7 @@ func TestBuildWorkspaceFullStateWithTodos(t *testing.T) {
 	assert.Len(t, result.ProjectTodos, 1)
 }
 
-func TestHandleAPIStateFullIntegration(t *testing.T) {
+func TestHandleAPIWorkspaceStateFullIntegration(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, srv, rootDir, "full-int")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\nflow: |\n  digraph G {\n    \"coordinator\" -> \"builder\"\n    \"builder\" -> \"reviewer\"\n  }\nmodels:\n  coordinator: anthropic/claude-opus-4-6\n---\n# Full Integration\n\nBuild a comprehensive test suite."), 0o644))
@@ -2781,19 +2944,16 @@ func TestHandleAPIStateFullIntegration(t *testing.T) {
 	}))
 	require.NoError(t, errCoord)
 
-	w := serveHTTP(srv, "GET", "/api/v1/state", "")
+	w := serveHTTP(srv, "GET", "/api/v1/workspaces/full-int/state", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 
-	var resp apiFactoryState
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	require.NotEmpty(t, resp.Workspaces)
-
-	ws := resp.Workspaces[0]
+	var ws apiWorkspaceFullState
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &ws))
 	assert.Equal(t, "full-int", ws.Name)
 	assert.Equal(t, string(state.StatusComplete), ws.Status)
 }
 
-func TestHandleAPIStateWithPendingQuestion(t *testing.T) {
+func TestHandleAPIWorkspaceStateWithPendingQuestion(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, srv, rootDir, "pq-int")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
@@ -2817,21 +2977,18 @@ func TestHandleAPIStateWithPendingQuestion(t *testing.T) {
 		})
 	}))
 
-	w := serveHTTP(srv, "GET", "/api/v1/state", "")
+	w := serveHTTP(srv, "GET", "/api/v1/workspaces/pq-int/state", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 
-	var resp apiFactoryState
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	require.NotEmpty(t, resp.Workspaces)
-
-	ws := resp.Workspaces[0]
+	var ws apiWorkspaceFullState
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &ws))
 	assert.True(t, ws.NeedsInput)
 	assert.NotNil(t, ws.PendingQuestion)
 	assert.Len(t, ws.PendingQuestion.Questions, 2)
 	assert.Equal(t, "coordinator", ws.PendingQuestion.AgentName)
 }
 
-func TestHandleAPIStatePendingQuestionUsesPromptToken(t *testing.T) {
+func TestHandleAPIWorkspaceStatePendingQuestionUsesPromptToken(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, srv, rootDir, "pq-token")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
@@ -2847,25 +3004,19 @@ func TestHandleAPIStatePendingQuestionUsesPromptToken(t *testing.T) {
 	defer cancel()
 	promptToken := waitForSessionPromptToken(t, coord)
 
-	w := serveHTTP(srv, "GET", "/api/v1/state", "")
+	w := serveHTTP(srv, "GET", "/api/v1/workspaces/pq-token/state", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 
-	var resp apiFactoryState
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	require.NotEmpty(t, resp.Workspaces)
-
-	workspace := resp.Workspaces[0]
+	var workspace apiWorkspaceFullState
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &workspace))
 	require.NotNil(t, workspace.PendingQuestion)
 	assert.Equal(t, promptToken, workspace.PendingQuestion.PromptToken)
 
 	var rawResp struct {
-		Workspaces []struct {
-			PendingQuestion map[string]json.RawMessage `json:"pendingQuestion"`
-		} `json:"workspaces"`
+		PendingQuestion map[string]json.RawMessage `json:"pendingQuestion"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &rawResp))
-	require.NotEmpty(t, rawResp.Workspaces)
-	_, hasLegacyField := rawResp.Workspaces[0].PendingQuestion["questionId"]
+	_, hasLegacyField := rawResp.PendingQuestion["questionId"]
 	assert.False(t, hasLegacyField)
 
 	cancel()
@@ -2916,15 +3067,15 @@ func TestRespondViaCoordinatorWithoutActiveToolCall(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, w.Code)
 }
 
-func TestHandleAPIStateWithCaching(t *testing.T) {
+func TestHandleAPIWorkspaceStateWithCaching(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, srv, rootDir, "cache-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
-	w1 := serveHTTP(srv, "GET", "/api/v1/state", "")
+	w1 := serveHTTP(srv, "GET", "/api/v1/workspaces/cache-ws/state", "")
 	assert.Equal(t, http.StatusOK, w1.Code)
 
-	w2 := serveHTTP(srv, "GET", "/api/v1/state", "")
+	w2 := serveHTTP(srv, "GET", "/api/v1/workspaces/cache-ws/state", "")
 	assert.Equal(t, http.StatusOK, w2.Code)
 }
 
@@ -3246,6 +3397,9 @@ func TestBuildFullFactoryStateRepairsMissingTitlesSequentially(t *testing.T) {
 	var mu sync.Mutex
 	currentConcurrent := 0
 	maxConcurrent := 0
+	started := make(chan string, 2)
+	finished := make(chan string, 2)
+	release := make(chan struct{}, 2)
 	server.goalTitleComposer = func(workspacePath string, _ []byte) (string, error) {
 		mu.Lock()
 		currentConcurrent++
@@ -3254,17 +3408,62 @@ func TestBuildFullFactoryStateRepairsMissingTitlesSequentially(t *testing.T) {
 		}
 		mu.Unlock()
 
-		time.Sleep(20 * time.Millisecond)
+		started <- filepath.Base(workspacePath)
+		<-release
 
 		mu.Lock()
 		currentConcurrent--
 		mu.Unlock()
+		finished <- filepath.Base(workspacePath)
 
 		return strings.TrimSuffix(filepath.Base(workspacePath), "-ws") + " repaired", nil
 	}
 
-	result := server.buildFullFactoryState()
+	result := server.buildWorkspaceListResponse()
 	require.Len(t, result.Workspaces, 2)
+
+	var firstStarted string
+	require.Eventually(t, func() bool {
+		select {
+		case firstStarted = <-started:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond)
+
+	select {
+	case secondStarted := <-started:
+		t.Fatalf("second repair started before first was released: %s", secondStarted)
+	default:
+	}
+
+	release <- struct{}{}
+
+	var secondStarted string
+	require.Eventually(t, func() bool {
+		select {
+		case secondStarted = <-started:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond)
+	assert.NotEqual(t, firstStarted, secondStarted)
+
+	release <- struct{}{}
+
+	finishedCount := 0
+	require.Eventually(t, func() bool {
+		for {
+			select {
+			case <-finished:
+				finishedCount++
+			default:
+				return finishedCount == 2
+			}
+		}
+	}, time.Second, 10*time.Millisecond)
 
 	require.Eventually(t, func() bool {
 		firstData, errFirst := os.ReadFile(filepath.Join(firstDir, "GOAL.md"))
@@ -4071,7 +4270,7 @@ func TestSPAMiddlewareAPIRoute(t *testing.T) {
 	srv.registerAPIRoutes(mux)
 	handler := srv.spaMiddleware(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/state", http.NoBody)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces", http.NoBody)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -4295,7 +4494,7 @@ func TestHandleRespondViaCoordinator(t *testing.T) {
 		require.NoError(t, errCoord)
 
 		w := httptest.NewRecorder()
-		srv.handleRespondViaCoordinator(w, coord, respondRequestWith(func(request *apiRespondRequest) {
+		srv.handleRespondViaCoordinator(w, dir, coord, respondRequestWith(func(request *apiRespondRequest) {
 			request.Answer = "yes"
 		}))
 		assert.Equal(t, http.StatusConflict, w.Code)
@@ -4321,7 +4520,7 @@ func TestHandleRespondViaCoordinator(t *testing.T) {
 		require.NoError(t, errCoord)
 
 		w := httptest.NewRecorder()
-		srv.handleRespondViaCoordinator(w, coord, respondRequestWith(func(request *apiRespondRequest) {
+		srv.handleRespondViaCoordinator(w, dir, coord, respondRequestWith(func(request *apiRespondRequest) {
 			request.Answer = "yes"
 		}))
 		assert.Equal(t, http.StatusConflict, w.Code)
@@ -4347,7 +4546,7 @@ func TestHandleRespondViaCoordinator(t *testing.T) {
 		require.NoError(t, errCoord)
 
 		w := httptest.NewRecorder()
-		srv.handleRespondViaCoordinator(w, coord, newTestAPIRespondRequest())
+		srv.handleRespondViaCoordinator(w, dir, coord, newTestAPIRespondRequest())
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 		assert.Contains(t, w.Body.String(), "response cannot be empty")
 	})
@@ -4455,7 +4654,7 @@ func TestSPAMiddlewareRouting(t *testing.T) {
 	handler := srv.spaMiddleware(mux)
 
 	t.Run("apiRoutePassesThrough", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/state", http.NoBody)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces", http.NoBody)
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
 		assert.Equal(t, http.StatusOK, w.Code)
@@ -4474,7 +4673,7 @@ func TestHandleSignalStream(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/signal", http.NoBody).WithContext(ctx)
-	w := httptest.NewRecorder()
+	w := newLockedResponseRecorder()
 
 	done := make(chan struct{})
 	go func() {
@@ -4684,7 +4883,6 @@ func TestCheckWorkspaceState(t *testing.T) {
 	srv.checkWorkspaceState(dir, snapshots, activeWorkspaces)
 	assert.True(t, activeWorkspaces[dir])
 	assert.Contains(t, snapshots, dir)
-	assert.Equal(t, state.StatusComplete, snapshots[dir].status)
 }
 
 func TestCheckWorkspaceStateNoStateFile(t *testing.T) {
@@ -5462,7 +5660,7 @@ func TestHandleAPIStateOmitsForkCommitFields(t *testing.T) {
 	server.mu.Unlock()
 	server.invalidateWorkspaceScanCache()
 
-	w := serveHTTP(server, "GET", "/api/v1/state", "")
+	w := serveHTTP(server, "GET", "/api/v1/workspaces", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 
 	type forkState struct {
@@ -5474,11 +5672,11 @@ func TestHandleAPIStateOmitsForkCommitFields(t *testing.T) {
 		Name  string      `json:"name"`
 		Forks []forkState `json:"forks"`
 	}
-	type factoryState struct {
+	type workspaceListResponse struct {
 		Workspaces []workspaceState `json:"workspaces"`
 	}
 
-	var resp factoryState
+	var resp workspaceListResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
 	var rootWorkspace *workspaceState
@@ -5880,7 +6078,7 @@ func TestHandleAPIAdhocStopSuccess(t *testing.T) {
 func TestHandleAPIWorkflowSVGNotAvailable(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	setupTestWorkspace(t, server, rootDir, "ws-svg")
-	w := serveHTTP(server, "GET", "/api/v1/workspaces/ws-svg/workflow-svg", "")
+	w := serveHTTP(server, "GET", "/api/v1/workspaces/ws-svg/workflow.svg", "")
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
@@ -5890,27 +6088,277 @@ func TestSessionCoordinatorNoSession(t *testing.T) {
 }
 
 func TestHandleAPISignalStream(t *testing.T) {
-	server, _ := setupTestServer(t)
-	mux := http.NewServeMux()
-	server.registerAPIRoutes(mux)
+	synctest.Test(t, func(t *testing.T) {
+		server, _ := setupTestServer(t)
+		w, cancel, done := openSignalStream(t, server)
+		defer func() {
+			cancel()
+			synctest.Wait()
+			<-done
+		}()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/signal", http.NoBody).WithContext(ctx)
-	w := httptest.NewRecorder()
+		server.notifyStateChange()
+		synctest.Wait()
 
-	done := make(chan struct{})
-	go func() {
-		mux.ServeHTTP(w, req)
-		close(done)
-	}()
+		assert.Contains(t, w.Header().Get("Content-Type"), "text/event-stream")
+		assert.Contains(t, w.BodyString(), "event: reload")
+	})
+}
 
-	time.Sleep(50 * time.Millisecond)
-	server.notifyStateChange()
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	<-done
+func TestHandleAPISignalStreamDeliversReloadAndWorkspaceWhenNotificationsRace(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		server, rootDir := setupTestServer(t)
+		wsDir := setupTestWorkspace(t, server, rootDir, "ws-coalesce")
+		w, cancel, done := openSignalStream(t, server)
+		defer func() {
+			cancel()
+			synctest.Wait()
+			<-done
+		}()
 
-	assert.Contains(t, w.Header().Get("Content-Type"), "text/event-stream")
+		server.notifyStateChange()
+		server.notifyWorkspaceListChange(wsDir)
+		synctest.Wait()
+
+		assert.Contains(t, w.BodyString(), "event: reload")
+		assert.Contains(t, w.BodyString(), "event: workspace")
+		assert.Contains(t, w.BodyString(), filepath.Base(wsDir))
+	})
+}
+
+func TestHandleAPISignalStreamUsesWorkspaceEventForLogUpdates(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		server, rootDir := setupTestServer(t)
+		wsDir := setupTestWorkspace(t, server, rootDir, "ws-signal")
+
+		sess := newTestServeSession(nil, true)
+		sess.outputLog = newCircularLogBuffer()
+		server.mu.Lock()
+		server.sessions[wsDir] = sess
+		server.mu.Unlock()
+
+		w, cancel, done := openSignalStream(t, server)
+		defer func() {
+			cancel()
+			synctest.Wait()
+			<-done
+		}()
+
+		writer := newSessionLogWriter(sess, wsDir, server)
+		writer.addLine("line 1")
+		synctest.Wait()
+
+		assert.Contains(t, w.BodyString(), "event: workspace")
+		assert.Contains(t, w.BodyString(), filepath.Base(wsDir))
+		assert.NotContains(t, w.BodyString(), "event: reload")
+	})
+}
+
+func TestHandleAPISignalStreamUsesWorkspaceEventForProgressUpdates(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		server, rootDir := setupTestServer(t)
+		wsDir := setupTestWorkspace(t, server, rootDir, "ws-progress")
+		require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Test"), 0o644))
+		writeWorkflowStateToDisk(t, wsDir, workflowRef(func(workflow *state.Workflow) {
+			workflow.Status = state.StatusWorking
+			workflow.Progress = []state.ProgressEntry{{Timestamp: time.Now().UTC().Format(time.RFC3339), Agent: "coordinator", Description: "step 1"}}
+		}))
+
+		w, cancel, done := openSignalStream(t, server)
+		defer func() {
+			cancel()
+			synctest.Wait()
+			<-done
+		}()
+
+		snapshots := make(map[string]workspaceStateSnapshot)
+		active := make(map[string]bool)
+		server.checkWorkspaceState(wsDir, snapshots, active)
+		server.loadWorkspaceListResponse()
+
+		writeWorkflowStateWithLaterModTime(t, wsDir, workflowRef(func(workflow *state.Workflow) {
+			workflow.Status = state.StatusWorking
+			workflow.Progress = []state.ProgressEntry{
+				{Timestamp: time.Now().UTC().Format(time.RFC3339), Agent: "coordinator", Description: "step 1"},
+				{Timestamp: time.Now().UTC().Format(time.RFC3339), Agent: "coordinator", Description: "step 2"},
+			}
+		}))
+
+		server.checkWorkspaceState(wsDir, snapshots, active)
+		synctest.Wait()
+
+		assert.Contains(t, w.BodyString(), "event: workspace")
+		assert.Contains(t, w.BodyString(), filepath.Base(wsDir))
+		assert.Contains(t, w.BodyString(), "event: reload")
+	})
+}
+
+func TestHandleAPISignalStreamUsesWorkspaceEventForStatusUpdates(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		server, rootDir := setupTestServer(t)
+		wsDir := setupTestWorkspace(t, server, rootDir, "ws-status")
+		require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Test"), 0o644))
+		writeWorkflowStateToDisk(t, wsDir, workflowRef(func(workflow *state.Workflow) {
+			workflow.Status = state.StatusWorking
+		}))
+
+		w, cancel, done := openSignalStream(t, server)
+		defer func() {
+			cancel()
+			synctest.Wait()
+			<-done
+		}()
+
+		snapshots := make(map[string]workspaceStateSnapshot)
+		active := make(map[string]bool)
+		server.checkWorkspaceState(wsDir, snapshots, active)
+		server.loadWorkspaceListResponse()
+
+		writeWorkflowStateWithLaterModTime(t, wsDir, workflowRef(func(workflow *state.Workflow) {
+			workflow.Status = state.StatusComplete
+		}))
+
+		server.checkWorkspaceState(wsDir, snapshots, active)
+		synctest.Wait()
+
+		assert.Contains(t, w.BodyString(), "event: workspace")
+		assert.Contains(t, w.BodyString(), filepath.Base(wsDir))
+		assert.Contains(t, w.BodyString(), "event: reload")
+	})
+}
+
+func TestHandleAPISignalStreamUsesWorkspaceEventForWorkspacePageSummaryChanges(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		server, rootDir := setupTestServer(t)
+		wsDir := setupTestWorkspace(t, server, rootDir, "ws-summary")
+		require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Test"), 0o644))
+		writeWorkflowStateToDisk(t, wsDir, workflowRef(func(workflow *state.Workflow) {
+			workflow.Status = state.StatusWorking
+			workflow.CurrentAgent = "coordinator"
+			workflow.CurrentModel = "coordinator:gpt-4.1"
+			workflow.Task = "first task"
+			workflow.AgentSequence = []state.AgentSequenceEntry{{Agent: "coordinator", StartTime: "2026-03-30T00:00:00Z", IsCurrent: true}}
+			workflow.Cost = updated(newTestSessionCost(), func(cost *state.SessionCost) {
+				cost.TotalCost = 1.5
+			})
+			workflow.ModelStatuses = map[string]string{"coordinator:gpt-4.1": "model-working"}
+		}))
+
+		w, cancel, done := openSignalStream(t, server)
+		defer func() {
+			cancel()
+			synctest.Wait()
+			<-done
+		}()
+
+		snapshots := make(map[string]workspaceStateSnapshot)
+		active := make(map[string]bool)
+		server.checkWorkspaceState(wsDir, snapshots, active)
+		server.loadWorkspaceListResponse()
+
+		writeWorkflowStateWithLaterModTime(t, wsDir, workflowRef(func(workflow *state.Workflow) {
+			workflow.Status = state.StatusWorking
+			workflow.CurrentAgent = "go-developer"
+			workflow.CurrentModel = "go-developer:gpt-5.4"
+			workflow.Task = "second task"
+			workflow.AgentSequence = []state.AgentSequenceEntry{
+				{Agent: "coordinator", StartTime: "2026-03-30T00:00:00Z", IsCurrent: false},
+				{Agent: "go-developer", StartTime: "2026-03-30T00:01:00Z", IsCurrent: true},
+			}
+			workflow.Cost = updated(newTestSessionCost(), func(cost *state.SessionCost) {
+				cost.TotalCost = 3.25
+			})
+			workflow.ModelStatuses = map[string]string{"go-developer:gpt-5.4": "model-done"}
+		}))
+
+		server.checkWorkspaceState(wsDir, snapshots, active)
+		synctest.Wait()
+
+		body := w.BodyString()
+		assert.Contains(t, body, "event: workspace")
+		assert.Contains(t, body, filepath.Base(wsDir))
+		assert.Contains(t, body, "event: reload")
+	})
+}
+
+func TestHandleAPISignalStreamUsesReloadForSummaryChangesAfterWorkspaceListCacheExpiry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		server, rootDir := setupTestServer(t)
+		wsDir := setupTestWorkspace(t, server, rootDir, "ws-summary-cache-expiry")
+		attachRunningSessionCoordinator(t, server, wsDir, workflowRef(func(workflow *state.Workflow) {
+			workflow.Status = state.StatusWorking
+			workflow.CurrentAgent = "go-developer"
+			workflow.Task = "before"
+		}))
+
+		_ = server.loadWorkspaceListResponse()
+		_, errLoad := server.loadWorkspacePageState(wsDir)
+		require.NoError(t, errLoad)
+		server.workspaceListCache.delete("workspaces")
+
+		w, cancel, done := openSignalStream(t, server)
+		defer func() {
+			cancel()
+			synctest.Wait()
+			<-done
+		}()
+
+		wfState := workflowWith(func(workflow *state.Workflow) {
+			workflow.Status = state.StatusWorking
+			workflow.CurrentAgent = "go-developer"
+			workflow.Task = "after"
+		})
+		server.notifyWorkspaceChangeForState(wsDir, &wfState, true)
+		synctest.Wait()
+
+		body := w.BodyString()
+		assert.Equal(t, 1, strings.Count(body, "event: reload"))
+		assert.Equal(t, 1, strings.Count(body, "event: workspace"))
+		assert.Contains(t, body, filepath.Base(wsDir))
+	})
+}
+
+func TestHandleAPISignalStreamKeepsWorkspaceEventOnlyWhenWorkspaceListCacheExpiresAndSummaryMatches(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		server, rootDir := setupTestServer(t)
+		wsDir := setupTestWorkspace(t, server, rootDir, "ws-summary-cache-stable")
+		attachRunningSessionCoordinator(t, server, wsDir, workflowRef(func(workflow *state.Workflow) {
+			workflow.Status = state.StatusWorking
+			workflow.CurrentAgent = "go-developer"
+			workflow.Task = "stable summary"
+		}))
+
+		_ = server.loadWorkspaceListResponse()
+		_, errLoad := server.loadWorkspacePageState(wsDir)
+		require.NoError(t, errLoad)
+		server.workspaceListCache.delete("workspaces")
+
+		w, cancel, done := openSignalStream(t, server)
+		defer func() {
+			cancel()
+			synctest.Wait()
+			<-done
+		}()
+
+		wfState := workflowWith(func(workflow *state.Workflow) {
+			workflow.Status = state.StatusWorking
+			workflow.CurrentAgent = "go-developer"
+			workflow.Task = "stable summary"
+			workflow.Messages = []state.Message{messageWith(func(message *state.Message) {
+				message.ID = 1
+				message.FromAgent = "go-developer"
+				message.ToAgent = "coordinator"
+				message.Body = "page-only change"
+			})}
+		})
+		server.notifyWorkspaceChangeForState(wsDir, &wfState, true)
+		synctest.Wait()
+
+		body := w.BodyString()
+		assert.Equal(t, 0, strings.Count(body, "event: reload"))
+		assert.Equal(t, 1, strings.Count(body, "event: workspace"))
+		assert.Contains(t, body, filepath.Base(wsDir))
+	})
 }
 
 func TestStartSessionAlreadyRunning(t *testing.T) {

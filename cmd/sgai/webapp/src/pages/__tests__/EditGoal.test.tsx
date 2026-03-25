@@ -6,6 +6,7 @@ import { MemoryRouter, Routes, Route, RouterProvider, createMemoryRouter, useNav
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import * as factoryStateModule from "@/lib/factory-state";
+import * as workspacePageStateModule from "@/lib/workspace-page-state";
 import { api } from "@/lib/api";
 import * as markdownEditorModule from "@/components/MarkdownEditor";
 import * as useAdhocRunModule from "@/hooks/useAdhocRun";
@@ -63,43 +64,43 @@ const mockUpdateGoal = mock(() => Promise.resolve({ updated: true, workspace: "t
 const mockTriggerFactoryRefresh = mock(() => {});
 
 const mockMarkdownEditor = ({
-    value,
-    onChange,
-    disabled,
-    onSubmitShortcut,
-  }: {
-    value: string;
-    onChange: (v: string) => void;
-    disabled: boolean;
-    onSubmitShortcut?: () => void;
-  }) => (
-    <div data-testid="markdown-editor">
-      <textarea
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
-            e.preventDefault();
-            if (!disabled) {
-              onSubmitShortcut?.();
-            }
+  value,
+  onChange,
+  disabled,
+  onSubmitShortcut,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  disabled: boolean;
+  onSubmitShortcut?: () => void;
+}) => (
+  <div data-testid="markdown-editor">
+    <textarea
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      onKeyDown={(e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+          e.preventDefault();
+          if (!disabled) {
+            onSubmitShortcut?.();
           }
-        }}
-        disabled={disabled}
-        data-testid="markdown-textarea"
-      />
-    </div>
-  );
+        }
+      }}
+      disabled={disabled}
+      data-testid="markdown-textarea"
+    />
+  </div>
+);
 
 const mockUseAdhocRun = () => ({
-    output: "",
-    isRunning: false,
-    runError: null,
-    startRun: mock(() => {}),
-    startActionRun: mock(() => {}),
-    stopRun: mock(() => {}),
-    outputRef: { current: null },
-  });
+  output: "",
+  isRunning: false,
+  runError: null,
+  startRun: mock(() => {}),
+  startActionRun: mock(() => {}),
+  stopRun: mock(() => {}),
+  outputRef: { current: null },
+});
 
 function createEditGoalTree(workspaceName = "test-workspace", strictMode = false) {
   const tree = (
@@ -227,6 +228,11 @@ describe("EditGoal", () => {
       lastFetchedAt: mockLastFetchedAt,
     }));
     spyOn(factoryStateModule, "triggerFactoryRefresh").mockImplementation(() => mockTriggerFactoryRefresh());
+    spyOn(workspacePageStateModule, "useWorkspacePageState").mockImplementation((workspaceName: string) => ({
+      workspace: mockWorkspaces.find((workspace) => workspace.name === workspaceName) ?? null,
+      fetchStatus: mockFetchStatus,
+      lastFetchedAt: mockLastFetchedAt,
+    }));
     spyOn(api.workspaces, "getGoal").mockImplementation((...args) => mockGetGoal(...args));
     spyOn(api.workspaces, "updateGoal").mockImplementation((...args) => mockUpdateGoal(...args));
     spyOn(markdownEditorModule, "MarkdownEditor").mockImplementation((...args) => mockMarkdownEditor(...args));
@@ -364,6 +370,7 @@ describe("EditGoal", () => {
       expect(screen.queryByRole("button", { name: /Save GOAL\.md/ })).toBeNull();
       expect(screen.queryByTestId("markdown-editor")).toBeNull();
       expect(screen.getByRole("link", { name: "Back to Workspaces" }).getAttribute("href")).toBe("/");
+
       await waitFor(() => {
         expect(screen.getByTestId("edit-goal-route-error")).toBe(document.activeElement);
       });
@@ -409,7 +416,7 @@ describe("EditGoal", () => {
     it("shows saving state during save", async () => {
       const user = userEvent.setup();
       mockUpdateGoal.mockImplementationOnce(
-        () => new Promise((resolve) => setTimeout(() => resolve({ updated: true, workspace: "test-workspace" }), 500))
+        () => new Promise((resolve) => setTimeout(() => resolve({ updated: true, workspace: "test-workspace" }), 500)),
       );
 
       renderEditGoal();
@@ -460,7 +467,7 @@ describe("EditGoal", () => {
     it("disables save button during saving", async () => {
       const user = userEvent.setup();
       mockUpdateGoal.mockImplementationOnce(
-        () => new Promise((resolve) => setTimeout(() => resolve({ updated: true, workspace: "test-workspace" }), 500))
+        () => new Promise((resolve) => setTimeout(() => resolve({ updated: true, workspace: "test-workspace" }), 500)),
       );
 
       renderEditGoal();
@@ -677,7 +684,7 @@ describe("EditGoal", () => {
 
     it("enables save when content is valid", async () => {
       mockGetGoal.mockImplementationOnce(() => Promise.resolve({ content: "# Test Goal" }));
-      
+
       renderEditGoal();
 
       await waitFor(() => {
@@ -707,7 +714,7 @@ describe("EditGoal", () => {
           const errorElements = screen.queryAllByText(/Failed to save GOAL\.md/);
           expect(errorElements.length).toBeGreaterThan(0);
         },
-        { timeout: 3000 }
+        { timeout: 3000 },
       );
     });
 
@@ -725,7 +732,7 @@ describe("EditGoal", () => {
           const errorElements = screen.queryAllByText(/Failed to load/);
           expect(errorElements.length).toBeGreaterThan(0);
         },
-        { timeout: 3000 }
+        { timeout: 3000 },
       );
     });
 

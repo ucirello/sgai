@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/ucirello/sgai/pkg/state"
 )
 
 func TestNewCircularLogBuffer(t *testing.T) {
@@ -277,7 +278,7 @@ func TestSessionLogWriter(t *testing.T) {
 	sess.outputLog = newCircularLogBuffer()
 	srv, _ := setupTestServer(t)
 
-	w := newSessionLogWriter(sess, "/test", srv, "test-ws")
+	w := newSessionLogWriter(sess, "/test", srv)
 
 	n, err := w.Write([]byte("hello world\n"))
 	require.NoError(t, err)
@@ -288,12 +289,38 @@ func TestSessionLogWriter(t *testing.T) {
 	assert.Equal(t, "hello world", lines[0].text)
 }
 
+func TestSessionLogWriterKeepsWorkspaceListCacheForLogUpdates(t *testing.T) {
+	srv, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, srv, rootDir, "log-cache")
+	attachRunningSessionCoordinator(t, srv, wsDir, workflowRef(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.CurrentAgent = "go-developer"
+		workflow.Task = "stream logs"
+	}))
+
+	srv.mu.Lock()
+	sess := srv.sessions[wsDir]
+	sess.outputLog = newCircularLogBuffer()
+	srv.mu.Unlock()
+
+	_ = srv.loadWorkspaceListResponse()
+	_, errLoad := srv.loadWorkspacePageState(wsDir)
+	require.NoError(t, errLoad)
+
+	writer := newSessionLogWriter(sess, wsDir, srv)
+	writer.addLine("line 1")
+
+	_, okList := srv.workspaceListCache.get("workspaces")
+	assert.True(t, okList)
+	assert.False(t, hasCachedWorkspacePageState(srv, wsDir))
+}
+
 func TestSessionLogWriterMultipleLines(t *testing.T) {
 	sess := newTestSession()
 	sess.outputLog = newCircularLogBuffer()
 	srv, _ := setupTestServer(t)
 
-	w := newSessionLogWriter(sess, "/test", srv, "test-ws")
+	w := newSessionLogWriter(sess, "/test", srv)
 
 	_, _ = w.Write([]byte("line1\nline2\nline3\n"))
 
@@ -309,7 +336,7 @@ func TestSessionLogWriterPartialLine(t *testing.T) {
 	sess.outputLog = newCircularLogBuffer()
 	srv, _ := setupTestServer(t)
 
-	w := newSessionLogWriter(sess, "/test", srv, "test-ws")
+	w := newSessionLogWriter(sess, "/test", srv)
 
 	_, _ = w.Write([]byte("part"))
 	assert.Empty(t, sess.outputLog.lines())

@@ -25,6 +25,10 @@ In terms of layout, UI, style, when something doesn't fit a container, use ellip
 
 CRITICAL: use playwright screenshots (and the skill to operate playwright) to verify the application is working correctly.
 
+CRITICAL: every Playwright artifact save (`playwright_browser_take_screenshot`, `playwright_browser_snapshot`, console logs, network logs, or similar) must use a repo-relative filename under the current retrospective session's `.sgai/retrospectives/<session-id>/screenshots/` directory resolved from `.sgai/PROJECT_MANAGEMENT.md` frontmatter.
+
+CRITICAL: bare Playwright filenames like `foo.png`, `foo.md`, or `foo.txt` are forbidden because they save into the repository root and pollute the workspace.
+
 For React/TypeScript code in cmd/sgai/webapp/, use bun for building, testing, and running scripts. Build command: `bun run build`. Dev server: `bun run dev.ts`. Tests: `bun test`.
 
 React components must use shadcn/ui components where possible. Do not create custom implementations when a shadcn component exists. Reference: https://ui.shadcn.com/docs

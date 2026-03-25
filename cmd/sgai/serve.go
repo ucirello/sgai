@@ -54,13 +54,14 @@ func stripFrontmatter(content string) string {
 }
 
 type session struct {
-	mu           sync.Mutex
-	cancel       context.CancelFunc
-	running      bool
-	outputLog    *circularLogBuffer
-	mcpCloseOnce sync.Once
-	mcpCloseFn   func()
-	coord        *state.Coordinator
+	mu                   sync.Mutex
+	cancel               context.CancelFunc
+	running              bool
+	skipExitNotification bool
+	outputLog            *circularLogBuffer
+	mcpCloseOnce         sync.Once
+	mcpCloseFn           func()
+	coord                *state.Coordinator
 }
 
 type editorOpener interface {
@@ -174,9 +175,10 @@ type Server struct {
 	classifyCache       *ttlCache[string, workspaceKind]
 	svgFlight           singleflight[string, string]
 	svgCache            *ttlCache[string, string]
-	stateFlight         singleflight[string, apiFactoryState]
-	stateCache          *ttlCache[string, apiFactoryState]
-	stateGeneration     uint64
+	workspaceListFlight singleflight[string, apiWorkspaceListResponse]
+	workspaceListCache  *ttlCache[string, apiWorkspaceListResponse]
+	workspacePageFlight singleflight[string, apiWorkspaceFullState]
+	workspacePageCache  *ttlCache[string, apiWorkspaceFullState]
 
 	goalTitleComposer      func(workspacePath string, goalContent []byte) (string, error)
 	goalTitleReadFile      func(path string) ([]byte, error)
@@ -222,14 +224,15 @@ func NewServer(rootDir string, paths serverPaths, editorConfig string) *Server {
 		workspaceScanCache:     newTTLCache[string, []workspaceGroup](3 * time.Second),
 		classifyCache:          newTTLCache[string, workspaceKind](5 * time.Second),
 		svgCache:               newTTLCache[string, string](10 * time.Second),
-		stateCache:             newTTLCache[string, apiFactoryState](30 * time.Second),
+		workspaceListCache:     newTTLCache[string, apiWorkspaceListResponse](3 * time.Second),
+		workspacePageCache:     newTTLCache[string, apiWorkspaceFullState](3 * time.Second),
 		promptActionRunner:     nil,
 		scriptActionRunner:     nil,
 		workspaceScanFlight:    singleflight[string, []workspaceGroup]{mu: sync.Mutex{}, calls: nil},
 		classifyFlight:         singleflight[string, workspaceKind]{mu: sync.Mutex{}, calls: nil},
 		svgFlight:              singleflight[string, string]{mu: sync.Mutex{}, calls: nil},
-		stateFlight:            singleflight[string, apiFactoryState]{mu: sync.Mutex{}, calls: nil},
-		stateGeneration:        0,
+		workspaceListFlight:    singleflight[string, apiWorkspaceListResponse]{mu: sync.Mutex{}, calls: nil},
+		workspacePageFlight:    singleflight[string, apiWorkspaceFullState]{mu: sync.Mutex{}, calls: nil},
 		goalTitleComposer:      defaultGoalTitleComposer,
 		goalTitleReadFile:      os.ReadFile,
 		goalTitleRepairMu:      sync.Mutex{},
@@ -267,11 +270,155 @@ func normalizeServerPaths(rootDir string, paths serverPaths) serverPaths {
 }
 
 func (s *Server) notifyStateChange() {
-	s.mu.Lock()
-	s.stateGeneration++
-	s.mu.Unlock()
-	s.stateCache.delete("state")
-	s.signals.notify()
+	s.workspaceListCache.delete("workspaces")
+	s.workspacePageCache.deleteFunc(func(_ string) bool { return true })
+	s.signals.notify(signalEvent{Name: "reload", Workspace: ""})
+}
+
+type workspaceListVisibleSummary struct {
+	Running         bool
+	NeedsInput      bool
+	Status          string
+	BadgeClass      string
+	BadgeText       string
+	InteractiveAuto bool
+	CurrentAgent    string
+	CurrentModel    string
+	Task            string
+	LatestProgress  string
+	HumanMessage    string
+}
+
+func workspaceListSummaryFromState(workspacePath string, wfState *state.Workflow, running bool) workspaceListVisibleSummary {
+	interactiveAuto := wfState.InteractionMode == state.ModeSelfDrive || wfState.InteractionMode == state.ModeContinuous
+	badgeClass, badgeText := badgeStatus(wfState, running)
+	currentAgent := wfState.CurrentAgent
+	if currentAgent == "" {
+		currentAgent = "Unknown"
+	}
+	status := wfState.Status
+	if status == "" {
+		status = "-"
+	}
+	return workspaceListVisibleSummary{
+		Running:         running,
+		NeedsInput:      wfState.NeedsHumanInput(),
+		Status:          status,
+		BadgeClass:      badgeClass,
+		BadgeText:       badgeText,
+		InteractiveAuto: interactiveAuto,
+		CurrentAgent:    currentAgent,
+		CurrentModel:    resolveCurrentModel(workspacePath, wfState),
+		Task:            wfState.Task,
+		LatestProgress:  getLatestProgress(wfState.Progress),
+		HumanMessage:    wfState.HumanMessage,
+	}
+}
+
+func workspaceListSummaryFromEntry(entry *apiWorkspaceListEntry) workspaceListVisibleSummary {
+	return workspaceListVisibleSummary{
+		Running:         entry.Running,
+		NeedsInput:      entry.NeedsInput,
+		Status:          entry.Status,
+		BadgeClass:      entry.BadgeClass,
+		BadgeText:       entry.BadgeText,
+		InteractiveAuto: entry.InteractiveAuto,
+		CurrentAgent:    entry.CurrentAgent,
+		CurrentModel:    entry.CurrentModel,
+		Task:            entry.Task,
+		LatestProgress:  entry.LatestProgress,
+		HumanMessage:    entry.HumanMessage,
+	}
+}
+
+func workspaceListSummaryFromPageState(pageState *apiWorkspaceFullState) workspaceListVisibleSummary {
+	return workspaceListVisibleSummary{
+		Running:         pageState.Running,
+		NeedsInput:      pageState.NeedsInput,
+		Status:          pageState.Status,
+		BadgeClass:      pageState.BadgeClass,
+		BadgeText:       pageState.BadgeText,
+		InteractiveAuto: pageState.InteractiveAuto,
+		CurrentAgent:    pageState.CurrentAgent,
+		CurrentModel:    pageState.CurrentModel,
+		Task:            pageState.Task,
+		LatestProgress:  pageState.LatestProgress,
+		HumanMessage:    pageState.HumanMessage,
+	}
+}
+
+func (s *Server) workspaceListSummary(workspacePath string) (workspaceListVisibleSummary, bool) {
+	if cached, ok := s.workspaceListCache.get("workspaces"); ok {
+		idx := slices.IndexFunc(cached.Workspaces, func(entry apiWorkspaceListEntry) bool {
+			return sameWorkspacePath(entry.Dir, workspacePath)
+		})
+		if idx >= 0 {
+			return workspaceListSummaryFromEntry(&cached.Workspaces[idx]), true
+		}
+		var zero workspaceListVisibleSummary
+		return zero, false
+	}
+	if cached, ok := s.workspacePageCache.get(workspacePath); ok {
+		return workspaceListSummaryFromPageState(&cached), true
+	}
+	var zero workspaceListVisibleSummary
+	return zero, false
+}
+
+func (s *Server) workspaceListCacheNeedsInvalidation(workspacePath string, wfState *state.Workflow, running bool) bool {
+	next := workspaceListSummaryFromState(workspacePath, wfState, running)
+	current, ok := s.workspaceListSummary(workspacePath)
+	if !ok {
+		return true
+	}
+	return next != current
+}
+
+func (s *Server) notifyWorkspacePageChange(workspacePath string) {
+	if workspacePath == "" {
+		return
+	}
+	s.workspacePageCache.delete(workspacePath)
+	s.signals.notify(signalEvent{Name: "workspace", Workspace: workspaceSignalPath(workspacePath)})
+}
+
+func workspaceSignalPath(workspacePath string) string {
+	if workspacePath == "" {
+		return ""
+	}
+	absPath, errAbs := filepath.Abs(workspacePath)
+	if errAbs != nil {
+		return resolveSymlinks(filepath.Clean(workspacePath))
+	}
+	return resolveSymlinks(absPath)
+}
+
+func (s *Server) notifyWorkspaceListChange(workspacePath string) {
+	if workspacePath == "" {
+		return
+	}
+	s.workspaceListCache.delete("workspaces")
+	s.signals.notify(signalEvent{Name: "reload", Workspace: ""})
+	s.notifyWorkspacePageChange(workspacePath)
+}
+
+func (s *Server) notifyWorkspaceChangeForState(workspacePath string, wfState *state.Workflow, running bool) {
+	if workspacePath == "" {
+		return
+	}
+	if s.workspaceListCacheNeedsInvalidation(workspacePath, wfState, running) {
+		s.notifyWorkspaceListChange(workspacePath)
+		return
+	}
+	s.notifyWorkspacePageChange(workspacePath)
+}
+
+func (s *Server) notifyWorkspaceChangeAfterCoordinatorUpdate(workspacePath string, coord *state.Coordinator) {
+	if coord == nil || s.sessionRunning(workspacePath) {
+		return
+	}
+	wfState := coord.State()
+	s.notifyWorkspaceChangeForState(workspacePath, &wfState, false)
 }
 
 func (s *Server) validateDirectory(dir string) (string, error) {
@@ -373,7 +520,10 @@ func (s *Server) startSession(workspacePath string) startSessionResult {
 	if errCoord != nil {
 		coord = state.NewCoordinatorEmpty(statePath(workspacePath))
 	}
-	coord.OnUpdate(s.notifyStateChange)
+	coord.OnUpdate(func() {
+		wfState := coord.State()
+		s.notifyWorkspaceChangeForState(workspacePath, &wfState, s.sessionRunning(workspacePath))
+	})
 	if errUpdate := coord.UpdateState(func(wf *state.Workflow) {
 		wf.HumanMessage = ""
 		wf.MultiChoiceQuestion = nil
@@ -405,17 +555,11 @@ func (s *Server) startSession(workspacePath string) startSessionResult {
 	sess.cancel = cancel
 	sess.mu.Unlock()
 
-	logWriter := newSessionLogWriter(sess, workspacePath, s, filepath.Base(workspacePath))
+	logWriter := newSessionLogWriter(sess, workspacePath, s)
 
 	go func() {
 		defer func() {
-			sess.mcpCloseOnce.Do(mcpCloseFn)
-			coord.Stop()
-			sess.mu.Lock()
-			sess.running = false
-			sess.mu.Unlock()
-			s.clearEverStartedOnCompletion(workspacePath)
-			s.notifyStateChange()
+			s.finishSessionRun(workspacePath, sess, coord)
 		}()
 
 		wfState := coord.State()
@@ -436,20 +580,51 @@ func (s *Server) stopSession(workspacePath string) {
 	sess := s.sessions[workspacePath]
 	s.mu.Unlock()
 
+	relyOnCoordinatorCancel := false
 	if sess != nil {
 		sess.mu.Lock()
+		sess.running = false
+		sess.skipExitNotification = true
+		relyOnCoordinatorCancel = sess.cancel != nil && sess.coord != nil && sess.coord.CurrentPromptToken() != ""
 		if sess.cancel != nil {
 			sess.cancel()
 		}
 		if sess.mcpCloseFn != nil {
 			sess.mcpCloseOnce.Do(sess.mcpCloseFn)
 		}
-		sess.running = false
 		sess.mu.Unlock()
 	}
 
-	s.resetHumanCommunication(workspacePath)
-	s.notifyStateChange()
+	if relyOnCoordinatorCancel {
+		return
+	}
+	if sess != nil && !s.resetHumanCommunication(workspacePath) {
+		s.notifyWorkspaceListChange(workspacePath)
+	}
+}
+
+func (s *Server) finishSessionRun(workspacePath string, sess *session, coord *state.Coordinator) {
+	if sess == nil {
+		return
+	}
+
+	sess.mu.Lock()
+	closeFn := sess.mcpCloseFn
+	skipExitNotification := sess.skipExitNotification
+	sess.running = false
+	sess.skipExitNotification = false
+	sess.mu.Unlock()
+
+	if closeFn != nil {
+		sess.mcpCloseOnce.Do(closeFn)
+	}
+	if coord != nil {
+		coord.Stop()
+	}
+	s.clearEverStartedOnCompletion(workspacePath)
+	if !skipExitNotification {
+		s.notifyWorkspaceListChange(workspacePath)
+	}
 }
 
 func badgeStatus(wfState *state.Workflow, running bool) (class, text string) {
@@ -481,25 +656,55 @@ func dashboardBaseURL(listenAddr string) string {
 	return "http://" + net.JoinHostPort(host, port)
 }
 
-func cmdServe(args []string) {
-	serveFlags := flag.NewFlagSet("serve", flag.ExitOnError)
-	listenAddr := serveFlags.String("listen-addr", "127.0.0.1:8080", "HTTP server listen address")
-	serveFlags.Parse(args) //nolint:errcheck // ExitOnError FlagSet exits on error, never returns non-nil
+type serveOptions struct {
+	listenAddr string
+	rootDir    string
+	paths      serverPaths
+}
 
-	var rootDir string
+func parseServeOptions(args []string, getwd func() (string, error), configHome string) (serveOptions, error) {
+	serveFlags := flag.NewFlagSet("serve", flag.ContinueOnError)
+	listenAddr := serveFlags.String("listen-addr", "127.0.0.1:8080", "HTTP server listen address")
+	sharedConfigDir := serveFlags.String("shared-config-dir", "", "Directory for shared pinned/external workspace config")
+	if errParse := serveFlags.Parse(args); errParse != nil {
+		return serveOptions{}, fmt.Errorf("parse serve flags: %w", errParse)
+	}
+
 	remainingArgs := serveFlags.Args()
+	var rootDir string
 	if len(remainingArgs) > 0 {
 		rootDir = remainingArgs[0]
 	} else {
-		var err error
-		rootDir, err = os.Getwd()
-		if err != nil {
-			log.Printf("failed to get working directory: %v", err)
-			return
+		cwd, errGetwd := getwd()
+		if errGetwd != nil {
+			return serveOptions{}, fmt.Errorf("get working directory: %w", errGetwd)
+		}
+		rootDir = cwd
+	}
+
+	paths := resolveServerPaths(configHome)
+	if *sharedConfigDir != "" {
+		paths = serverPaths{
+			pinnedConfigDir:   *sharedConfigDir,
+			externalConfigDir: *sharedConfigDir,
 		}
 	}
 
-	listener, errListen := net.Listen("tcp4", *listenAddr)
+	return serveOptions{
+		listenAddr: *listenAddr,
+		rootDir:    rootDir,
+		paths:      paths,
+	}, nil
+}
+
+func cmdServe(args []string) {
+	options, errParse := parseServeOptions(args, os.Getwd, xdg.ConfigHome)
+	if errParse != nil {
+		log.Println("failed to parse serve flags:", errParse)
+		return
+	}
+
+	listener, errListen := net.Listen("tcp4", options.listenAddr)
 	if errListen != nil {
 		log.Println("failed to listen:", errListen)
 		return
@@ -508,8 +713,7 @@ func cmdServe(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	paths := resolveServerPaths(xdg.ConfigHome)
-	srv := NewServer(rootDir, paths, "")
+	srv := NewServer(options.rootDir, options.paths, "")
 	srv.shutdownCtx = ctx
 	if err := srv.loadPinnedProjects(); err != nil {
 		log.Println("warning: failed to load pinned projects:", err)
@@ -518,7 +722,6 @@ func cmdServe(args []string) {
 		log.Println("warning: failed to load external dirs:", err)
 	}
 	srv.startStateWatcher()
-	go srv.warmStateCache()
 
 	mux := http.NewServeMux()
 	srv.registerAPIRoutes(mux)
@@ -838,27 +1041,29 @@ func workspaceDagAgents(workspacePath string) []string {
 	return flowDag.allAgents()
 }
 
-func (s *Server) resetHumanCommunication(workspacePath string) {
+func (s *Server) resetHumanCommunication(workspacePath string) bool {
 	s.mu.Lock()
 	sess := s.sessions[workspacePath]
 	s.mu.Unlock()
 
 	if sess == nil {
-		return
+		return false
 	}
 	sess.mu.Lock()
 	coord := sess.coord
 	sess.mu.Unlock()
 
 	if coord == nil {
-		return
+		return false
 	}
 	if err := coord.UpdateState(func(wf *state.Workflow) {
 		wf.HumanMessage = ""
 		wf.MultiChoiceQuestion = nil
 	}); err != nil {
 		log.Println("failed to reset human communication state:", err)
+		return false
 	}
+	return true
 }
 
 func extractSubject(body string) string {

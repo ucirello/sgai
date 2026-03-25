@@ -141,6 +141,13 @@ You can communicate with other agents using the messaging system:
 - When specialist review judgment is needed, route to the appropriate reviewer agent or ask the coordinator to do so.
 - Keep your own status messages grounded in implementation evidence rather than reviewer authority.
 
+### Overlay path discipline for factory files
+
+- When a task involves prompts, skills, snippets, or other factory files currently visible under `.sgai/...`, treat those as read-only runtime copies.
+- Read from `.sgai/...` when you need the live content, but write all durable changes to the matching `sgai/...` overlay path instead.
+- Never leave prompt/skill/process fixes only under `.sgai/...`; those runtime files are regenerated and the change will be lost.
+- In status updates and handoff notes, name the final `sgai/...` path you changed so the coordinator can verify the durable overlay location quickly.
+
 ---
 
 ## Your Process

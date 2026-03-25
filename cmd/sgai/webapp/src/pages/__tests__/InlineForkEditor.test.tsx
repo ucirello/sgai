@@ -549,6 +549,36 @@ describe("InlineForkEditor", () => {
       });
     });
 
+    it("keeps fork submission controls disabled until the request settles", async () => {
+      const user = userEvent.setup();
+      const pendingFork = deferredValue<{ name: string; dir: string }>();
+      mockFork.mockImplementationOnce(() => pendingFork.promise);
+
+      await renderInlineForkEditor();
+
+      await waitFor(() => {
+        const textarea = screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement;
+        expect(textarea.value).toContain("Goal");
+      });
+
+      const button = screen.getByRole("button", { name: "Create Fork" });
+      await user.click(button);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Creating Fork..." }).hasAttribute("disabled")).toBe(true);
+        expect(screen.getByTestId("fork-editor-textarea").hasAttribute("disabled")).toBe(true);
+      });
+
+      await act(async () => {
+        pendingFork.resolve({ name: "new-fork", dir: "/path/to/new-fork" });
+        await pendingFork.promise;
+      });
+
+      await waitFor(() => {
+        expect(mockNavigate).toHaveBeenCalledWith("/workspaces/new-fork/progress");
+      });
+    });
+
     it("registers beforeunload protection when the draft is unsaved", async () => {
       const originalAddEventListener = window.addEventListener.bind(window);
       const calls: Array<[string, ...unknown[]]> = [];

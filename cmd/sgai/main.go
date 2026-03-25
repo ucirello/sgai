@@ -101,7 +101,8 @@ Usage:
 	  sgai run [--config path] [--var key=value] <action-name>
 
 Options:
-	  --listen-addr   HTTP server listen address (default: 127.0.0.1:8080)
+	  --listen-addr        HTTP server listen address (default: 127.0.0.1:8080)
+	  --shared-config-dir  Directory for shared pinned/external workspace config
 
 Examples:
 	  sgai
@@ -109,7 +110,9 @@ Examples:
 	  sgai run --config ./verification/sgai.json --var Name=Ada Summarize
 	      Run a configured action from the CLI
 	  sgai --listen-addr 0.0.0.0:8080
-	      Start web UI accessible externally`)
+	      Start web UI accessible externally
+	  sgai --shared-config-dir ./verification/shared-config
+	      Start web UI using an isolated shared config directory`)
 }
 
 // runWorkflow executes the main workflow loop for a target directory.

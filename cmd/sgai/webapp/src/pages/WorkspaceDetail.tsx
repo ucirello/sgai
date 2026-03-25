@@ -1,4 +1,4 @@
-import { useState, useEffect, Suspense, lazy, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, Suspense, lazy, useRef, useCallback, useMemo, type ReactNode } from "react";
 import { useParams, Link, useNavigate } from "react-router";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,18 +22,15 @@ import { WorkspaceRepositoryAction } from "@/components/WorkspaceRepositoryActio
 import { InlineForkEditor } from "@/pages/InlineForkEditor";
 import { api } from "@/lib/api";
 import { canCreateForkFromWorkspace } from "@/lib/workspace-forks";
-import { useFactoryState, triggerFactoryRefresh } from "@/lib/factory-state";
+import { useWorkspacePageState } from "@/lib/workspace-page-state";
 import { useAdhocRun } from "@/hooks/useAdhocRun";
 import { ChevronRight, Square } from "lucide-react";
 import type { ApiWorkspaceEntry, ApiActionEntry } from "@/types";
 import { cn } from "@/lib/utils";
 import {
   buildWorkspaceGoalEditPath,
-  buildWorkspaceNameDisambiguators,
   buildWorkspacePath,
-  getWorkspaceDisplayLabel,
-  isSameWorkspace,
-  resolveWorkspaceByName,
+  getWorkspaceBaseLabel,
 } from "@/lib/workspace-identity";
 
 const SessionTab = lazy(() => import("./tabs/SessionTab").then((m) => ({ default: m.SessionTab })));
@@ -178,24 +175,11 @@ export function WorkspaceDetail(): JSX.Element | null {
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
   const [execTimeSeconds, setExecTimeSeconds] = useState<number | null>(null);
 
-  const { workspaces, fetchStatus } = useFactoryState();
-  const workspaceNameDisambiguators = useMemo(() => {
-    return buildWorkspaceNameDisambiguators(workspaces);
-  }, [workspaces]);
-  const matchingWorkspaceCount = useMemo(() => {
-    return workspaces.filter((workspace) => workspace.name === workspaceName).length;
-  }, [workspaceName, workspaces]);
-
-  const detail = useMemo(() => {
-    return resolveWorkspaceByName(workspaces, workspaceName);
-  }, [workspaceName, workspaces]);
+  const { workspace: detail, fetchStatus } = useWorkspacePageState(workspaceName);
   const loading = fetchStatus === "fetching" && detail === null;
-  const isAmbiguousWorkspaceRoute = matchingWorkspaceCount > 1;
   const routeError = fetchStatus === "error"
     ? "Failed to load workspace state"
-    : isAmbiguousWorkspaceRoute
-      ? "Workspace route is ambiguous."
-      : "Workspace not found.";
+    : "Workspace not found.";
 
   useEffect(() => {
     if (previousWorkspaceRef.current !== workspaceRouteKey) {
@@ -240,25 +224,6 @@ export function WorkspaceDetail(): JSX.Element | null {
   const redirectTab = resolveRedirectTab({ requestedTab, isForkedRoot, showForkTab });
   const activeTab = redirectTab ?? requestedTab;
 
-  const [actionOutputOpen, setActionOutputOpen] = useState(false);
-  const {
-    output: actionOutput,
-    isRunning: isActionRunning,
-    runError: actionRunError,
-    startActionRun,
-    stopRun: stopActionRun,
-    outputRef: actionOutputRef,
-  } = useAdhocRun({ workspaceName, skipModelsFetch: true });
-
-  const handleActionClick = useCallback((
-    action: ApiActionEntry,
-    variables: Record<string, string>,
-    targetWorkspaceName = workspaceName,
-  ) => {
-    setActionOutputOpen(true);
-    void startActionRun(action.name, variables, targetWorkspaceName);
-  }, [startActionRun, workspaceName]);
-
   useEffect(() => {
     if (!detail || !redirectTab) return;
     navigate(buildWorkspacePath(detail, redirectTab), { replace: true });
@@ -270,14 +235,10 @@ export function WorkspaceDetail(): JSX.Element | null {
     return <WorkspaceRouteErrorState message={routeError} />;
   }
 
-  const detailLabel = getWorkspaceDisplayLabel(detail, workspaceNameDisambiguators);
+  const detailLabel = getWorkspaceBaseLabel(detail);
   if (!detail.hasSgai && !detail.isRoot) {
     return <NoWorkspaceState label={detailLabel} goalEditPath={buildWorkspaceGoalEditPath(detail)} dir={detail.dir} />;
   }
-
-  const parentRoot = detail.isFork
-    ? workspaces.find((workspace) => workspace.forks?.some((fork) => isSameWorkspace(fork, detail)))
-    : undefined;
 
   const effectiveRunning = runningOverride !== null ? runningOverride : (detail.running ?? false);
 
@@ -308,7 +269,6 @@ export function WorkspaceDetail(): JSX.Element | null {
 	void (async () => {
 		try {
 			const result = await api.workspaces.start(workspaceName, false);
-			triggerFactoryRefresh();
 			if (result.running) {
 				setRunningOverride(true);
 			}
@@ -327,7 +287,6 @@ export function WorkspaceDetail(): JSX.Element | null {
 	void (async () => {
 		try {
 			const result = await api.workspaces.stop(workspaceName);
-			triggerFactoryRefresh();
 			if (!result.running) {
 				setRunningOverride(false);
 			}
@@ -346,7 +305,6 @@ export function WorkspaceDetail(): JSX.Element | null {
 	void (async () => {
 		try {
 			await api.workspaces.start(workspaceName, true);
-			triggerFactoryRefresh();
 			setRunningOverride(true);
 		} catch (err) {
 			setActionError(err instanceof Error ? err.message : "Failed to start self-drive session");
@@ -363,7 +321,6 @@ export function WorkspaceDetail(): JSX.Element | null {
 	void (async () => {
 		try {
 			await api.workspaces.togglePin(workspaceName);
-			triggerFactoryRefresh();
 		} catch (err) {
 			setActionError(err instanceof Error ? err.message : "Failed to toggle pin");
 		} finally {
@@ -388,10 +345,6 @@ export function WorkspaceDetail(): JSX.Element | null {
   };
 
   const handleRepositoryActionCompleted = () => {
-    if (detail.isFork && parentRoot) {
-      navigate(buildWorkspacePath(parentRoot, "forks"));
-      return;
-    }
     navigate("/");
   };
 
@@ -409,7 +362,6 @@ export function WorkspaceDetail(): JSX.Element | null {
 	void (async () => {
 		try {
 			await api.workspaces.reset(workspaceName);
-			triggerFactoryRefresh();
 			setIsResetDialogOpen(false);
 		} catch (err) {
 			setActionError(err instanceof Error ? err.message : "Failed to reset workspace");
@@ -701,60 +653,105 @@ export function WorkspaceDetail(): JSX.Element | null {
         </div>
 
         <div className="pt-4">
-          {isForkedRoot && (actionRunError || isActionRunning || actionOutput) ? (
-            <div className="space-y-3 mb-4">
-              {actionRunError ? (
-                <p className="text-sm text-destructive" role="alert">{actionRunError}</p>
-              ) : null}
-              {(isActionRunning || actionOutput) ? (
-                <details open={actionOutputOpen} onToggle={(e) => setActionOutputOpen((e.target as HTMLDetailsElement).open)}>
-                  <summary className="cursor-pointer text-sm font-medium flex items-center gap-2">
-                    <ChevronRight
-                      className="h-4 w-4 text-muted-foreground transition-transform duration-200 [[open]>&]:rotate-90"
-                      aria-hidden="true"
-                    />
-                    Output
-                    {isActionRunning && (
-                      <Button
-                        type="button"
-                        variant="destructive"
-                        size="sm"
-                        onClick={(e) => { e.preventDefault(); stopActionRun(); }}
-                        className="ml-auto"
-                      >
-                        <Square className="mr-1 h-3 w-3" />
-                        Stop
-                      </Button>
-                    )}
-                  </summary>
-                  <pre
-                    ref={actionOutputRef}
-                    className="mt-2 bg-muted rounded-md p-4 text-sm font-mono overflow-auto max-h-[400px] whitespace-pre-wrap"
-                  >
-                    {actionOutput || (isActionRunning ? "Running..." : "")}
-                  </pre>
-                </details>
-              ) : null}
-            </div>
-          ) : null}
-          <Suspense fallback={<TabSkeleton />}>
-            <TabContent
-              key={detail.dir}
-              activeTab={activeTab}
-              workspaceName={detail.name}
-              currentModel={detail.currentModel}
-              goalContent={detail.goalContent}
-              pmContent={detail.pmContent}
-              hasProjectMgmt={detail.hasProjectMgmt}
-              actions={detail.actions}
-              actionConfigError={detail.actionConfigError}
-              onActionClick={isForkedRoot ? handleActionClick : undefined}
-              isActionRunning={isActionRunning}
-              showForkTab={showForkTab}
-            />
-          </Suspense>
+          {isForkedRoot ? (
+            <ForkRootActionOutputSlot workspaceName={workspaceName}>
+              {({ onActionClick, isActionRunning }) => (
+                <Suspense fallback={<TabSkeleton />}>
+                  <TabContent
+                    key={detail.dir}
+                    activeTab={activeTab}
+                    detail={detail}
+                    onActionClick={onActionClick}
+                    isActionRunning={isActionRunning}
+                    showForkTab={showForkTab}
+                  />
+                </Suspense>
+              )}
+            </ForkRootActionOutputSlot>
+          ) : (
+            <Suspense fallback={<TabSkeleton />}>
+              <TabContent
+                key={detail.dir}
+                activeTab={activeTab}
+                detail={detail}
+                showForkTab={showForkTab}
+              />
+            </Suspense>
+          )}
         </div>
     </div>
+  );
+}
+
+function ForkRootActionOutputSlot({
+  workspaceName,
+  children,
+}: {
+  workspaceName: string;
+  children: (controls: {
+    onActionClick: (action: ApiActionEntry, variables: Record<string, string>, targetWorkspaceName: string) => void;
+    isActionRunning: boolean;
+  }) => ReactNode;
+}) {
+  const [actionOutputOpen, setActionOutputOpen] = useState(false);
+  const {
+    output: actionOutput,
+    isRunning: isActionRunning,
+    runError: actionRunError,
+    startActionRun,
+    stopRun: stopActionRun,
+    outputRef: actionOutputRef,
+  } = useAdhocRun({ workspaceName, skipModelsFetch: true });
+
+  const handleActionClick = useCallback((
+    action: ApiActionEntry,
+    variables: Record<string, string>,
+    targetWorkspaceName = workspaceName,
+  ) => {
+    setActionOutputOpen(true);
+    void startActionRun(action.name, variables, targetWorkspaceName);
+  }, [startActionRun, workspaceName]);
+
+  return (
+    <>
+      {(actionRunError || isActionRunning || actionOutput) ? (
+        <div className="space-y-3 mb-4">
+          {actionRunError ? (
+            <p className="text-sm text-destructive" role="alert">{actionRunError}</p>
+          ) : null}
+          {(isActionRunning || actionOutput) ? (
+            <details open={actionOutputOpen} onToggle={(e) => setActionOutputOpen((e.target as HTMLDetailsElement).open)}>
+              <summary className="cursor-pointer text-sm font-medium flex items-center gap-2">
+                <ChevronRight
+                  className="h-4 w-4 text-muted-foreground transition-transform duration-200 [[open]>&]:rotate-90"
+                  aria-hidden="true"
+                />
+                Output
+                {isActionRunning && (
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    onClick={(e) => { e.preventDefault(); stopActionRun(); }}
+                    className="ml-auto"
+                  >
+                    <Square className="mr-1 h-3 w-3" />
+                    Stop
+                  </Button>
+                )}
+              </summary>
+              <pre
+                ref={actionOutputRef}
+                className="mt-2 bg-muted rounded-md p-4 text-sm font-mono overflow-auto max-h-[400px] whitespace-pre-wrap"
+              >
+                {actionOutput || (isActionRunning ? "Running..." : "")}
+              </pre>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
+      {children({ onActionClick: handleActionClick, isActionRunning })}
+    </>
   );
 }
 
@@ -769,25 +766,13 @@ function TabSkeleton() {
 
 function TabContent({
   activeTab,
-  workspaceName,
-  currentModel,
-  goalContent,
-  pmContent,
-  hasProjectMgmt,
-  actions,
-  actionConfigError,
+  detail,
   onActionClick,
   isActionRunning,
   showForkTab,
 }: {
   activeTab: string;
-  workspaceName: string;
-  currentModel?: string;
-  goalContent?: string;
-  pmContent?: string;
-  hasProjectMgmt?: boolean;
-  actions?: ApiActionEntry[];
-  actionConfigError?: string;
+  detail: ApiWorkspaceEntry;
   onActionClick?: (action: ApiActionEntry, variables: Record<string, string>, targetWorkspaceName: string) => void;
   isActionRunning?: boolean;
   showForkTab: boolean;
@@ -796,29 +781,47 @@ function TabContent({
     case "progress":
       return (
         <EventsTab
-          workspaceName={workspaceName}
-          goalContent={goalContent}
-          actions={actions}
-          actionConfigError={actionConfigError}
+          workspaceName={detail.name}
+          svgHash={detail.svgHash}
+          agentModels={detail.agentModels}
+          modelStatuses={detail.modelStatuses}
+          needsInput={detail.needsInput}
+          humanMessage={detail.humanMessage}
+          currentAgent={detail.currentAgent}
+          events={detail.events ?? []}
+          goalContent={detail.goalContent}
+          actions={detail.actions}
+          actionConfigError={detail.actionConfigError}
         />
       );
     case "fork":
-      return showForkTab ? <InlineForkEditor key={workspaceName} workspaceName={workspaceName} /> : <NotYetAvailable pageName="Fork Tab" />;
+      return showForkTab ? <InlineForkEditor key={detail.name} workspaceName={detail.name} /> : <NotYetAvailable pageName="Fork Tab" />;
     case "log":
-      return <LogTab workspaceName={workspaceName} />;
+      return <LogTab lines={detail.log ?? []} />;
     case "messages":
-      return <MessagesTab workspaceName={workspaceName} />;
+      return <MessagesTab workspaceName={detail.name} messages={detail.messages ?? []} />;
     case "internals":
-      return <SessionTab workspaceName={workspaceName} pmContent={pmContent} hasProjectMgmt={hasProjectMgmt} />;
+      return (
+        <SessionTab
+          workspaceName={detail.name}
+          agentSequence={detail.agentSequence ?? []}
+          cost={detail.cost}
+          modelStatuses={detail.modelStatuses}
+          projectTodos={detail.projectTodos ?? []}
+          agentTodos={detail.agentTodos ?? []}
+          pmContent={detail.pmContent}
+          hasProjectMgmt={detail.hasProjectMgmt}
+        />
+      );
 
     case "run":
-      return <RunTab workspaceName={workspaceName} currentModel={currentModel} />;
+      return <RunTab workspaceName={detail.name} currentModel={detail.currentModel} />;
     case "forks":
       return (
         <ForksTab
-          workspaceName={workspaceName}
-          actions={actions}
-          actionConfigError={actionConfigError}
+          workspaceName={detail.name}
+          actions={detail.actions}
+          actionConfigError={detail.actionConfigError}
           onActionClick={onActionClick}
           isActionRunning={isActionRunning}
         />

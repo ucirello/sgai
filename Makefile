@@ -1,10 +1,13 @@
 build: webapp-build lint
 	go build -o ./bin/sgai ./cmd/sgai
 
-webapp-build:
-	cd cmd/sgai/webapp && bun install && bun run build.ts
+webapp-doctor:
+	npx -y react-doctor@latest cmd/sgai/webapp --no-lint --verbose --fail-on warning
 
-webapp-test:
+webapp-build: 
+	cd cmd/sgai/webapp && bun install && bun run build.ts
+	
+webapp-test: webapp-doctor
 	cd cmd/sgai/webapp && bun install && bun test
 
 test: webapp-test webapp-build

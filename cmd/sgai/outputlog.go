@@ -191,17 +191,15 @@ type sessionLogWriter struct {
 	sess          *session
 	workspacePath string
 	srv           *Server
-	workspaceName string
 }
 
-func newSessionLogWriter(sess *session, workspacePath string, srv *Server, workspaceName string) *sessionLogWriter {
+func newSessionLogWriter(sess *session, workspacePath string, srv *Server) *sessionLogWriter {
 	return &sessionLogWriter{
 		mu:            sync.Mutex{},
 		partial:       nil,
 		sess:          sess,
 		workspacePath: workspacePath,
 		srv:           srv,
-		workspaceName: workspaceName,
 	}
 }
 
@@ -225,7 +223,7 @@ func (w *sessionLogWriter) Write(data []byte) (int, error) {
 
 func (w *sessionLogWriter) addLine(text string) {
 	w.sess.outputLog.add(logLine{prefix: "", text: text})
-	w.srv.notifyStateChange()
+	w.srv.notifyWorkspacePageChange(w.workspacePath)
 }
 
 func buildAgentOutputWriter(base io.Writer, extra ...io.Writer) io.Writer {

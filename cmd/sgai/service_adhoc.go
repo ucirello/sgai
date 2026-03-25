@@ -223,10 +223,10 @@ func (s *Server) startCommandService(workspacePath string, spec *commandStartSpe
 			_, _ = fmt.Fprintln(stderrPW, "command exited with error:", errWait)
 			_, _ = fmt.Fprintln(stderrBufferPW, "command exited with error:", errWait)
 		}
-		s.notifyStateChange()
+		s.notifyWorkspacePageChange(workspacePath)
 	}()
 
-	s.notifyStateChange()
+	s.notifyWorkspacePageChange(workspacePath)
 
 	return adhocStartRunning("", spec.startedMessage)
 }
@@ -240,7 +240,7 @@ type adhocStopResult struct {
 func (s *Server) adhocStopService(workspacePath string) adhocStopResult {
 	st := s.getAdhocState(workspacePath)
 	st.stop()
-	s.notifyStateChange()
+	s.notifyWorkspacePageChange(workspacePath)
 
 	st.mu.Lock()
 	output := st.output.String()

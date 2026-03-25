@@ -1,7 +1,7 @@
 import { getRepositoryTitle } from "@/lib/repository-title";
 import type { ApiWorkspaceEntry } from "@/types";
 
-export type WorkspaceIdentity = Pick<ApiWorkspaceEntry, "name" | "dir">;
+type WorkspaceIdentity = Pick<ApiWorkspaceEntry, "name" | "dir">;
 
 type WorkspaceLabelSource = WorkspaceIdentity & Pick<ApiWorkspaceEntry, "title" | "computedTitle">;
 

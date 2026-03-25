@@ -1,14 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
 import { act, render, screen, waitFor, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { MemoryRouter, Routes, Route, createMemoryRouter, RouterProvider } from "react-router";
 import * as ReactRouter from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import * as factoryStateModule from "@/lib/factory-state";
+import * as workspacePageStateModule from "@/lib/workspace-page-state";
 import { api } from "@/lib/api";
 import * as useAdhocRunModule from "@/hooks/useAdhocRun";
 import * as mobileModule from "@/hooks/use-mobile";
+import * as markdownContentModule from "@/components/MarkdownContent";
 import * as markdownEditorModule from "@/components/MarkdownEditor";
 import { WorkspaceDetail } from "../WorkspaceDetail";
 
@@ -199,18 +202,20 @@ const mockDeleteWorkspace = mock(() => Promise.resolve({ deleted: true }));
 const mockForkTemplate = mock(() => Promise.resolve({ content: "# New task\n\nShip it" }));
 const mockFork = mock(() => Promise.resolve({ name: "test-workspace-fork" }));
 const mockTriggerFactoryRefresh = mock(() => {});
+const mockTriggerWorkspacePageRefresh = mock(() => {});
 const mockRespond = mock(() => Promise.resolve({ success: true }));
 const mockReset = mock(() => Promise.resolve());
 const mockNavigate = mock(() => {});
 const mockStartActionRun = mock(() => {});
 const mockStopActionRun = mock(() => {});
+let markdownRenderCount = 0;
 const mockActionRunState = {
   output: "",
   isRunning: false,
   runError: null as string | null,
 };
 
-const mockUseAdhocRun = () => ({
+const mockUseAdhocRun = mock(() => ({
     output: mockActionRunState.output,
     isRunning: mockActionRunState.isRunning,
     runError: mockActionRunState.runError,
@@ -218,7 +223,7 @@ const mockUseAdhocRun = () => ({
     startActionRun: mockStartActionRun,
     stopRun: mockStopActionRun,
     outputRef: { current: null },
-  });
+  }));
 
 const mockMarkdownEditor = ({ value, onChange, disabled, placeholder }: {
     value: string;
@@ -236,6 +241,11 @@ const mockMarkdownEditor = ({ value, onChange, disabled, placeholder }: {
       />
     </div>
   );
+
+const mockMarkdownContent = ({ content }: { content: string }) => {
+  markdownRenderCount += 1;
+  return <div data-testid="workspace-detail-markdown-content">{content}</div>;
+};
 
 function workspaceDetailTestView(workspaceName = "test-workspace", tab = "progress") {
   return (
@@ -294,11 +304,14 @@ describe("WorkspaceDetail", () => {
     mockForkTemplate.mockClear();
     mockFork.mockClear();
     mockTriggerFactoryRefresh.mockClear();
+    mockTriggerWorkspacePageRefresh.mockClear();
     mockRespond.mockClear();
     mockReset.mockClear();
     mockNavigate.mockClear();
+    mockUseAdhocRun.mockClear();
     mockStartActionRun.mockClear();
     mockStopActionRun.mockClear();
+    markdownRenderCount = 0;
     mockActionRunState.output = "";
     mockActionRunState.isRunning = false;
     mockActionRunState.runError = null;
@@ -310,6 +323,23 @@ describe("WorkspaceDetail", () => {
       lastFetchedAt: Date.now(),
     }));
     spyOn(factoryStateModule, "triggerFactoryRefresh").mockImplementation(() => mockTriggerFactoryRefresh());
+    spyOn(workspacePageStateModule, "useWorkspacePageState").mockImplementation((workspaceName: string) => {
+      const matchingWorkspaces = mockWorkspaces.filter((workspace) => workspace.name === workspaceName);
+      if (matchingWorkspaces.length > 1) {
+        return {
+          workspace: null,
+          fetchStatus: "error" as const,
+          lastFetchedAt: Date.now(),
+        };
+      }
+
+      return {
+        workspace: matchingWorkspaces[0] ?? null,
+        fetchStatus: mockFetchStatus as "idle" | "fetching" | "error",
+        lastFetchedAt: Date.now(),
+      };
+    });
+    spyOn(workspacePageStateModule, "triggerWorkspacePageRefresh").mockImplementation(() => mockTriggerWorkspacePageRefresh());
     spyOn(api.workspaces, "start").mockImplementation((...args) => mockStart(...args));
     spyOn(api.workspaces, "stop").mockImplementation((...args) => mockStop(...args));
     spyOn(api.workspaces, "togglePin").mockImplementation((...args) => mockTogglePin(...args));
@@ -321,10 +351,21 @@ describe("WorkspaceDetail", () => {
     spyOn(api.workspaces, "reset").mockImplementation((...args) => mockReset(...args));
     spyOn(useAdhocRunModule, "useAdhocRun").mockImplementation((...args) => mockUseAdhocRun(...args));
     spyOn(mobileModule, "useIsMobile").mockImplementation(() => false);
+    spyOn(markdownContentModule, "MarkdownContent").mockImplementation((...args) => mockMarkdownContent(...args));
     spyOn(markdownEditorModule, "MarkdownEditor").mockImplementation((...args) => mockMarkdownEditor(...args));
   });
 
   describe("repository action buttons", () => {
+    it("does not mount the adhoc action hook on internals surfaces", async () => {
+      renderWorkspaceDetailRouter("/workspaces/test-workspace/internals");
+
+      await waitFor(() => {
+        expect(screen.getByText("Steer Next Turn")).toBeTruthy();
+      });
+
+      expect(mockUseAdhocRun).not.toHaveBeenCalled();
+    });
+
     it("shows workspace action configuration errors on the progress tab", async () => {
       mockWorkspaces = [createMockWorkspace({
         actionConfigError: "invalid JSON syntax",
@@ -339,7 +380,7 @@ describe("WorkspaceDetail", () => {
       });
     });
 
-    it("shows an actionable error for ambiguous duplicate-basename detail routes without workspaceDir", async () => {
+    it("shows a load failure for ambiguous duplicate-basename detail routes without workspaceDir", async () => {
       mockWorkspaces = [
         createMockWorkspace({
           name: "shared-ws",
@@ -359,11 +400,11 @@ describe("WorkspaceDetail", () => {
 
       await waitFor(() => {
         expect(router.state.location.pathname).toBe("/workspaces/shared-ws");
-        expect(screen.getByText("Workspace route is ambiguous.")).toBeTruthy();
+        expect(screen.getByText("Failed to load workspace state")).toBeTruthy();
       });
     });
 
-    it("shows an ambiguous error for duplicate-basename forks routes", async () => {
+    it("shows a load failure for duplicate-basename forks routes", async () => {
       mockWorkspaces = [
         createMockWorkspace({
           name: "shared-ws",
@@ -424,7 +465,7 @@ describe("WorkspaceDetail", () => {
       renderWorkspaceDetailRouter("/workspaces/shared-ws/forks");
 
       await waitFor(() => {
-        expect(screen.getByText("Workspace route is ambiguous.")).toBeTruthy();
+        expect(screen.getByText("Failed to load workspace state")).toBeTruthy();
         expect(screen.queryByText("Second Fork")).toBeNull();
         expect(screen.queryByText("First Fork")).toBeNull();
       });
@@ -872,6 +913,86 @@ describe("WorkspaceDetail", () => {
       });
     });
 
+    it("keeps internals markdown stable while the start action updates header state", async () => {
+      const user = userEvent.setup();
+      const pendingStart = deferredValue<{ running: boolean }>();
+
+      mockStart.mockImplementationOnce(() => pendingStart.promise);
+      mockWorkspaces = [createMockWorkspace({ hasProjectMgmt: true, pmContent: "# PM" })];
+
+      renderWorkspaceDetailRouter("/workspaces/test-workspace/internals");
+
+      await waitFor(() => {
+        expect(screen.getByText("PROJECT_MANAGEMENT.md")).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Start" })).toBeTruthy();
+      });
+
+      expect(markdownRenderCount).toBe(1);
+
+      await user.click(screen.getByRole("button", { name: "Start" }));
+
+      await waitFor(() => {
+        expect(mockStart).toHaveBeenCalledWith("test-workspace", false);
+      });
+
+      expect(markdownRenderCount).toBe(1);
+
+      await act(async () => {
+        pendingStart.resolve({ running: true });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mockTriggerWorkspacePageRefresh).not.toHaveBeenCalled();
+      expect(markdownRenderCount).toBe(1);
+    });
+
+    it("keeps the steering draft and focus while workspace detail rerenders in internals", async () => {
+      const user = userEvent.setup();
+      let refreshDetail: (() => void) | null = null;
+
+      function RefreshableWorkspaceDetailTestView() {
+        const [, setRevision] = useState(0);
+        refreshDetail = () => setRevision((current) => current + 1);
+        return workspaceDetailTestView("test-workspace", "internals");
+      }
+
+      mockWorkspaces = [createMockWorkspace({
+        hasProjectMgmt: true,
+        pmContent: "# PM",
+        agentSequence: [{ agent: "coordinator", model: "opencode/glm-5", elapsedTime: "0m", isCurrent: true }],
+      })];
+
+      render(<RefreshableWorkspaceDetailTestView />);
+
+      const textarea = await screen.findByRole("textbox", { name: /re-steering instruction/i }) as HTMLTextAreaElement;
+      textarea.focus();
+
+      await user.type(textarea, "abc");
+      expect(textarea.value).toBe("abc");
+      expect(textarea).toBe(document.activeElement);
+
+      mockWorkspaces = [createMockWorkspace({
+        hasProjectMgmt: true,
+        pmContent: "# PM updated",
+        running: true,
+        totalExecTime: "2m",
+        status: "Updated status",
+        agentSequence: [{ agent: "coordinator", model: "opencode/glm-5", elapsedTime: "2m", isCurrent: true }],
+      })];
+
+      await act(async () => {
+        refreshDetail?.();
+      });
+
+      const updatedTextarea = screen.getByRole("textbox", { name: /re-steering instruction/i }) as HTMLTextAreaElement;
+      expect(updatedTextarea.value).toBe("abc");
+      expect(updatedTextarea).toBe(document.activeElement);
+
+      await user.type(updatedTextarea, "def");
+      expect((screen.getByRole("textbox", { name: /re-steering instruction/i }) as HTMLTextAreaElement).value).toBe("abcdef");
+    });
+
     it("calls stop API when Stop button is clicked", async () => {
       const user = userEvent.setup();
       mockWorkspaces[0] = createMockWorkspace({ running: true });
@@ -916,6 +1037,8 @@ describe("WorkspaceDetail", () => {
       await waitFor(() => {
         expect(mockStart).toHaveBeenCalledWith("test-workspace", true);
       });
+
+      expect(mockTriggerWorkspacePageRefresh).not.toHaveBeenCalled();
     });
 
     it("keeps Reset disabled while Self-drive is starting", async () => {
@@ -946,7 +1069,7 @@ describe("WorkspaceDetail", () => {
   });
 
   describe("state reloads on button click", () => {
-    it("triggers factory refresh after start", async () => {
+    it("does not force a manual workspace refresh after start", async () => {
       const user = userEvent.setup();
 
       renderWorkspaceDetail();
@@ -959,12 +1082,10 @@ describe("WorkspaceDetail", () => {
       const startButtons = screen.getAllByText("Start");
       await user.click(startButtons[0]);
 
-      await waitFor(() => {
-        expect(mockTriggerFactoryRefresh).toHaveBeenCalled();
-      });
+      expect(mockTriggerWorkspacePageRefresh).not.toHaveBeenCalled();
     });
 
-    it("triggers factory refresh after stop", async () => {
+    it("does not force a manual workspace refresh after stop", async () => {
       const user = userEvent.setup();
       mockWorkspaces[0] = createMockWorkspace({ running: true });
 
@@ -978,12 +1099,10 @@ describe("WorkspaceDetail", () => {
       const stopButtons = screen.getAllByText("Stop");
       await user.click(stopButtons[0]);
 
-      await waitFor(() => {
-        expect(mockTriggerFactoryRefresh).toHaveBeenCalled();
-      });
+      expect(mockTriggerWorkspacePageRefresh).not.toHaveBeenCalled();
     });
 
-    it("triggers factory refresh after pin toggle", async () => {
+    it("does not force a manual workspace refresh after pin toggle", async () => {
       const user = userEvent.setup();
 
       renderWorkspaceDetail();
@@ -996,9 +1115,7 @@ describe("WorkspaceDetail", () => {
       const pinButtons = screen.getAllByText("Pin");
       await user.click(pinButtons[0]);
 
-      await waitFor(() => {
-        expect(mockTriggerFactoryRefresh).toHaveBeenCalled();
-      });
+      expect(mockTriggerWorkspacePageRefresh).not.toHaveBeenCalled();
     });
   });
 
@@ -1620,7 +1737,7 @@ describe("WorkspaceDetail", () => {
   });
 
   describe("critical actions without optimistic updates", () => {
-    it("pin toggle calls API before triggering refresh", async () => {
+    it("pin toggle relies on SSE instead of forcing a refresh", async () => {
       const user = userEvent.setup();
 
       renderWorkspaceDetail();
@@ -1635,8 +1752,9 @@ describe("WorkspaceDetail", () => {
 
       await waitFor(() => {
         expect(mockTogglePin).toHaveBeenCalledWith("test-workspace");
-        expect(mockTriggerFactoryRefresh).toHaveBeenCalled();
       });
+
+      expect(mockTriggerWorkspacePageRefresh).not.toHaveBeenCalled();
     });
   });
 
@@ -1716,7 +1834,7 @@ describe("WorkspaceDetail", () => {
       });
     });
 
-    it("triggers factory refresh after reset", async () => {
+    it("does not force a manual workspace refresh after reset", async () => {
       const user = userEvent.setup();
 
       renderWorkspaceDetail();
@@ -1737,9 +1855,7 @@ describe("WorkspaceDetail", () => {
       const confirmButton = confirmButtons.find(btn => btn.closest("[role='alertdialog']"));
       await user.click(confirmButton!);
 
-      await waitFor(() => {
-        expect(mockTriggerFactoryRefresh).toHaveBeenCalled();
-      });
+      expect(mockTriggerWorkspacePageRefresh).not.toHaveBeenCalled();
     });
 
     it("shows error message when reset fails", async () => {

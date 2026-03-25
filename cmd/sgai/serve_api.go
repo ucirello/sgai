@@ -22,8 +22,17 @@ import (
 )
 
 type signalSubscriber struct {
-	ch   chan struct{}
-	done chan struct{}
+	ch                chan signalEvent
+	notifyCh          chan struct{}
+	done              chan struct{}
+	mu                sync.Mutex
+	pendingReload     bool
+	pendingWorkspaces map[string]struct{}
+}
+
+type signalEvent struct {
+	Name      string
+	Workspace string
 }
 
 type signalBroker struct {
@@ -39,12 +48,17 @@ func newSignalBroker() *signalBroker {
 
 func (b *signalBroker) subscribe() *signalSubscriber {
 	s := &signalSubscriber{
-		ch:   make(chan struct{}, 1),
-		done: make(chan struct{}),
+		ch:                make(chan signalEvent, 1),
+		notifyCh:          make(chan struct{}, 1),
+		done:              make(chan struct{}),
+		mu:                sync.Mutex{},
+		pendingReload:     false,
+		pendingWorkspaces: make(map[string]struct{}),
 	}
 	b.mu.Lock()
 	b.subscribers[s] = struct{}{}
 	b.mu.Unlock()
+	go s.run()
 	return s
 }
 
@@ -55,20 +69,89 @@ func (b *signalBroker) unsubscribe(s *signalSubscriber) {
 	close(s.done)
 }
 
-func (b *signalBroker) notify() {
+func (b *signalBroker) notify(event signalEvent) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	subscribers := make([]*signalSubscriber, 0, len(b.subscribers))
 	for s := range b.subscribers {
+		subscribers = append(subscribers, s)
+	}
+	b.mu.Unlock()
+	for _, s := range subscribers {
+		s.enqueue(event)
+	}
+}
+
+func (s *signalSubscriber) run() {
+	for {
 		select {
-		case s.ch <- struct{}{}:
-		default:
+		case <-s.done:
+			return
+		case <-s.notifyCh:
+		}
+
+		for {
+			event, ok := s.nextPendingEvent()
+			if !ok {
+				break
+			}
+			select {
+			case <-s.done:
+				return
+			case s.ch <- event:
+			}
 		}
 	}
 }
 
+func (s *signalSubscriber) enqueue(event signalEvent) {
+	select {
+	case <-s.done:
+		return
+	default:
+	}
+
+	s.mu.Lock()
+	s.queueEventLocked(event)
+	s.mu.Unlock()
+
+	select {
+	case s.notifyCh <- struct{}{}:
+	default:
+	}
+}
+
+func (s *signalSubscriber) queueEventLocked(event signalEvent) {
+	switch event.Name {
+	case "", "reload":
+		s.pendingReload = true
+	case "workspace":
+		if event.Workspace != "" {
+			s.pendingWorkspaces[event.Workspace] = struct{}{}
+		}
+	default:
+		s.pendingReload = true
+	}
+}
+
+func (s *signalSubscriber) nextPendingEvent() (signalEvent, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pendingReload {
+		s.pendingReload = false
+		return signalEvent{Name: "reload", Workspace: ""}, true
+	}
+	if len(s.pendingWorkspaces) == 0 {
+		return signalEvent{Name: "", Workspace: ""}, false
+	}
+	workspace := slices.Sorted(maps.Keys(s.pendingWorkspaces))[0]
+	delete(s.pendingWorkspaces, workspace)
+	return signalEvent{Name: "workspace", Workspace: workspace}, true
+}
+
 func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/v1/state", s.handleAPIState)
 	mux.HandleFunc("GET /api/v1/signal", s.handleSignalStream)
+	mux.HandleFunc("GET /api/v1/workspaces", s.handleAPIWorkspaceList)
+	mux.HandleFunc("GET /api/v1/workspaces/{name}/state", s.handleAPIWorkspaceState)
 	mux.HandleFunc("GET /api/v1/agents", s.handleAPIAgents)
 	mux.HandleFunc("GET /api/v1/skills", s.handleAPISkills)
 	mux.HandleFunc("GET /api/v1/skills/{name...}", s.handleAPISkillDetail)
@@ -126,8 +209,18 @@ func (s *Server) handleSignalStream(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-sub.done:
 			return
-		case <-sub.ch:
-			if _, errWrite := fmt.Fprintf(w, "event: reload\ndata: {}\n\n"); errWrite != nil {
+		case event := <-sub.ch:
+			if event.Name == "" {
+				event.Name = "reload"
+			}
+			payload := struct {
+				Workspace string `json:"workspace,omitempty"`
+			}{Workspace: event.Workspace}
+			data, errMarshal := json.Marshal(payload)
+			if errMarshal != nil {
+				return
+			}
+			if _, errWrite := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Name, data); errWrite != nil {
 				return
 			}
 			flusher.Flush()
@@ -135,8 +228,38 @@ func (s *Server) handleSignalStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-type apiFactoryState struct {
-	Workspaces []apiWorkspaceFullState `json:"workspaces"`
+type apiWorkspaceListResponse struct {
+	Workspaces []apiWorkspaceListEntry `json:"workspaces"`
+}
+
+type apiWorkspaceListEntry struct {
+	Name             string              `json:"name"`
+	Dir              string              `json:"dir"`
+	Running          bool                `json:"running"`
+	NeedsInput       bool                `json:"needsInput"`
+	InProgress       bool                `json:"inProgress"`
+	Pinned           bool                `json:"pinned"`
+	IsRoot           bool                `json:"isRoot"`
+	IsFork           bool                `json:"isFork"`
+	IsExternal       bool                `json:"isExternal"`
+	External         bool                `json:"external"`
+	HasSGAI          bool                `json:"hasSgai"`
+	Status           string              `json:"status"`
+	BadgeClass       string              `json:"badgeClass"`
+	BadgeText        string              `json:"badgeText"`
+	HasEditedGoal    bool                `json:"hasEditedGoal"`
+	InteractiveAuto  bool                `json:"interactiveAuto"`
+	ContinuousMode   bool                `json:"continuousMode"`
+	CurrentAgent     string              `json:"currentAgent"`
+	CurrentModel     string              `json:"currentModel"`
+	Task             string              `json:"task"`
+	Title            string              `json:"title"`
+	ComputedTitle    string              `json:"computedTitle,omitempty"`
+	TotalExecTime    string              `json:"totalExecTime"`
+	LatestProgress   string              `json:"latestProgress"`
+	HumanMessage     string              `json:"humanMessage"`
+	Forks            []apiForkEntry      `json:"forks,omitempty"`
+	RepositoryAction apiRepositoryAction `json:"repositoryAction"`
 }
 
 type apiWorkspaceFullState struct {
@@ -187,81 +310,188 @@ type apiWorkspaceFullState struct {
 	RepositoryAction  apiRepositoryAction         `json:"repositoryAction"`
 }
 
-func (s *Server) handleAPIState(w http.ResponseWriter, _ *http.Request) {
-	if cached, ok := s.stateCache.get("state"); ok {
-		writeJSON(w, cached)
-		return
-	}
-	factoryState, _ := s.stateFlight.do("state", func() (apiFactoryState, error) {
-		if cached, ok := s.stateCache.get("state"); ok {
-			return cached, nil
-		}
-		s.mu.Lock()
-		genBefore := s.stateGeneration
-		s.mu.Unlock()
-		result := s.buildFullFactoryState()
-		s.mu.Lock()
-		genAfter := s.stateGeneration
-		s.mu.Unlock()
-		if genBefore == genAfter {
-			s.stateCache.set("state", result)
-		}
-		return result, nil
-	})
-	writeJSON(w, factoryState)
+func (s *Server) handleAPIWorkspaceList(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, s.loadWorkspaceListResponse())
 }
 
-func (s *Server) warmStateCache() {
-	s.mu.Lock()
-	genBefore := s.stateGeneration
-	s.mu.Unlock()
-	result := s.buildFullFactoryState()
-	s.mu.Lock()
-	genAfter := s.stateGeneration
-	s.mu.Unlock()
-	if genBefore == genAfter {
-		s.stateCache.set("state", result)
+var errWorkspacePageStateNotFound = errors.New("workspace not found")
+
+func (s *Server) handleAPIWorkspaceState(w http.ResponseWriter, r *http.Request) {
+	workspacePath, ok := s.resolveWorkspacePageFromPath(w, r)
+	if !ok {
+		return
 	}
+
+	pageState, errLoad := s.loadWorkspacePageState(workspacePath)
+	if errLoad != nil {
+		statusCode := http.StatusInternalServerError
+		if errors.Is(errLoad, errWorkspacePageStateNotFound) {
+			statusCode = http.StatusNotFound
+		}
+		http.Error(w, errLoad.Error(), statusCode)
+		return
+	}
+
+	writeJSON(w, pageState)
+}
+
+func (s *Server) resolveWorkspacePageFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {
+	workspaceName := r.PathValue("name")
+	if workspaceName == "" {
+		http.Error(w, "workspace name is required", http.StatusBadRequest)
+		return "", false
+	}
+	workspacePath, statusCode, errMessage := s.resolveSingleWorkspacePath(workspaceName)
+	if statusCode != 0 {
+		http.Error(w, errMessage, statusCode)
+		return "", false
+	}
+	return workspacePath, true
+}
+
+func (s *Server) loadWorkspaceListResponse() apiWorkspaceListResponse {
+	if cached, ok := s.workspaceListCache.get("workspaces"); ok {
+		return cached
+	}
+	response, _ := s.workspaceListFlight.do("workspaces", func() (apiWorkspaceListResponse, error) {
+		if cached, ok := s.workspaceListCache.get("workspaces"); ok {
+			return cached, nil
+		}
+		result := s.buildWorkspaceListResponse()
+		s.workspaceListCache.set("workspaces", result)
+		return result, nil
+	})
+	return response
+}
+
+func (s *Server) loadWorkspacePageState(workspacePath string) (apiWorkspaceFullState, error) {
+	if cached, ok := s.workspacePageCache.get(workspacePath); ok {
+		return cached, nil
+	}
+
+	pageState, errLoad := s.workspacePageFlight.do(workspacePath, func() (apiWorkspaceFullState, error) {
+		if cached, ok := s.workspacePageCache.get(workspacePath); ok {
+			return cached, nil
+		}
+		groups, errScan := s.scanWorkspaceGroups()
+		if errScan != nil {
+			return apiWorkspaceFullState{}, errScan
+		}
+		for _, ws := range workspaceInfos(groups) {
+			if !sameWorkspacePath(ws.Directory, workspacePath) {
+				continue
+			}
+			result := s.buildWorkspaceFullState(ws, groups)
+			s.workspacePageCache.set(workspacePath, result)
+			return result, nil
+		}
+		return apiWorkspaceFullState{}, errWorkspacePageStateNotFound
+	})
+	if errLoad != nil {
+		return apiWorkspaceFullState{}, errLoad
+	}
+
+	return pageState, nil
 }
 
 func (s *Server) loadWorkspaceState(dir string) state.Workflow {
 	var emptyState state.Workflow
 	stPath := statePath(dir)
-	info, errStat := os.Stat(stPath)
-	if errStat != nil {
-		return emptyState
-	}
-	if info.Size() > maxStateSizeBytes {
+	if _, errStat := os.Stat(stPath); errStat != nil {
 		return emptyState
 	}
 	return s.workspaceCoordinator(dir).State()
 }
 
-func (s *Server) buildFullFactoryState() apiFactoryState {
+func (s *Server) buildWorkspaceListResponse() apiWorkspaceListResponse {
 	groups, errScan := s.scanWorkspaceGroups()
 	if errScan != nil {
-		return apiFactoryState{Workspaces: nil}
+		return apiWorkspaceListResponse{Workspaces: nil}
 	}
 
-	var allWorkspaces []workspaceInfo
-	for _, grp := range groups {
-		allWorkspaces = append(allWorkspaces, grp.Root)
-		allWorkspaces = append(allWorkspaces, grp.Forks...)
-	}
-
-	workspaces := make([]apiWorkspaceFullState, len(allWorkspaces))
+	allWorkspaces := workspaceInfos(groups)
+	workspaces := make([]apiWorkspaceListEntry, len(allWorkspaces))
 	var wg sync.WaitGroup
 	for i, ws := range allWorkspaces {
 		wg.Go(func() {
-			workspaces[i] = s.buildWorkspaceFullState(ws, groups)
+			workspaces[i] = s.buildWorkspaceListEntry(ws, groups)
 		})
 	}
 	wg.Wait()
 
-	return apiFactoryState{Workspaces: workspaces}
+	return apiWorkspaceListResponse{Workspaces: workspaces}
 }
 
-const maxStateSizeBytes = 10 * 1024 * 1024
+func workspaceHasEditedGoal(dir string) bool {
+	data, errRead := os.ReadFile(filepath.Join(dir, "GOAL.md"))
+	if errRead != nil {
+		return false
+	}
+	body := extractBody(data)
+	return strings.TrimSpace(string(body)) != ""
+}
+
+func (s *Server) buildWorkspaceListEntry(ws workspaceInfo, groups []workspaceGroup) apiWorkspaceListEntry {
+	wfState := s.loadWorkspaceState(ws.Directory)
+	kind := s.classifyWorkspaceCached(ws.Directory)
+
+	interactiveAuto := wfState.InteractionMode == state.ModeSelfDrive || wfState.InteractionMode == state.ModeContinuous
+	badgeClass, badgeText := badgeStatus(&wfState, ws.Running)
+	needsInput := wfState.NeedsHumanInput()
+
+	currentAgent := wfState.CurrentAgent
+	if currentAgent == "" {
+		currentAgent = "Unknown"
+	}
+
+	status := wfState.Status
+	if status == "" {
+		status = "-"
+	}
+
+	titleState := goalTitleStateFromPath(ws.Directory, ws.DirName)
+	if titleState.NeedsRepair {
+		s.enqueueGoalTitleRepair(ws.Directory)
+	}
+
+	repositoryAction := s.workspaceActionPolicy(ws.Directory)
+
+	result := apiWorkspaceListEntry{
+		Name:             ws.DirName,
+		Dir:              ws.Directory,
+		Running:          ws.Running,
+		NeedsInput:       needsInput,
+		InProgress:       ws.InProgress,
+		Pinned:           ws.Pinned,
+		IsRoot:           ws.IsRoot,
+		IsFork:           kind == workspaceFork,
+		IsExternal:       ws.External,
+		External:         ws.External,
+		HasSGAI:          ws.HasWorkspace,
+		Status:           status,
+		BadgeClass:       badgeClass,
+		BadgeText:        badgeText,
+		HasEditedGoal:    workspaceHasEditedGoal(ws.Directory),
+		InteractiveAuto:  interactiveAuto,
+		ContinuousMode:   readContinuousModePrompt(ws.Directory) != "",
+		CurrentAgent:     currentAgent,
+		CurrentModel:     resolveCurrentModel(ws.Directory, &wfState),
+		Task:             wfState.Task,
+		Title:            titleState.Title,
+		ComputedTitle:    workspaceComputedTitle(ws, groups, titleState),
+		TotalExecTime:    calculateTotalExecutionTime(wfState.AgentSequence, ws.Running, getLastActivityTime(wfState.Progress)),
+		LatestProgress:   getLatestProgress(wfState.Progress),
+		HumanMessage:     wfState.HumanMessage,
+		Forks:            nil,
+		RepositoryAction: repositoryAction.api(ws.DirName),
+	}
+
+	if ws.IsRoot {
+		result.Forks = s.collectForksForAPIFromGroups(ws.Directory, groups)
+	}
+
+	return result
+}
 
 func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGroup) apiWorkspaceFullState {
 	wfState := s.loadWorkspaceState(ws.Directory)
@@ -287,11 +517,7 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 		s.enqueueGoalTitleRepair(ws.Directory)
 	}
 
-	hasEditedGoal := false
-	if data, errRead := os.ReadFile(filepath.Join(ws.Directory, "GOAL.md")); errRead == nil {
-		body := extractBody(data)
-		hasEditedGoal = strings.TrimSpace(string(body)) != ""
-	}
+	hasEditedGoal := workspaceHasEditedGoal(ws.Directory)
 
 	agentSeq := convertAgentSequence(
 		prepareAgentSequenceDisplay(wfState.AgentSequence, ws.Running, getLastActivityTime(wfState.Progress), ws.Directory),
@@ -1144,11 +1370,11 @@ func (s *Server) handleAPIRespond(w http.ResponseWriter, r *http.Request) {
 
 	coord := s.sessionCoordinator(workspacePath)
 	if coord == nil {
-		http.Error(w, "no pending question", http.StatusConflict)
+		http.Error(w, errNoPendingQuestion.Error(), http.StatusConflict)
 		return
 	}
 
-	s.handleRespondViaCoordinator(w, coord, req)
+	s.handleRespondViaCoordinator(w, workspacePath, coord, req)
 }
 
 func (s *Server) sessionCoordinator(workspacePath string) *state.Coordinator {
@@ -1163,42 +1389,21 @@ func (s *Server) sessionCoordinator(workspacePath string) *state.Coordinator {
 	return sess.coord
 }
 
-func (s *Server) handleRespondViaCoordinator(w http.ResponseWriter, coord *state.Coordinator, req apiRespondRequest) {
-	wfState := coord.State()
-
-	if !wfState.NeedsHumanInput() {
-		http.Error(w, "no pending question", http.StatusConflict)
-		return
-	}
-
-	responseText := buildAPIResponseText(req)
-	if responseText == "" {
-		http.Error(w, "response cannot be empty", http.StatusBadRequest)
-		return
-	}
-
-	if !coord.RespondIfCurrent(req.PromptToken, responseText) {
-		http.Error(w, "question not available", http.StatusConflict)
-		return
-	}
-
-	if wfState.MultiChoiceQuestion != nil && wfState.MultiChoiceQuestion.IsWorkGate {
-		approvedViaSelection := slices.Contains(req.SelectedChoices, workGateApprovalText)
-		if approvedViaSelection {
-			if err := coord.UpdateState(func(wf *state.Workflow) {
-				if wf.InteractionMode == state.ModeBrainstorming {
-					wf.InteractionMode = state.ModeBuilding
-				}
-			}); err != nil {
-				http.Error(w, "failed to save work gate approval", http.StatusInternalServerError)
-				return
-			}
+func (s *Server) handleRespondViaCoordinator(w http.ResponseWriter, workspacePath string, coord *state.Coordinator, req apiRespondRequest) {
+	result, errRespond := s.respondViaCoordinatorService(workspacePath, coord, req)
+	if errRespond != nil {
+		statusCode := http.StatusInternalServerError
+		switch {
+		case errors.Is(errRespond, errNoPendingQuestion), errors.Is(errRespond, errQuestionNotAvailable):
+			statusCode = http.StatusConflict
+		case errors.Is(errRespond, errResponseCannotBeEmpty):
+			statusCode = http.StatusBadRequest
 		}
+		http.Error(w, errRespond.Error(), statusCode)
+		return
 	}
 
-	s.notifyStateChange()
-
-	writeJSON(w, apiRespondResponse{Success: true, Message: "response submitted"})
+	writeJSON(w, apiRespondResponse(result))
 }
 
 func buildAPIResponseText(req apiRespondRequest) string {
@@ -1711,36 +1916,17 @@ func (s *Server) handleAPISteer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.TrimSpace(req.Message) == "" {
-		http.Error(w, "message cannot be empty", http.StatusBadRequest)
-		return
-	}
-
-	coord := s.workspaceCoordinator(workspacePath)
-	steerBody := "Re-steering instruction: " + strings.TrimSpace(req.Message)
-	steerCreatedAt := time.Now().UTC().Format(time.RFC3339)
-
-	if errUpdate := coord.UpdateState(func(wf *state.Workflow) {
-		newMsg := state.Message{
-			ID:        nextMessageID(wf.Messages),
-			FromAgent: "Human Partner",
-			ToAgent:   "coordinator",
-			Body:      steerBody,
-			Read:      false,
-			ReadAt:    "",
-			ReadBy:    "",
-			CreatedAt: steerCreatedAt,
+	result, errSteer := s.steerService(workspacePath, req.Message)
+	if errSteer != nil {
+		statusCode := http.StatusInternalServerError
+		if errors.Is(errSteer, errSteerMessageEmpty) {
+			statusCode = http.StatusBadRequest
 		}
-		insertIdx := findSteerInsertPosition(wf.Messages)
-		wf.Messages = slices.Insert(wf.Messages, insertIdx, newMsg)
-	}); errUpdate != nil {
-		http.Error(w, "failed to save state", http.StatusInternalServerError)
+		http.Error(w, errSteer.Error(), statusCode)
 		return
 	}
 
-	s.notifyStateChange()
-
-	writeJSON(w, apiSteerResponse{Success: true, Message: "steering instruction added"})
+	writeJSON(w, apiSteerResponse(result))
 }
 
 func findSteerInsertPosition(messages []state.Message) int {
@@ -1763,20 +1949,13 @@ func (s *Server) handleAPITogglePin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if errToggle := s.togglePin(workspacePath); errToggle != nil {
-		http.Error(w, "failed to toggle pin", http.StatusInternalServerError)
+	result, errToggle := s.togglePinService(workspacePath)
+	if errToggle != nil {
+		http.Error(w, errToggle.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	s.invalidateWorkspaceScanCache()
-	s.notifyStateChange()
-
-	pinned := s.isPinned(workspacePath)
-
-	writeJSON(w, apiTogglePinResponse{
-		Pinned:  pinned,
-		Message: "pin toggled",
-	})
+	writeJSON(w, apiTogglePinResponse(result))
 }
 
 type apiOpenEditorResponse struct {

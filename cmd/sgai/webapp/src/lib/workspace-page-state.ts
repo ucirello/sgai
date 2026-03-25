@@ -1,18 +1,15 @@
 import { useSyncExternalStore } from "react";
-import type { ApiWorkspaceEntry } from "../types";
+import type { ApiWorkspaceEntry } from "@/types";
+import type { FetchStatus } from "./factory-state";
 
-export type { ApiWorkspaceEntry };
-
-export type FetchStatus = "idle" | "fetching" | "error";
-
-export interface FactoryStateSnapshot {
-  workspaces: ApiWorkspaceEntry[];
+interface WorkspacePageSnapshot {
+  workspace: ApiWorkspaceEntry | null;
   fetchStatus: FetchStatus;
   lastFetchedAt: number | null;
 }
 
-interface FactoryStateResponse {
-  workspaces: ApiWorkspaceEntry[] | null;
+interface SignalPayload {
+  workspace?: string;
 }
 
 type Listener = () => void;
@@ -21,12 +18,11 @@ const POLL_INTERVAL_MS = 3000;
 const SLOW_POLL_INTERVAL_MS = 10000;
 const SSE_BASE_BACKOFF_MS = 1000;
 const SSE_MAX_BACKOFF_MS = 30000;
-
 const DEBOUNCE_MS = 300;
 
-function createFactoryStateStore(removeStore: () => void) {
-  let snapshot: FactoryStateSnapshot = {
-    workspaces: [],
+function createWorkspacePageStore(workspaceName: string, removeStore: () => void) {
+  let snapshot: WorkspacePageSnapshot = {
+    workspace: null,
     fetchStatus: "idle",
     lastFetchedAt: null,
   };
@@ -40,6 +36,7 @@ function createFactoryStateStore(removeStore: () => void) {
   let isDestroyed = false;
   let isStarted = false;
   let refreshDebounceTimerId: ReturnType<typeof setTimeout> | null = null;
+  let refreshRequestedWhileFetching = false;
 
   function isDocumentHidden(): boolean {
     return typeof document !== "undefined" && document.visibilityState === "hidden";
@@ -59,36 +56,61 @@ function createFactoryStateStore(removeStore: () => void) {
     }
   }
 
-  function updateSnapshot(partial: Partial<FactoryStateSnapshot>) {
-    snapshot = { ...snapshot, ...partial };
+  function updateSnapshot(partial: Partial<WorkspacePageSnapshot>) {
+    const nextSnapshot = { ...snapshot, ...partial };
+    if (
+      nextSnapshot.workspace === snapshot.workspace
+      && nextSnapshot.fetchStatus === snapshot.fetchStatus
+      && nextSnapshot.lastFetchedAt === snapshot.lastFetchedAt
+    ) {
+      return;
+    }
+    snapshot = nextSnapshot;
     emitChange();
   }
 
   async function fetchState() {
-    if (isFetching || isDestroyed) return;
+    if (isDestroyed || !workspaceName) return;
+    if (isFetching) {
+      refreshRequestedWhileFetching = true;
+      return;
+    }
+
     isFetching = true;
-    updateSnapshot({ fetchStatus: "fetching" });
+    refreshRequestedWhileFetching = false;
+
+    if (snapshot.workspace === null) {
+      updateSnapshot({ fetchStatus: "fetching" });
+    }
 
     try {
-      const response = await fetch("/api/v1/workspaces");
+      const response = await fetch(
+        `/api/v1/workspaces/${encodeURIComponent(workspaceName)}/state`,
+      );
       if (isDestroyed) return;
       if (!response.ok) {
-        updateSnapshot({ fetchStatus: "error" });
+        updateSnapshot({ fetchStatus: snapshot.workspace === null ? "error" : "idle" });
         return;
       }
-      const data = (await response.json()) as FactoryStateResponse;
+
+      const data = (await response.json()) as ApiWorkspaceEntry;
       if (isDestroyed) return;
       updateSnapshot({
-        workspaces: data.workspaces ?? [],
+        workspace: data,
         fetchStatus: "idle",
         lastFetchedAt: Date.now(),
       });
     } catch {
       if (!isDestroyed) {
-        updateSnapshot({ fetchStatus: "error" });
+        updateSnapshot({ fetchStatus: snapshot.workspace === null ? "error" : "idle" });
       }
     } finally {
       isFetching = false;
+
+      if (refreshRequestedWhileFetching && !isDestroyed) {
+        refreshRequestedWhileFetching = false;
+        void fetchState();
+      }
     }
   }
 
@@ -97,7 +119,7 @@ function createFactoryStateStore(removeStore: () => void) {
       clearTimeout(pollTimerId);
       pollTimerId = null;
     }
-    if (isDestroyed || !shouldPoll()) return;
+    if (isDestroyed || !workspaceName || !shouldPoll()) return;
     pollTimerId = setTimeout(() => {
       pollTimerId = null;
       void fetchState();
@@ -134,8 +156,15 @@ function createFactoryStateStore(removeStore: () => void) {
     }, delay);
   }
 
+  function shouldRefreshForSignal(payload: SignalPayload): boolean {
+    if (!payload.workspace) {
+      return false;
+    }
+    return payload.workspace === workspaceName || payload.workspace === snapshot.workspace?.dir;
+  }
+
   function connectSSESignal() {
-    if (sseSource !== null || isDestroyed || typeof EventSource === "undefined") return;
+    if (sseSource !== null || isDestroyed || !workspaceName || typeof EventSource === "undefined") return;
 
     sseSource = new EventSource("/api/v1/signal");
 
@@ -153,17 +182,30 @@ function createFactoryStateStore(removeStore: () => void) {
       scheduleSSEReconnect();
     };
 
-    const handleReloadSignal = () => {
-      if (!isDestroyed) {
+    sseSource.addEventListener("reload", () => {
+      if (!isDestroyed && snapshot.workspace === null) {
         void fetchState();
       }
-    };
+    });
 
-    sseSource.addEventListener("reload", handleReloadSignal);
+    sseSource.addEventListener("workspace", (event) => {
+      if (isDestroyed) {
+        return;
+      }
+
+      try {
+        const payload = JSON.parse((event as MessageEvent<string>).data) as SignalPayload;
+        if (shouldRefreshForSignal(payload)) {
+          void fetchState();
+        }
+      } catch {
+        void fetchState();
+      }
+    });
   }
 
   function start() {
-    if (isStarted || isDestroyed) return;
+    if (isStarted || isDestroyed || !workspaceName) return;
     isStarted = true;
 
     void fetchState();
@@ -239,13 +281,13 @@ function createFactoryStateStore(removeStore: () => void) {
     };
   }
 
-  function getSnapshot(): FactoryStateSnapshot {
+  function getSnapshot(): WorkspacePageSnapshot {
     return snapshot;
   }
 
-  function getServerSnapshot(): FactoryStateSnapshot {
+  function getServerSnapshot(): WorkspacePageSnapshot {
     return {
-      workspaces: [],
+      workspace: null,
       fetchStatus: "idle",
       lastFetchedAt: null,
     };
@@ -260,41 +302,49 @@ function createFactoryStateStore(removeStore: () => void) {
   };
 }
 
-type FactoryStateStore = ReturnType<typeof createFactoryStateStore>;
+type WorkspacePageStore = ReturnType<typeof createWorkspacePageStore>;
 
-let storeInstance: FactoryStateStore | null = null;
+const storeInstances = new Map<string, WorkspacePageStore>();
 
-function getFactoryStateStore(): FactoryStateStore {
-  if (!storeInstance) {
-    let createdStore!: FactoryStateStore;
-    createdStore = createFactoryStateStore(() => {
-      if (storeInstance === createdStore) {
-        storeInstance = null;
-      }
-    });
-    storeInstance = createdStore;
+function normalizeWorkspaceName(workspaceName: string): string {
+  return workspaceName.trim();
+}
+
+function getWorkspacePageStore(workspaceName: string): WorkspacePageStore {
+  const normalizedName = normalizeWorkspaceName(workspaceName);
+  const existingStore = storeInstances.get(normalizedName);
+  if (existingStore) {
+    return existingStore;
   }
-  return storeInstance;
+
+  let createdStore!: WorkspacePageStore;
+  createdStore = createWorkspacePageStore(normalizedName, () => {
+    if (storeInstances.get(normalizedName) === createdStore) {
+      storeInstances.delete(normalizedName);
+    }
+  });
+  storeInstances.set(normalizedName, createdStore);
+  return createdStore;
 }
 
-export function resetFactoryStateStore(): void {
-  if (storeInstance) {
-    storeInstance.stop();
-    storeInstance = null;
+export function resetWorkspacePageStateStores(): void {
+  for (const store of Array.from(storeInstances.values())) {
+    store.stop();
   }
+  storeInstances.clear();
 }
 
-export function triggerFactoryRefresh(): void {
-  storeInstance?.triggerRefresh();
+export function triggerWorkspacePageRefresh(workspaceName: string): void {
+  const normalizedName = normalizeWorkspaceName(workspaceName);
+  const store = storeInstances.get(normalizedName);
+  if (!store) {
+    return;
+  }
+  store.triggerRefresh();
 }
 
-export function getFactoryStateSnapshot(): FactoryStateSnapshot {
-  const store = getFactoryStateStore();
-  return store.getSnapshot();
-}
-
-export function useFactoryState(): FactoryStateSnapshot {
-  const store = getFactoryStateStore();
+export function useWorkspacePageState(workspaceName: string): WorkspacePageSnapshot {
+  const store = getWorkspacePageStore(workspaceName);
   return useSyncExternalStore(
     store.subscribe,
     store.getSnapshot,

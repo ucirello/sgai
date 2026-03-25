@@ -224,7 +224,7 @@ func (s *Server) updateGoalService(workspacePath, content string) (updateGoalRes
 	s.svgCache.deleteFunc(func(k string) bool {
 		return strings.HasPrefix(k, prefix)
 	})
-	s.notifyStateChange()
+	s.notifyWorkspaceListChange(workspacePath)
 
 	return updateGoalResult{Updated: true, Workspace: filepath.Base(workspacePath)}, nil
 }
@@ -239,8 +239,7 @@ func (s *Server) togglePinService(workspacePath string) (togglePinResult, error)
 		return togglePinResult{}, fmt.Errorf("failed to toggle pin: %w", errToggle)
 	}
 
-	s.invalidateWorkspaceScanCache()
-	s.notifyStateChange()
+	s.notifyWorkspaceListChange(workspacePath)
 
 	return togglePinResult{Pinned: s.isPinned(workspacePath), Message: "pin toggled"}, nil
 }
@@ -286,7 +285,7 @@ func (s *Server) deleteMessageService(workspacePath string, messageID int) (dele
 		return deleteMessageResult{}, fmt.Errorf("failed to save workspace state: %w", errUpdate)
 	}
 
-	s.notifyStateChange()
+	s.notifyWorkspaceChangeAfterCoordinatorUpdate(workspacePath, coord)
 
 	return deleteMessageResult{Deleted: true, ID: messageID, Message: "message deleted successfully"}, nil
 }
