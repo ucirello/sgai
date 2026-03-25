@@ -1,8 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
 import { render, screen, waitFor, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import * as factoryStateModule from "@/lib/factory-state";
+import { api } from "@/lib/api";
+import * as markdownContentModule from "@/components/MarkdownContent";
+import * as useAdhocRunModule from "@/hooks/useAdhocRun";
 import { EventsTab } from "../EventsTab";
 
 const createAction = (overrides = {}) => ({
@@ -65,44 +69,18 @@ let mockFetchStatus = "idle";
 const mockActionRun = mock(() => Promise.resolve({ output: "", running: false }));
 const mockStartActionRun = mock(() => Promise.resolve());
 
-mock.module("@/lib/factory-state", () => ({
-  useFactoryState: () => ({
-    workspaces: mockWorkspaces,
-    fetchStatus: mockFetchStatus,
-    lastFetchedAt: Date.now(),
-  }),
-  triggerFactoryRefresh: mock(() => {}),
-}));
+const mockTriggerFactoryRefresh = mock(() => {});
+const mockOpenEditorGoal = mock(() => Promise.resolve({ opened: true }));
+const mockAdhoc = mock(() => Promise.resolve({ output: "", running: false }));
+const mockAdhocStatus = mock(() => Promise.resolve({ output: "", running: false }));
+const mockAdhocStop = mock(() => Promise.resolve({ output: "", running: false }));
+const mockModelsList = mock(() => Promise.resolve({ models: [], defaultModel: "" }));
 
-mock.module("@/lib/api", () => ({
-  api: {
-    workspaces: {
-      openEditorGoal: mock(() => Promise.resolve({ opened: true })),
-      adhoc: mock(() => Promise.resolve({ output: "", running: false })),
-      actionRun: mockActionRun,
-      adhocStatus: mock(() => Promise.resolve({ output: "", running: false })),
-      adhocStop: mock(() => Promise.resolve({ output: "", running: false })),
-    },
-    models: {
-      list: mock(() => Promise.resolve({ models: [], defaultModel: "" })),
-    },
-  },
-  ApiError: class ApiError extends Error {
-    constructor(public status: number, message: string) {
-      super(message);
-      this.name = "ApiError";
-    }
-  },
-}));
+const mockMarkdownContent = ({ content }: { content: string }) => (
+  <div data-testid="markdown-content">{content}</div>
+);
 
-mock.module("@/components/MarkdownContent", () => ({
-  MarkdownContent: ({ content }: { content: string }) => (
-    <div data-testid="markdown-content">{content}</div>
-  ),
-}));
-
-mock.module("@/hooks/useAdhocRun", () => ({
-  useAdhocRun: () => ({
+const mockUseAdhocRun = () => ({
     output: "",
     isRunning: false,
     runError: null,
@@ -122,8 +100,7 @@ mock.module("@/hooks/useAdhocRun", () => ({
     promptHistory: [],
     selectFromHistory: mock(() => {}),
     clearHistory: mock(() => {}),
-  }),
-}));
+  });
 
 function renderEventsTab(props = {}) {
   const defaultProps = {
@@ -143,6 +120,7 @@ function renderEventsTab(props = {}) {
 }
 
 afterEach(() => {
+  mock.restore();
   cleanup();
 });
 
@@ -152,6 +130,27 @@ describe("EventsTab", () => {
     mockFetchStatus = "idle";
     mockActionRun.mockClear();
     mockStartActionRun.mockClear();
+    mockTriggerFactoryRefresh.mockClear();
+    mockOpenEditorGoal.mockClear();
+    mockAdhoc.mockClear();
+    mockAdhocStatus.mockClear();
+    mockAdhocStop.mockClear();
+    mockModelsList.mockClear();
+
+    spyOn(factoryStateModule, "useFactoryState").mockImplementation(() => ({
+      workspaces: mockWorkspaces,
+      fetchStatus: mockFetchStatus,
+      lastFetchedAt: Date.now(),
+    }));
+    spyOn(factoryStateModule, "triggerFactoryRefresh").mockImplementation(() => mockTriggerFactoryRefresh());
+    spyOn(api.workspaces, "openEditorGoal").mockImplementation((...args) => mockOpenEditorGoal(...args));
+    spyOn(api.workspaces, "adhoc").mockImplementation((...args) => mockAdhoc(...args));
+    spyOn(api.workspaces, "actionRun").mockImplementation((...args) => mockActionRun(...args));
+    spyOn(api.workspaces, "adhocStatus").mockImplementation((...args) => mockAdhocStatus(...args));
+    spyOn(api.workspaces, "adhocStop").mockImplementation((...args) => mockAdhocStop(...args));
+    spyOn(api.models, "list").mockImplementation((...args) => mockModelsList(...args));
+    spyOn(markdownContentModule, "MarkdownContent").mockImplementation((...args) => mockMarkdownContent(...args));
+    spyOn(useAdhocRunModule, "useAdhocRun").mockImplementation((...args) => mockUseAdhocRun(...args));
   });
 
   describe("event rendering", () => {

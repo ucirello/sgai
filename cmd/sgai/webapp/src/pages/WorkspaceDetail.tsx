@@ -3,7 +3,9 @@ import { useParams, Link, useNavigate, useSearchParams } from "react-router";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { FocusableTooltipText } from "@/components/FocusableTooltipText";
 import {
   AlertDialog,
   AlertDialogTrigger,
@@ -26,12 +28,14 @@ import { ChevronRight, Square } from "lucide-react";
 import type { ApiWorkspaceEntry, ApiActionEntry } from "@/types";
 import { cn } from "@/lib/utils";
 import {
+  buildWorkspaceGoalEditPath,
   buildWorkspaceNameDisambiguators,
   buildWorkspacePath,
   getWorkspaceDirFromSearchParams,
   getWorkspaceDisplayLabel,
   isSameWorkspace,
   resolveWorkspaceByIdentity,
+  resolveWorkspaceByExactRoutedName,
 } from "@/lib/workspace-identity";
 
 const SessionTab = lazy(() => import("./tabs/SessionTab").then((m) => ({ default: m.SessionTab })));
@@ -184,10 +188,20 @@ export function WorkspaceDetail(): JSX.Element | null {
   }, [workspaces]);
 
   const detail = useMemo(() => {
-    return resolveWorkspaceByIdentity(workspaces, workspaceName, workspaceDir);
+    if (workspaceDir) {
+      return resolveWorkspaceByIdentity(workspaces, workspaceName, workspaceDir);
+    }
+
+    return resolveWorkspaceByExactRoutedName(workspaces, workspaceName);
   }, [workspaceDir, workspaceName, workspaces]);
   const loading = fetchStatus === "fetching" && detail === null;
-  const error: Error | null = fetchStatus === "error" && detail === null ? new Error("Failed to load workspace state") : null;
+  const isAmbiguousWorkspaceRoute = !workspaceDir && !workspaceName.includes("/")
+    && workspaces.filter((workspace) => workspace.name === workspaceName).length > 1;
+  const routeError = fetchStatus === "error"
+    ? "Failed to load workspace state"
+    : isAmbiguousWorkspaceRoute
+      ? "Workspace route is ambiguous. Open the routed workspace link for this repository."
+      : "Workspace not found.";
 
   useEffect(() => {
     if (previousWorkspaceRef.current !== workspaceRouteKey) {
@@ -260,22 +274,13 @@ export function WorkspaceDetail(): JSX.Element | null {
 
   if (loading && !detail) return <WorkspaceDetailSkeleton />;
 
-  if (error) {
-    if (error.message.toLowerCase().includes("workspace not found")) {
-      return null;
-    }
-    return (
-      <p className="text-sm text-destructive">
-        Failed to load workspace: {error.message}
-      </p>
-    );
+  if (!detail) {
+    return <WorkspaceRouteErrorState message={routeError} />;
   }
-
-  if (!detail) return null;
 
   const detailLabel = getWorkspaceDisplayLabel(detail, workspaceNameDisambiguators);
   if (!detail.hasSgai && !detail.isRoot) {
-    return <NoWorkspaceState label={detailLabel} name={detail.name} dir={detail.dir} />;
+    return <NoWorkspaceState label={detailLabel} goalEditPath={buildWorkspaceGoalEditPath(detail, workspaces)} dir={detail.dir} />;
   }
 
   const parentRoot = detail.isFork
@@ -300,6 +305,7 @@ export function WorkspaceDetail(): JSX.Element | null {
   const encodedWorkspace = encodeURIComponent(detail.name);
   const selfDriveLabel = effectiveRunning ? "Self-Drive" : "Self-drive";
   const showEditGoalAction = !effectiveRunning || detail.hasSgai || Boolean(detail.goalContent?.trim());
+  const goalEditPath = buildWorkspaceGoalEditPath(detail, workspaces);
   const showOpenEditorAction = true;
   const isActionDisabled = effectiveRunning || isStartStopPending || isSelfDrivePending || isResetPending;
   const isResetActionDisabled = isResetPending || isStartStopPending || isSelfDrivePending;
@@ -426,24 +432,25 @@ export function WorkspaceDetail(): JSX.Element | null {
       <div className="sticky top-0 z-10 bg-background">
         <header className="flex flex-wrap items-start gap-3 mb-3 pb-3 border-b">
           <div className="flex-shrink min-w-0 max-w-fit">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <h3 className="m-0 text-xl font-semibold whitespace-nowrap overflow-hidden text-ellipsis">
-                  {detailLabel}
-                </h3>
-              </TooltipTrigger>
-              <TooltipContent>
-                <div className="max-w-xs">
-                  <div className="font-medium">{detailLabel}</div>
-                  {detailLabel !== detail.name && (
-                    <div className="text-xs text-muted-foreground mt-1">Name: {detail.name}</div>
-                  )}
-                  {!detail.isFork && (
-                    <div className="text-xs text-muted-foreground mt-1">{detail.dir}</div>
-                  )}
-                </div>
-              </TooltipContent>
-            </Tooltip>
+            <h3 className="m-0 text-xl font-semibold">
+              <FocusableTooltipText
+                as="span"
+                className="whitespace-nowrap overflow-hidden text-ellipsis"
+                content={(
+                  <div className="max-w-xs">
+                    <div className="font-medium">{detailLabel}</div>
+                    {detailLabel !== detail.name && (
+                      <div className="text-xs text-muted-foreground mt-1">Name: {detail.name}</div>
+                    )}
+                    {!detail.isFork && (
+                      <div className="text-xs text-muted-foreground mt-1">{detail.dir}</div>
+                    )}
+                  </div>
+                )}
+              >
+                {detailLabel}
+              </FocusableTooltipText>
+            </h3>
           </div>
 
           {!isForkedRoot && (
@@ -606,7 +613,7 @@ export function WorkspaceDetail(): JSX.Element | null {
                       type="button"
                       size="sm"
                       variant="outline"
-                      onClick={() => navigate(buildWorkspacePath(detail, "goal/edit"))}
+                      onClick={() => navigate(goalEditPath)}
                     >
                       Edit GOAL
                     </Button>
@@ -671,7 +678,7 @@ export function WorkspaceDetail(): JSX.Element | null {
             {agentModelLabel && (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Badge variant="secondary" className="font-mono">
+                  <Badge variant="secondary" className="font-mono" tabIndex={0}>
                     {agentModelLabel}
                   </Badge>
                 </TooltipTrigger>
@@ -679,14 +686,9 @@ export function WorkspaceDetail(): JSX.Element | null {
               </Tooltip>
             )}
             {statusLine && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="text-sm text-muted-foreground truncate max-w-[320px] md:max-w-[520px]">
-                    {statusLine}
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>{statusLine}</TooltipContent>
-              </Tooltip>
+              <FocusableTooltipText as="span" className="text-sm text-muted-foreground max-w-[320px] md:max-w-[520px]">
+                {statusLine}
+              </FocusableTooltipText>
             )}
           </div>
         )}
@@ -839,7 +841,7 @@ function TabContent({
   }
 }
 
-function NoWorkspaceState({ label, name, dir }: { label: string; name: string; dir: string }) {
+function NoWorkspaceState({ label, goalEditPath, dir }: { label: string; goalEditPath: string; dir: string }) {
   return (
     <div>
       <div className="sticky top-0 z-10 bg-background">
@@ -850,13 +852,18 @@ function NoWorkspaceState({ label, name, dir }: { label: string; name: string; d
       </div>
       <div className="text-center py-8 text-muted-foreground italic">
         <p>No workspace configured for this directory.</p>
-        <Link
-          to={buildWorkspacePath({ name, dir }, "goal/edit")}
-          className="inline-block mt-4 px-4 py-2 text-sm rounded border hover:bg-muted transition-colors no-underline"
-        >
-          Edit GOAL
-        </Link>
+        <Button asChild variant="outline" className="mt-4 not-italic">
+          <Link to={goalEditPath}>Edit GOAL</Link>
+        </Button>
       </div>
     </div>
+  );
+}
+
+function WorkspaceRouteErrorState({ message }: { message: string }) {
+  return (
+    <Alert className="max-w-2xl">
+      <AlertDescription>{message}</AlertDescription>
+    </Alert>
   );
 }

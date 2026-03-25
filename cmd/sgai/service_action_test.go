@@ -12,7 +12,7 @@ import (
 
 func TestActionRunServicePromptAction(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "prompt-action-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "prompt-action-ws")
 	writeActionTestConfig(t, wsDir, projectConfig{
 		Actions: []actionConfig{{
 			Name:   "Summarize",
@@ -41,7 +41,7 @@ func TestActionRunServicePromptAction(t *testing.T) {
 
 func TestActionRunServiceScriptAction(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "script-action-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "script-action-ws")
 	writeActionTestConfig(t, wsDir, projectConfig{
 		Actions: []actionConfig{{
 			Name:   "Print",
@@ -69,7 +69,7 @@ func TestActionRunServiceScriptAction(t *testing.T) {
 
 func TestActionRunServiceScriptActionPreservesBackslashes(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "script-action-backslashes-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "script-action-backslashes-ws")
 	writeActionTestConfig(t, wsDir, projectConfig{
 		Actions: []actionConfig{{
 			Name:   "Print",
@@ -90,7 +90,7 @@ func TestActionRunServiceScriptActionPreservesBackslashes(t *testing.T) {
 
 func TestActionRunServiceRejectsInvalidActionAtRunTime(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "invalid-action-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "invalid-action-ws")
 	writeActionTestConfig(t, wsDir, projectConfig{
 		Actions: []actionConfig{{
 			Name:   "Broken",
@@ -107,7 +107,7 @@ func TestActionRunServiceRejectsInvalidActionAtRunTime(t *testing.T) {
 
 func TestActionRunServiceRejectsDuplicateActionNames(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "duplicate-action-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "duplicate-action-ws")
 	writeActionTestConfig(t, wsDir, projectConfig{
 		Actions: []actionConfig{
 			{
@@ -129,7 +129,7 @@ func TestActionRunServiceRejectsDuplicateActionNames(t *testing.T) {
 
 func TestActionRunServicePropagatesConfigLoadErrors(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "broken-config-action-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "broken-config-action-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, configFileName), []byte("not valid json"), 0o644))
 
 	result := server.actionRunService(wsDir, "Anything", nil)
@@ -139,7 +139,7 @@ func TestActionRunServicePropagatesConfigLoadErrors(t *testing.T) {
 
 func TestActionRunServiceRejectsMissingVariables(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "missing-vars-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "missing-vars-ws")
 	writeActionTestConfig(t, wsDir, projectConfig{
 		Actions: []actionConfig{{
 			Name:   "Summarize",
@@ -155,7 +155,7 @@ func TestActionRunServiceRejectsMissingVariables(t *testing.T) {
 
 func TestActionRunServiceRejectsShellOperators(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "shell-operator-action-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "shell-operator-action-ws")
 	writeActionTestConfig(t, wsDir, projectConfig{
 		Actions: []actionConfig{{
 			Name:   "Broken",
@@ -171,7 +171,7 @@ func TestActionRunServiceRejectsShellOperators(t *testing.T) {
 
 func TestActionRunServiceRejectsInvalidRenderedCommand(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "rendered-shell-operator-action-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "rendered-shell-operator-action-ws")
 	writeActionTestConfig(t, wsDir, projectConfig{
 		Actions: []actionConfig{{
 			Name:   "Print",
@@ -194,7 +194,7 @@ func TestActionRunServiceRejectsInvalidRenderedCommand(t *testing.T) {
 
 func TestHandleAPIActionRunInvalidBody(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "api-action-run-ws")
+	setupTestWorkspace(t, server, rootDir, "api-action-run-ws")
 
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/api-action-run-ws/actions/run", "{bad}")
 	assert.Equal(t, 400, w.Code)
@@ -202,7 +202,7 @@ func TestHandleAPIActionRunInvalidBody(t *testing.T) {
 
 func TestHandleAPIActionRunMissingName(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "api-action-run-name-ws")
+	setupTestWorkspace(t, server, rootDir, "api-action-run-name-ws")
 
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/api-action-run-name-ws/actions/run", `{"variables":{"Name":"Ada"}}`)
 	assert.Equal(t, 400, w.Code)
@@ -210,7 +210,7 @@ func TestHandleAPIActionRunMissingName(t *testing.T) {
 
 func TestHandleAPIActionRunPropagatesConfigLoadErrors(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "api-action-run-config-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "api-action-run-config-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, configFileName), []byte("not valid json"), 0o644))
 
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/api-action-run-config-ws/actions/run", `{"name":"Anything"}`)

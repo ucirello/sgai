@@ -58,6 +58,8 @@ Then scan the "All Agents" section (from the continuation message) and request r
 - Request language specific reviewers according to the their technological expertise (Go, Typescript, Shell etc).
 - Request `stpa-analyst` only when the work touched externally controlled inputs, filesystem effects, concurrency, control-flow safety, message bus behavior, or other hazard-relevant changes.
 - If a domain has no concrete change evidence, do not request that report just because the agent exists.
+- Treat browser-visible acceptance criteria as frontend-domain evidence even when the underlying implementation first appears backend-heavy. If GOAL.md, PROJECT_MANAGEMENT.md, the coordinator request, reviewer evidence, or browser/Playwright verification mentions user-visible pages, routes, links, forms, or navigation behavior, request `react-reviewer`.
+- Do not rely on changed-file language alone when a live browser-visible requirement can still fail in the UI; reviewer targeting must follow acceptance behavior, not just implementation ownership.
 
 Log both the changed domains and the requested quality report targets, including any reviewer targets you intentionally skipped.
 

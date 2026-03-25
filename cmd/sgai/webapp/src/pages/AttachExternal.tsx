@@ -5,7 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { api, ApiError } from "@/lib/api";
-import { triggerFactoryRefresh } from "@/lib/factory-state";
+import { triggerFactoryRefresh, useFactoryState } from "@/lib/factory-state";
+import { buildWorkspaceGoalEditPath } from "@/lib/workspace-identity";
 import { ArrowLeft, FolderInput, Loader2 } from "lucide-react";
 import { Link } from "react-router";
 import { cn } from "@/lib/utils";
@@ -46,6 +47,7 @@ function getBrowseErrorMessage(error: unknown) {
 
 export function AttachExternal() {
   const navigate = useNavigate();
+  const { workspaces } = useFactoryState();
   const [path, setPath] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -177,7 +179,7 @@ export function AttachExternal() {
       try {
         const result = await api.workspaces.attach(validation.trimmedPath);
         triggerFactoryRefresh();
-        navigate(`/workspaces/${encodeURIComponent(result.name)}/goal/edit`);
+        navigate(buildWorkspaceGoalEditPath(result, [...workspaces.filter((workspace) => workspace.dir !== result.dir), result]));
       } catch (err) {
         if (err instanceof ApiError) {
           setError(err.message);
@@ -188,7 +190,7 @@ export function AttachExternal() {
         setIsSubmitting(false);
       }
     },
-    [path, isSubmitting, navigate],
+    [path, isSubmitting, navigate, workspaces],
   );
 
   const handleBlur = useCallback((e: React.FocusEvent) => {

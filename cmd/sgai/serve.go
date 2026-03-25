@@ -582,7 +582,7 @@ func cmdServe(args []string) {
 
 	mux := http.NewServeMux()
 	srv.registerAPIRoutes(mux)
-	mux.Handle("/mcp/external", buildExternalMCPHandler())
+	mux.Handle("/mcp/external", buildExternalMCPHandler(srv))
 	handler := srv.spaMiddleware(mux)
 
 	httpServer := &http.Server{Handler: handler}
@@ -960,6 +960,7 @@ func getLastActivityTime(progress []state.ProgressEntry) string {
 type workspaceInfo struct {
 	Directory    string
 	DirName      string
+	Kind         workspaceKind
 	IsRoot       bool
 	Running      bool
 	NeedsInput   bool
@@ -1007,9 +1008,6 @@ func classifyWorkspace(dir string) workspaceKind {
 	if count > 1 {
 		return workspaceRoot
 	}
-	if hasHistoricalWorkspaceChildren(dir) {
-		return workspaceRoot
-	}
 	return workspaceStandalone
 }
 
@@ -1025,46 +1023,6 @@ func workspaceCount(dir string) (int, error) {
 		return 0, nil
 	}
 	return len(strings.Split(trimmed, "\n")), nil
-}
-
-func hasHistoricalWorkspaceChildren(dir string) bool {
-	cmd := exec.Command("jj", "op", "log")
-	cmd.Dir = dir
-	output, errOutput := cmd.Output()
-	if errOutput != nil {
-		return false
-	}
-	for _, line := range strings.Split(string(output), "\n") {
-		if historicalWorkspaceName(line, "add workspace '") != "" {
-			return true
-		}
-		if historicalWorkspaceName(line, "create initial working-copy commit in workspace ") != "" {
-			return true
-		}
-		if historicalWorkspaceName(line, "forget workspace ") != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func historicalWorkspaceName(line, prefix string) string {
-	idx := strings.Index(line, prefix)
-	if idx == -1 {
-		return ""
-	}
-	name := strings.TrimSpace(line[idx+len(prefix):])
-	if strings.HasPrefix(prefix, "add workspace '") {
-		endIdx := strings.Index(name, "'")
-		if endIdx == -1 {
-			return ""
-		}
-		name = name[:endIdx]
-	}
-	if name == "" || name == "default" {
-		return ""
-	}
-	return name
 }
 
 func (s *Server) classifyWorkspaceCached(dir string) workspaceKind {
@@ -1170,7 +1128,7 @@ func (s *Server) getWorkspaceStatus(dir string) (running bool, needsInput bool) 
 	return running, needsInput
 }
 
-func (s *Server) createWorkspaceInfo(dir, dirName string, isRoot, hasWorkspace, external bool) workspaceInfo {
+func (s *Server) createWorkspaceInfo(dir, dirName string, kind workspaceKind, hasWorkspace, external bool) workspaceInfo {
 	running, needsInput := s.getWorkspaceStatus(dir)
 	pinned := s.isPinned(dir)
 	inProgress := running || needsInput || s.wasEverStarted(dir) || pinned
@@ -1178,7 +1136,8 @@ func (s *Server) createWorkspaceInfo(dir, dirName string, isRoot, hasWorkspace, 
 	return workspaceInfo{
 		Directory:    dir,
 		DirName:      dirName,
-		IsRoot:       isRoot,
+		Kind:         kind,
+		IsRoot:       kind == workspaceRoot,
 		Running:      running,
 		NeedsInput:   needsInput,
 		InProgress:   inProgress,
@@ -1341,7 +1300,7 @@ func (s *Server) groupAttachedWorkspaces(attached []scannedAttachedWorkspace) []
 			continue
 		}
 		rootMap[ws.resolvedDir] = &workspaceGroup{
-			Root: s.createWorkspaceInfo(ws.directory, ws.dirName, true, ws.hasWorkspace, true),
+			Root: s.createWorkspaceInfo(ws.directory, ws.dirName, ws.kind, ws.hasWorkspace, true),
 		}
 	}
 
@@ -1350,21 +1309,21 @@ func (s *Server) groupAttachedWorkspaces(attached []scannedAttachedWorkspace) []
 		case workspaceFork:
 			if ws.rootDir == "" {
 				standaloneGroups = append(standaloneGroups, workspaceGroup{
-					Root: s.createWorkspaceInfo(ws.directory, ws.dirName, false, ws.hasWorkspace, true),
+					Root: s.createWorkspaceInfo(ws.directory, ws.dirName, ws.kind, ws.hasWorkspace, true),
 				})
 				continue
 			}
 			grp, exists := rootMap[ws.rootDir]
 			if !exists {
 				standaloneGroups = append(standaloneGroups, workspaceGroup{
-					Root: s.createWorkspaceInfo(ws.directory, ws.dirName, false, ws.hasWorkspace, true),
+					Root: s.createWorkspaceInfo(ws.directory, ws.dirName, ws.kind, ws.hasWorkspace, true),
 				})
 				continue
 			}
-			grp.Forks = append(grp.Forks, s.createWorkspaceInfo(ws.directory, ws.dirName, false, ws.hasWorkspace, true))
+			grp.Forks = append(grp.Forks, s.createWorkspaceInfo(ws.directory, ws.dirName, ws.kind, ws.hasWorkspace, true))
 		case workspaceStandalone:
 			standaloneGroups = append(standaloneGroups, workspaceGroup{
-				Root: s.createWorkspaceInfo(ws.directory, ws.dirName, false, ws.hasWorkspace, true),
+				Root: s.createWorkspaceInfo(ws.directory, ws.dirName, ws.kind, ws.hasWorkspace, true),
 			})
 		}
 	}
@@ -1429,6 +1388,104 @@ func (s *Server) resolveWorkspaceNameToPath(workspaceName string) string {
 	return paths[0]
 }
 
+func splitWorkspacePathSegments(path string) []string {
+	return strings.FieldsFunc(path, func(r rune) bool {
+		return r == '/' || r == '\\'
+	})
+}
+
+func workspaceInfos(groups []workspaceGroup) []workspaceInfo {
+	var workspaces []workspaceInfo
+	for _, group := range groups {
+		workspaces = append(workspaces, group.Root)
+		workspaces = append(workspaces, group.Forks...)
+	}
+	return workspaces
+}
+
+func buildWorkspaceRouteDisambiguators(workspaces []workspaceInfo) map[string]string {
+	type workspaceSegments struct {
+		dir      string
+		segments []string
+	}
+
+	parentSegments := make([]workspaceSegments, 0, len(workspaces))
+	maxDepth := 0
+	for _, workspace := range workspaces {
+		segments := splitWorkspacePathSegments(workspace.Directory)
+		if len(segments) > 0 {
+			segments = segments[:len(segments)-1]
+		}
+		parentSegments = append(parentSegments, workspaceSegments{dir: workspace.Directory, segments: segments})
+		maxDepth = max(maxDepth, len(segments))
+	}
+
+	disambiguators := make(map[string]string, len(parentSegments))
+	for _, current := range parentSegments {
+		resolved := current.dir
+		for depth := 1; depth <= max(maxDepth, 1); depth++ {
+			currentStart := max(0, len(current.segments)-depth)
+			candidate := strings.Join(current.segments[currentStart:], "/")
+			normalizedCandidate := candidate
+			if normalizedCandidate == "" {
+				normalizedCandidate = current.dir
+			}
+
+			isUnique := true
+			for _, other := range parentSegments {
+				if other.dir == current.dir {
+					continue
+				}
+				otherStart := max(0, len(other.segments)-depth)
+				otherCandidate := strings.Join(other.segments[otherStart:], "/")
+				if otherCandidate == "" {
+					otherCandidate = other.dir
+				}
+				if otherCandidate == normalizedCandidate {
+					isUnique = false
+					break
+				}
+			}
+
+			if isUnique {
+				resolved = normalizedCandidate
+				break
+			}
+		}
+		disambiguators[current.dir] = resolved
+	}
+
+	return disambiguators
+}
+
+func buildWorkspaceRoutedNames(workspaces []workspaceInfo) map[string]string {
+	grouped := make(map[string][]workspaceInfo)
+	for _, workspace := range workspaces {
+		grouped[workspace.DirName] = append(grouped[workspace.DirName], workspace)
+	}
+
+	routedNames := make(map[string]string, len(workspaces))
+	for workspaceName, group := range grouped {
+		if len(group) < 2 {
+			for _, workspace := range group {
+				routedNames[workspace.Directory] = workspaceName
+			}
+			continue
+		}
+
+		disambiguators := buildWorkspaceRouteDisambiguators(group)
+		for _, workspace := range group {
+			disambiguator := disambiguators[workspace.Directory]
+			if disambiguator == "" {
+				disambiguator = workspace.Directory
+			}
+			routedNames[workspace.Directory] = disambiguator + "/" + workspace.DirName
+		}
+	}
+
+	return routedNames
+}
+
 func (s *Server) resolveWorkspaceNameToPaths(workspaceName string) []string {
 	if workspaceName == "" {
 		return nil
@@ -1439,15 +1496,21 @@ func (s *Server) resolveWorkspaceNameToPaths(workspaceName string) []string {
 		return nil
 	}
 
+	workspaces := workspaceInfos(groups)
 	var paths []string
-	for _, grp := range groups {
-		if grp.Root.DirName == workspaceName {
-			paths = append(paths, grp.Root.Directory)
+	for _, workspace := range workspaces {
+		if workspace.DirName == workspaceName {
+			paths = append(paths, workspace.Directory)
 		}
-		for _, fork := range grp.Forks {
-			if fork.DirName == workspaceName {
-				paths = append(paths, fork.Directory)
-			}
+	}
+	if len(paths) > 0 {
+		return paths
+	}
+
+	routedNames := buildWorkspaceRoutedNames(workspaces)
+	for _, workspace := range workspaces {
+		if routedNames[workspace.Directory] == workspaceName {
+			return []string{workspace.Directory}
 		}
 	}
 

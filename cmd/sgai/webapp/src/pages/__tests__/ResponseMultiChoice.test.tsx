@@ -1,8 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
 import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import * as factoryStateModule from "@/lib/factory-state";
+import { api } from "@/lib/api";
+import * as markdownEditorModule from "@/components/MarkdownEditor";
 import { ResponseMultiChoice } from "../ResponseMultiChoice";
 import { ResponseModal } from "../ResponseModal";
 
@@ -75,41 +78,16 @@ const mockWorkspace = {
 const mockRespond = mock(() => Promise.resolve({ success: true, message: "Response submitted" }));
 const mockTriggerFactoryRefresh = mock(() => {});
 
-mock.module("@/lib/factory-state", () => ({
-  useFactoryState: () => ({
-    workspaces: [mockWorkspace],
-    fetchStatus: "idle",
-    lastFetchedAt: Date.now(),
-  }),
-  triggerFactoryRefresh: mockTriggerFactoryRefresh,
-}));
-
-mock.module("@/lib/api", () => ({
-  api: {
-    workspaces: {
-      respond: mockRespond,
-    },
-  },
-  ApiError: class ApiError extends Error {
-    constructor(public status: number, message: string) {
-      super(message);
-      this.name = "ApiError";
-    }
-  },
-}));
-
-mock.module("@/components/MarkdownEditor", () => ({
-  MarkdownEditor: ({ value, onChange, disabled }: { value: string; onChange: (v: string) => void; disabled: boolean }) => (
-    <div data-testid="markdown-editor">
-      <textarea
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        disabled={disabled}
-        data-testid="markdown-textarea"
-      />
-    </div>
-  ),
-}));
+const mockMarkdownEditor = ({ value, onChange, disabled }: { value: string; onChange: (v: string) => void; disabled: boolean }) => (
+  <div data-testid="markdown-editor">
+    <textarea
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={disabled}
+      data-testid="markdown-textarea"
+    />
+  </div>
+);
 
 function renderResponseMultiChoice(workspaceName = "test-workspace") {
   return render(
@@ -143,9 +121,19 @@ describe("ResponseMultiChoice", () => {
     sessionStorage.clear();
     mockRespond.mockClear();
     mockTriggerFactoryRefresh.mockClear();
+
+    spyOn(factoryStateModule, "useFactoryState").mockImplementation(() => ({
+      workspaces: [mockWorkspace],
+      fetchStatus: "idle",
+      lastFetchedAt: Date.now(),
+    }));
+    spyOn(factoryStateModule, "triggerFactoryRefresh").mockImplementation(() => mockTriggerFactoryRefresh());
+    spyOn(api.workspaces, "respond").mockImplementation((...args) => mockRespond(...args));
+    spyOn(markdownEditorModule, "MarkdownEditor").mockImplementation((...args) => mockMarkdownEditor(...args));
   });
 
   afterEach(() => {
+    mock.restore();
     cleanup();
   });
 

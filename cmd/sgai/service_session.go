@@ -13,7 +13,10 @@ import (
 	"github.com/sandgardenhq/sgai/pkg/state"
 )
 
-var errRootWorkspaceCannotStart = errors.New("root workspace cannot start agentic work")
+var (
+	errRootWorkspaceCannotStart = errors.New("root workspace cannot start agentic work")
+	errSessionResetWhileRunning = errors.New("cannot reset while session is running")
+)
 
 type startSessionResult2 struct {
 	Name           string
@@ -183,6 +186,44 @@ func (s *Server) stopSessionService(workspacePath string) stopSessionResult {
 		Running: false,
 		Message: message,
 	}
+}
+
+type resetSessionResult struct {
+	Name    string
+	Status  string
+	Running bool
+	Message string
+}
+
+func (s *Server) resetSessionService(workspacePath string) (resetSessionResult, error) {
+	s.mu.Lock()
+	sess := s.sessions[workspacePath]
+	s.mu.Unlock()
+
+	if sess != nil {
+		sess.mu.Lock()
+		running := sess.running
+		sess.mu.Unlock()
+		if running {
+			return resetSessionResult{}, errSessionResetWhileRunning
+		}
+	}
+
+	coord := s.workspaceCoordinator(workspacePath)
+	if errUpdate := coord.UpdateState(func(wf *state.Workflow) {
+		wf.Status = state.StatusComplete
+	}); errUpdate != nil {
+		return resetSessionResult{}, fmt.Errorf("failed to reset state: %w", errUpdate)
+	}
+
+	s.notifyStateChange()
+
+	return resetSessionResult{
+		Name:    filepath.Base(workspacePath),
+		Status:  state.StatusComplete,
+		Running: false,
+		Message: "session reset successfully",
+	}, nil
 }
 
 type respondResult struct {

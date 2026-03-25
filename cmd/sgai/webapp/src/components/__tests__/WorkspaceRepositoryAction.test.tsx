@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { api } from "@/lib/api";
 import { WorkspaceRepositoryAction } from "../WorkspaceRepositoryAction";
 import type {
   ApiRepositoryAction,
@@ -12,14 +13,6 @@ import type {
 } from "@/types";
 
 const mockDeleteWorkspace = mock(() => Promise.resolve({ deleted: true }));
-
-mock.module("@/lib/api", () => ({
-  api: {
-    workspaces: {
-      deleteWorkspace: mockDeleteWorkspace,
-    },
-  },
-}));
 
 function createRepositoryAction(overrides: Partial<ApiRepositoryAction> = {}): ApiRepositoryAction {
   const action: ApiRepositoryAction = {
@@ -150,6 +143,11 @@ describe("WorkspaceRepositoryAction", () => {
     cleanup();
     document.body.style.pointerEvents = "auto";
     mockDeleteWorkspace.mockClear();
+    spyOn(api.workspaces, "deleteWorkspace").mockImplementation((...args) => mockDeleteWorkspace(...args));
+  });
+
+  afterEach(() => {
+    mock.restore();
   });
 
   it("describes only backend-allowed chooser operations", async () => {

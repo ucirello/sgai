@@ -272,8 +272,10 @@ export function MarkdownEditor({
     onSubmitShortcutRef.current = onSubmitShortcut;
   }, [onSubmitShortcut]);
 
+  const hasSubmitShortcut = Boolean(onSubmitShortcut);
+
   useEffect(() => {
-    if (!onSubmitShortcut) {
+    if (!hasSubmitShortcut) {
       return;
     }
 
@@ -306,7 +308,7 @@ export function MarkdownEditor({
     return () => {
       window.removeEventListener("keydown", handleSubmitShortcut, true);
     };
-  }, [onSubmitShortcut]);
+  }, [hasSubmitShortcut]);
 
   useEffect(() => {
     const container = containerRef.current;

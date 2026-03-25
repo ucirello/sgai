@@ -585,7 +585,7 @@ func TestRespondViaCoordinatorServiceRejectsStalePromptToken(t *testing.T) {
 
 func TestHandleRespondViaCoordinatorNoQuestion(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "respond-noq")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "respond-noq")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
@@ -605,7 +605,7 @@ func TestHandleRespondViaCoordinatorNoQuestion(t *testing.T) {
 
 func TestRespondViaCoordinatorEmptyResponse(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "respond-empty")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "respond-empty")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
@@ -630,7 +630,7 @@ func TestRespondViaCoordinatorEmptyResponse(t *testing.T) {
 
 func TestRespondViaCoordinatorWorkGateApproval(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "respond-gate")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "respond-gate")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
@@ -659,7 +659,7 @@ func TestRespondViaCoordinatorWorkGateApproval(t *testing.T) {
 
 func TestStopSessionServiceRunningSession(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	server.mu.Lock()
 	server.sessions[wsDir] = &session{running: true}
 	server.mu.Unlock()
@@ -670,7 +670,7 @@ func TestStopSessionServiceRunningSession(t *testing.T) {
 
 func TestRespondServiceNoSession(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{
 		HumanMessage: "What?",
@@ -682,7 +682,7 @@ func TestRespondServiceNoSession(t *testing.T) {
 
 func TestSteerServiceSuccessful(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{})
 	require.NoError(t, errCoord)
@@ -693,21 +693,21 @@ func TestSteerServiceSuccessful(t *testing.T) {
 
 func TestSteerServiceEmptyMessageFails(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	_, errSteer := server.steerService(wsDir, "  ")
 	assert.Error(t, errSteer)
 }
 
 func TestStopSessionServiceNotRunning(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	result := server.stopSessionService(wsDir)
 	assert.False(t, result.Running)
 }
 
 func TestRespondServiceInvalidBody(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	_, err := server.respondService(wsDir, "test response", "", nil)
 	assert.Error(t, err)
 }

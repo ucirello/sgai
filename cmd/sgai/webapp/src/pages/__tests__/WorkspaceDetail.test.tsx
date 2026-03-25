@@ -1,9 +1,15 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
 import { act, render, screen, waitFor, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route, createMemoryRouter, RouterProvider } from "react-router";
+import * as ReactRouter from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider } from "@/components/ui/sidebar";
+import * as factoryStateModule from "@/lib/factory-state";
+import { api } from "@/lib/api";
+import * as useAdhocRunModule from "@/hooks/useAdhocRun";
+import * as mobileModule from "@/hooks/use-mobile";
+import * as markdownEditorModule from "@/components/MarkdownEditor";
 import { WorkspaceDetail } from "../WorkspaceDetail";
 
 function deferredValue<T>() {
@@ -204,44 +210,7 @@ const mockActionRunState = {
   runError: null as string | null,
 };
 
-mock.module("react-router", () => ({
-  ...require("react-router"),
-  useNavigate: () => mockNavigate,
-}));
-
-mock.module("@/lib/factory-state", () => ({
-  useFactoryState: () => ({
-    workspaces: mockWorkspaces,
-    fetchStatus: mockFetchStatus,
-    lastFetchedAt: Date.now(),
-  }),
-  triggerFactoryRefresh: mockTriggerFactoryRefresh,
-}));
-
-mock.module("@/lib/api", () => ({
-  api: {
-    workspaces: {
-      start: mockStart,
-      stop: mockStop,
-      togglePin: mockTogglePin,
-      openEditor: mockOpenEditor,
-      deleteWorkspace: mockDeleteWorkspace,
-      forkTemplate: mockForkTemplate,
-      fork: mockFork,
-      respond: mockRespond,
-      reset: mockReset,
-    },
-  },
-  ApiError: class ApiError extends Error {
-    constructor(public status: number, message: string) {
-      super(message);
-      this.name = "ApiError";
-    }
-  },
-}));
-
-mock.module("@/hooks/useAdhocRun", () => ({
-  useAdhocRun: () => ({
+const mockUseAdhocRun = () => ({
     output: mockActionRunState.output,
     isRunning: mockActionRunState.isRunning,
     runError: mockActionRunState.runError,
@@ -249,15 +218,9 @@ mock.module("@/hooks/useAdhocRun", () => ({
     startActionRun: mockStartActionRun,
     stopRun: mockStopActionRun,
     outputRef: { current: null },
-  }),
-}));
+  });
 
-mock.module("@/hooks/use-mobile", () => ({
-  useIsMobile: () => false,
-}));
-
-mock.module("@/components/MarkdownEditor", () => ({
-  MarkdownEditor: ({ value, onChange, disabled, placeholder }: {
+const mockMarkdownEditor = ({ value, onChange, disabled, placeholder }: {
     value: string;
     onChange: (v: string | undefined) => void;
     disabled: boolean;
@@ -272,8 +235,7 @@ mock.module("@/components/MarkdownEditor", () => ({
         placeholder={placeholder}
       />
     </div>
-  ),
-}));
+  );
 
 function workspaceDetailTestView(workspaceName = "test-workspace", tab = "progress") {
   return (
@@ -316,6 +278,7 @@ function renderWorkspaceDetailRouter(initialPath = "/workspaces/test-workspace/p
 }
 
 afterEach(() => {
+  mock.restore();
   cleanup();
 });
 
@@ -339,6 +302,26 @@ describe("WorkspaceDetail", () => {
     mockActionRunState.output = "";
     mockActionRunState.isRunning = false;
     mockActionRunState.runError = null;
+
+    spyOn(ReactRouter, "useNavigate").mockImplementation(() => mockNavigate);
+    spyOn(factoryStateModule, "useFactoryState").mockImplementation(() => ({
+      workspaces: mockWorkspaces,
+      fetchStatus: mockFetchStatus,
+      lastFetchedAt: Date.now(),
+    }));
+    spyOn(factoryStateModule, "triggerFactoryRefresh").mockImplementation(() => mockTriggerFactoryRefresh());
+    spyOn(api.workspaces, "start").mockImplementation((...args) => mockStart(...args));
+    spyOn(api.workspaces, "stop").mockImplementation((...args) => mockStop(...args));
+    spyOn(api.workspaces, "togglePin").mockImplementation((...args) => mockTogglePin(...args));
+    spyOn(api.workspaces, "openEditor").mockImplementation((...args) => mockOpenEditor(...args));
+    spyOn(api.workspaces, "deleteWorkspace").mockImplementation((...args) => mockDeleteWorkspace(...args));
+    spyOn(api.workspaces, "forkTemplate").mockImplementation((...args) => mockForkTemplate(...args));
+    spyOn(api.workspaces, "fork").mockImplementation((...args) => mockFork(...args));
+    spyOn(api.workspaces, "respond").mockImplementation((...args) => mockRespond(...args));
+    spyOn(api.workspaces, "reset").mockImplementation((...args) => mockReset(...args));
+    spyOn(useAdhocRunModule, "useAdhocRun").mockImplementation((...args) => mockUseAdhocRun(...args));
+    spyOn(mobileModule, "useIsMobile").mockImplementation(() => false);
+    spyOn(markdownEditorModule, "MarkdownEditor").mockImplementation((...args) => mockMarkdownEditor(...args));
   });
 
   describe("repository action buttons", () => {
@@ -378,6 +361,55 @@ describe("WorkspaceDetail", () => {
         expect(screen.getByText("Second Shared Workspace · second")).toBeTruthy();
         expect(screen.getByText("Second task")).toBeTruthy();
         expect(screen.queryByText("First Shared Workspace")).toBeNull();
+      });
+    });
+
+    it("resolves duplicate-name routed detail paths without workspaceDir", async () => {
+      mockWorkspaces = [
+        createMockWorkspace({
+          name: "shared-ws",
+          dir: "/tmp/first/shared-ws",
+          title: "First Shared Workspace",
+          task: "First task",
+        }),
+        createMockWorkspace({
+          name: "shared-ws",
+          dir: "/tmp/second/shared-ws",
+          title: "Second Shared Workspace",
+          task: "Second task",
+        }),
+      ];
+
+      renderWorkspaceDetailRouter("/workspaces/second%2Fshared-ws");
+
+      await waitFor(() => {
+        expect(screen.getByText("Second Shared Workspace · second")).toBeTruthy();
+        expect(screen.getByText("Second task")).toBeTruthy();
+        expect(screen.queryByText("First Shared Workspace")).toBeNull();
+      });
+    });
+
+    it("shows an actionable error for ambiguous duplicate-basename detail routes without workspaceDir", async () => {
+      mockWorkspaces = [
+        createMockWorkspace({
+          name: "shared-ws",
+          dir: "/tmp/first/shared-ws",
+          title: "First Shared Workspace",
+          task: "First task",
+        }),
+        createMockWorkspace({
+          name: "shared-ws",
+          dir: "/tmp/second/shared-ws",
+          title: "Second Shared Workspace",
+          task: "Second task",
+        }),
+      ];
+
+      const { router } = renderWorkspaceDetailRouter("/workspaces/shared-ws");
+
+      await waitFor(() => {
+        expect(router.state.location.pathname).toBe("/workspaces/shared-ws");
+        expect(screen.getByText("Workspace route is ambiguous. Open the routed workspace link for this repository.")).toBeTruthy();
       });
     });
 
@@ -706,7 +738,7 @@ describe("WorkspaceDetail", () => {
       const nextWorkspaceTemplate = deferredValue<{ content: string }>();
       mockWorkspaces = [
         createMockWorkspace({ name: "test-workspace" }),
-        createMockWorkspace({ name: "next-workspace", title: "Next Workspace" }),
+        createMockWorkspace({ name: "next-workspace", title: "Next Workspace", dir: "/path/to/next-workspace" }),
       ];
 
       mockForkTemplate.mockImplementation((workspaceName: string) => {
@@ -848,7 +880,48 @@ describe("WorkspaceDetail", () => {
       const editGoalButton = await screen.findByRole("button", { name: "Edit GOAL" });
       await user.click(editGoalButton);
 
-      expect(mockNavigate).toHaveBeenCalledWith("/workspaces/test-workspace/goal/edit?workspaceDir=%2Fpath%2Fto%2Ftest-workspace");
+      expect(mockNavigate).toHaveBeenCalledWith("/workspaces/test-workspace/goal/edit");
+    });
+
+    it("renders the no-workspace Edit GOAL link without workspaceDir", async () => {
+      mockWorkspaces = [createMockWorkspace({ hasSgai: false, isRoot: false })];
+
+      renderWorkspaceDetail();
+
+      const editGoalLink = await screen.findByRole("link", { name: "Edit GOAL" });
+      expect(editGoalLink.getAttribute("href")).toBe("/workspaces/test-workspace/goal/edit");
+    });
+
+    it("uses a routed goal-edit path for duplicate workspace names", async () => {
+      const user = userEvent.setup();
+
+      mockWorkspaces = [
+        createMockWorkspace({
+          name: "shared-ws",
+          dir: "/tmp/first/shared-ws",
+          title: "First Shared Workspace",
+          hasSgai: false,
+          goalContent: "",
+          rawGoalContent: "",
+          isRoot: true,
+        }),
+        createMockWorkspace({
+          name: "shared-ws",
+          dir: "/tmp/second/shared-ws",
+          title: "Second Shared Workspace",
+          hasSgai: false,
+          goalContent: "",
+          rawGoalContent: "",
+          isRoot: true,
+        }),
+      ];
+
+      renderWorkspaceDetailRouter("/workspaces/shared-ws/progress?workspaceDir=%2Ftmp%2Fsecond%2Fshared-ws");
+
+      const editGoalButton = await screen.findByRole("button", { name: "Edit GOAL" });
+      await user.click(editGoalButton);
+
+      expect(mockNavigate).toHaveBeenCalledWith("/workspaces/second%2Fshared-ws/goal/edit");
     });
 
     it("shows Stop button when workspace is running", async () => {
@@ -1039,6 +1112,7 @@ describe("WorkspaceDetail", () => {
       await waitFor(() => {
         const execTimeElements = screen.queryAllByText("2m 30s");
         expect(execTimeElements.length).toBeGreaterThan(0);
+        expect(execTimeElements[0]?.getAttribute("tabindex")).toBe("0");
       });
     });
 
@@ -1056,6 +1130,24 @@ describe("WorkspaceDetail", () => {
         const glmElements = screen.queryAllByText(/glm-5/);
         expect(coordinatorElements.length).toBeGreaterThan(0);
         expect(glmElements.length).toBeGreaterThan(0);
+      });
+    });
+
+    it("keeps truncated status text keyboard focusable for tooltip access", async () => {
+      mockWorkspaces[0] = createMockWorkspace({
+        running: true,
+        currentAgent: "coordinator",
+        currentModel: "opencode/glm-5",
+        task: "Waiting for a very long human response that should stay reachable from the keyboard.",
+      });
+
+      renderWorkspaceDetail();
+
+      await waitFor(() => {
+        const agentModelBadge = screen.getByText("coordinator | glm-5");
+        const statusLine = screen.getByText("Waiting for a very long human response that should stay reachable from the keyboard.");
+        expect(agentModelBadge.getAttribute("tabindex")).toBe("0");
+        expect(statusLine.getAttribute("tabindex")).toBe("0");
       });
     });
   });

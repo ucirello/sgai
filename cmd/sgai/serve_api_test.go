@@ -21,11 +21,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var (
-	testServersByRootDirMu sync.Mutex
-	testServersByRootDir   = map[string]*Server{}
-)
-
 func attachSessionCoordinator(t *testing.T, srv *Server, wsDir string, wf state.Workflow) {
 	t.Helper()
 	attachSessionCoordinatorWithRunning(t, srv, wsDir, wf, false)
@@ -540,7 +535,7 @@ func TestCoordinatorModelFromWorkspace(t *testing.T) {
 
 	t.Run("workspaceWithModel", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+		wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 		goalPath := filepath.Join(wsDir, "GOAL.md")
 		require.NoError(t, os.WriteFile(goalPath, []byte("---\nmodels:\n  coordinator: claude-opus-4\n---\n# Goal"), 0644))
 
@@ -562,7 +557,7 @@ func TestCoordinatorModelFromWorkspace(t *testing.T) {
 
 	t.Run("withModelsConfig", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		wsDir := setupTestWorkspace(t, rootDir, "test-ws-model")
+		wsDir := setupTestWorkspace(t, server, rootDir, "test-ws-model")
 		goalContent := "---\nmodels:\n  coordinator: anthropic/claude-sonnet-4-6\nflow: |\n  \"coordinator\"\n---\n# Test"
 		require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte(goalContent), 0644))
 		result := server.coordinatorModelFromWorkspace("test-ws-model")
@@ -577,7 +572,7 @@ func TestWarmStateCache(t *testing.T) {
 
 func TestSessionCoordinator(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "sess-coord-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "sess-coord-ws")
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{
 		Status: state.StatusComplete,
@@ -590,7 +585,7 @@ func TestSessionCoordinator(t *testing.T) {
 
 func TestWriteJSONResponse(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "json-ws")
+	_ = setupTestWorkspace(t, srv, rootDir, "json-ws")
 
 	w := serveHTTP(srv, "GET", "/api/v1/state", "")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -601,7 +596,7 @@ func TestWriteJSONResponse(t *testing.T) {
 
 func TestWriteJSONContentType(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "json-ct-ws")
+	_ = setupTestWorkspace(t, srv, rootDir, "json-ct-ws")
 	w := serveHTTP(srv, "GET", "/api/v1/models", "")
 	assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
 }
@@ -856,15 +851,15 @@ func TestReadGoalAndPMForAPINoGoal(t *testing.T) {
 
 func TestBuildFullFactoryStateWithMultipleWorkspaces(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "ws1")
-	setupTestWorkspace(t, rootDir, "ws2")
+	setupTestWorkspace(t, server, rootDir, "ws1")
+	setupTestWorkspace(t, server, rootDir, "ws2")
 	result := server.buildFullFactoryState()
 	assert.GreaterOrEqual(t, len(result.Workspaces), 2)
 }
 
 func TestWarmStateCacheFillsCache(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	server.warmStateCache()
 	_, ok := server.stateCache.get("state")
 	assert.True(t, ok)
@@ -927,7 +922,7 @@ func TestResolveForkDirEmptyWhenSamePaths(t *testing.T) {
 
 func TestResolveRootForDeleteForkStandaloneReturnsEmpty(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "standalone-ws")
+	setupTestWorkspace(t, server, rootDir, "standalone-ws")
 	result := server.resolveRootForDeleteFork(filepath.Join(rootDir, "standalone-ws"))
 	assert.Equal(t, "", result)
 }
@@ -975,7 +970,7 @@ func TestQuestionTypeWorkGateFlag(t *testing.T) {
 
 func TestLoadWorkspaceStateLargeFileReturnsEmpty(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws-large")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws-large")
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
 	largeContent := strings.Repeat("x", maxStateSizeBytes+1)
 	require.NoError(t, os.WriteFile(sp, []byte(largeContent), 0644))
@@ -985,14 +980,14 @@ func TestLoadWorkspaceStateLargeFileReturnsEmpty(t *testing.T) {
 
 func TestLoadWorkspaceStateNoFileReturnsEmpty(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws-nostate")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws-nostate")
 	result := server.loadWorkspaceState(wsDir)
 	assert.Empty(t, result.Status)
 }
 
 func TestLoadWorkspaceStateUsesDiskAfterStoppedSession(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws-stopped")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws-stopped")
 
 	stoppedCoord := stopCachedSession(t, server, wsDir, state.Workflow{Status: state.StatusComplete})
 	writeWorkflowStateToDisk(t, wsDir, state.Workflow{
@@ -1008,7 +1003,7 @@ func TestLoadWorkspaceStateUsesDiskAfterStoppedSession(t *testing.T) {
 
 func TestResolveAPIWorkspace(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "resolve-ws")
+	_ = setupTestWorkspace(t, srv, rootDir, "resolve-ws")
 
 	w := serveHTTP(srv, "GET", "/api/v1/workspaces/resolve-ws/goal", "")
 	assert.NotEqual(t, http.StatusBadRequest, w.Code)
@@ -1016,7 +1011,7 @@ func TestResolveAPIWorkspace(t *testing.T) {
 
 func TestResolveAPIWorkspaceFallback(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "fallback-ws")
+	_ = setupTestWorkspace(t, srv, rootDir, "fallback-ws")
 
 	mux := http.NewServeMux()
 	srv.registerAPIRoutes(mux)
@@ -1112,7 +1107,7 @@ func TestLoadActionsForAPI(t *testing.T) {
 
 func TestBuildWorkspaceFullStateIncludesActionConfigError(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "broken-action-config-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "broken-action-config-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, configFileName), []byte("not valid json"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
@@ -1383,16 +1378,6 @@ func TestLoadWorkspaceState(t *testing.T) {
 func setupTestServer(t *testing.T) (*Server, string) {
 	rootDir := t.TempDir()
 	server := NewServer(rootDir, resolveServerPaths(t.TempDir()), "")
-	testServersByRootDirMu.Lock()
-	testServersByRootDir[rootDir] = server
-	testServersByRootDir[resolveSymlinks(rootDir)] = server
-	testServersByRootDirMu.Unlock()
-	t.Cleanup(func() {
-		testServersByRootDirMu.Lock()
-		delete(testServersByRootDir, rootDir)
-		delete(testServersByRootDir, resolveSymlinks(rootDir))
-		testServersByRootDirMu.Unlock()
-	})
 	return server, rootDir
 }
 
@@ -1403,16 +1388,10 @@ func TestSetupTestServerUsesIsolatedConfigDirs(t *testing.T) {
 	assert.NotEqual(t, productionPaths.externalConfigDir, server.externalConfigDir)
 }
 
-func setupTestWorkspace(t *testing.T, rootDir, name string) string {
+func setupTestWorkspace(t *testing.T, server *Server, rootDir, name string) string {
 	wsDir := filepath.Join(rootDir, name)
 	require.NoError(t, os.MkdirAll(filepath.Join(wsDir, ".sgai"), 0755))
 	canonicalDir := resolveSymlinks(wsDir)
-	testServersByRootDirMu.Lock()
-	server := testServersByRootDir[rootDir]
-	if server == nil {
-		server = testServersByRootDir[resolveSymlinks(rootDir)]
-	}
-	testServersByRootDirMu.Unlock()
 	if server != nil {
 		server.mu.Lock()
 		server.externalDirs[canonicalDir] = true
@@ -1454,7 +1433,7 @@ func serveHTTP(server *Server, method, path string, body string) *httptest.Respo
 
 func TestHandleAPIState(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	goalContent := "---\nflow: |\n  \"a\" -> \"b\"\n---\n# Test"
 	require.NoError(t, os.WriteFile(filepath.Join(rootDir, "test-ws", "GOAL.md"), []byte(goalContent), 0644))
 
@@ -1465,7 +1444,7 @@ func TestHandleAPIState(t *testing.T) {
 
 func TestHandleAPIAgents(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	goalContent := "---\nflow: |\n  \"agent1\" -> \"agent2\"\n---\n# Test"
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte(goalContent), 0644))
 
@@ -1475,7 +1454,7 @@ func TestHandleAPIAgents(t *testing.T) {
 
 func TestHandleAPISkills(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 
 	skillDir := filepath.Join(wsDir, ".sgai", "skills", "test-skill")
 	require.NoError(t, os.MkdirAll(skillDir, 0755))
@@ -1487,7 +1466,7 @@ func TestHandleAPISkills(t *testing.T) {
 
 func TestHandleAPISnippets(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 
 	snippetDir := filepath.Join(wsDir, ".sgai", "snippets", "go")
 	require.NoError(t, os.MkdirAll(snippetDir, 0755))
@@ -1500,7 +1479,7 @@ func TestHandleAPISnippets(t *testing.T) {
 func TestHandleAPIGetGoal(t *testing.T) {
 	t.Run("withGoal", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+		wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 		require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Test Goal"), 0644))
 
 		w := serveHTTP(server, "GET", "/api/v1/workspaces/test-ws/goal", "")
@@ -1516,12 +1495,74 @@ func TestHandleAPIGetGoal(t *testing.T) {
 		w := serveHTTP(server, "GET", "/api/v1/workspaces/nonexistent/goal", "")
 		assert.Equal(t, http.StatusNotFound, w.Code)
 	})
+
+	t.Run("duplicateWorkspaceUsesRoutedName", func(t *testing.T) {
+		server, _ := setupTestServer(t)
+		firstDir := filepath.Join(t.TempDir(), "first", "shared-ws")
+		secondDir := filepath.Join(t.TempDir(), "second", "shared-ws")
+		require.NoError(t, os.MkdirAll(filepath.Join(firstDir, ".sgai"), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(secondDir, ".sgai"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(firstDir, "GOAL.md"), []byte("# First Goal"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(secondDir, "GOAL.md"), []byte("# Second Goal"), 0o644))
+
+		server.mu.Lock()
+		server.externalDirs[resolveSymlinks(firstDir)] = true
+		server.externalDirs[resolveSymlinks(secondDir)] = true
+		server.mu.Unlock()
+		server.invalidateWorkspaceScanCache()
+
+		w := serveHTTP(server, "GET", "/api/v1/workspaces/second%2Fshared-ws/goal", "")
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var resp apiGoalResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.Contains(t, resp.Content, "Second Goal")
+	})
+
+	t.Run("duplicateWorkspaceRejectsAmbiguousBasename", func(t *testing.T) {
+		server, _ := setupTestServer(t)
+		firstDir := filepath.Join(t.TempDir(), "first", "shared-ws")
+		secondDir := filepath.Join(t.TempDir(), "second", "shared-ws")
+		require.NoError(t, os.MkdirAll(filepath.Join(firstDir, ".sgai"), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(secondDir, ".sgai"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(firstDir, "GOAL.md"), []byte("# First Goal"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(secondDir, "GOAL.md"), []byte("# Second Goal"), 0o644))
+
+		server.mu.Lock()
+		server.externalDirs[resolveSymlinks(firstDir)] = true
+		server.externalDirs[resolveSymlinks(secondDir)] = true
+		server.mu.Unlock()
+		server.invalidateWorkspaceScanCache()
+
+		w := serveHTTP(server, "GET", "/api/v1/workspaces/shared-ws/goal", "")
+		assert.Equal(t, http.StatusConflict, w.Code)
+	})
 }
 
 func TestHandleAPIUpdateGoal(t *testing.T) {
+	setupDuplicateGoals := func(t *testing.T) (*Server, string, string) {
+		t.Helper()
+
+		server, _ := setupTestServer(t)
+		firstDir := filepath.Join(t.TempDir(), "first", "shared-ws")
+		secondDir := filepath.Join(t.TempDir(), "second", "shared-ws")
+		require.NoError(t, os.MkdirAll(filepath.Join(firstDir, ".sgai"), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(secondDir, ".sgai"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(firstDir, "GOAL.md"), []byte("# First Goal"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(secondDir, "GOAL.md"), []byte("# Second Goal"), 0o644))
+
+		server.mu.Lock()
+		server.externalDirs[resolveSymlinks(firstDir)] = true
+		server.externalDirs[resolveSymlinks(secondDir)] = true
+		server.mu.Unlock()
+		server.invalidateWorkspaceScanCache()
+
+		return server, firstDir, secondDir
+	}
+
 	t.Run("updateGoal", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+		wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 		require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Old Goal"), 0644))
 
 		w := serveHTTP(server, "PUT", "/api/v1/workspaces/test-ws/goal", `{"content":"# New Goal"}`)
@@ -1534,16 +1575,93 @@ func TestHandleAPIUpdateGoal(t *testing.T) {
 
 	t.Run("invalidBody", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		setupTestWorkspace(t, rootDir, "test-ws")
+		setupTestWorkspace(t, server, rootDir, "test-ws")
 
 		w := serveHTTP(server, "PUT", "/api/v1/workspaces/test-ws/goal", `{invalid}`)
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 	})
+
+	t.Run("duplicateWorkspaceUsesRoutedName", func(t *testing.T) {
+		server, firstDir, secondDir := setupDuplicateGoals(t)
+
+		w := serveHTTP(server, "PUT", "/api/v1/workspaces/second%2Fshared-ws/goal", `{"content":"# Updated Second Goal"}`)
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		firstContent, errFirstRead := os.ReadFile(filepath.Join(firstDir, "GOAL.md"))
+		require.NoError(t, errFirstRead)
+		assert.Contains(t, string(firstContent), "First Goal")
+
+		secondContent, errSecondRead := os.ReadFile(filepath.Join(secondDir, "GOAL.md"))
+		require.NoError(t, errSecondRead)
+		assert.Contains(t, string(secondContent), "Updated Second Goal")
+	})
+
+	t.Run("duplicateWorkspaceRejectsAmbiguousBasename", func(t *testing.T) {
+		server, firstDir, secondDir := setupDuplicateGoals(t)
+
+		w := serveHTTP(server, "PUT", "/api/v1/workspaces/shared-ws/goal", `{"content":"# Wrong Goal"}`)
+		assert.Equal(t, http.StatusConflict, w.Code)
+
+		firstContent, errFirstRead := os.ReadFile(filepath.Join(firstDir, "GOAL.md"))
+		require.NoError(t, errFirstRead)
+		assert.Contains(t, string(firstContent), "First Goal")
+
+		secondContent, errSecondRead := os.ReadFile(filepath.Join(secondDir, "GOAL.md"))
+		require.NoError(t, errSecondRead)
+		assert.Contains(t, string(secondContent), "Second Goal")
+	})
+}
+
+func TestResolveWorkspaceFromPathRejectsAmbiguousBasename(t *testing.T) {
+	server, _ := setupTestServer(t)
+	firstDir := filepath.Join(t.TempDir(), "first", "shared-ws")
+	secondDir := filepath.Join(t.TempDir(), "second", "shared-ws")
+	require.NoError(t, os.MkdirAll(filepath.Join(firstDir, ".sgai"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(secondDir, ".sgai"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(firstDir, "GOAL.md"), []byte("# First Goal"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(secondDir, "GOAL.md"), []byte("# Second Goal"), 0o644))
+
+	server.mu.Lock()
+	server.externalDirs[resolveSymlinks(firstDir)] = true
+	server.externalDirs[resolveSymlinks(secondDir)] = true
+	server.mu.Unlock()
+	server.invalidateWorkspaceScanCache()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/shared-ws/respond", nil)
+	req.SetPathValue("name", "shared-ws")
+	resp := httptest.NewRecorder()
+
+	workspacePath, ok := server.resolveWorkspaceFromPath(resp, req)
+	assert.False(t, ok)
+	assert.Empty(t, workspacePath)
+	assert.Equal(t, http.StatusConflict, resp.Code)
+	assert.Contains(t, resp.Body.String(), "workspace name is ambiguous")
+}
+
+func TestResolveWorkspaceForActionAllowsRoutedNameWithWorkspaceDir(t *testing.T) {
+	server, _ := setupTestServer(t)
+	firstDir := filepath.Join(t.TempDir(), "first", "shared-ws")
+	secondDir := filepath.Join(t.TempDir(), "second", "shared-ws")
+	require.NoError(t, os.MkdirAll(filepath.Join(firstDir, ".sgai"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(secondDir, ".sgai"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(firstDir, "GOAL.md"), []byte("# First Goal"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(secondDir, "GOAL.md"), []byte("# Second Goal"), 0o644))
+
+	server.mu.Lock()
+	server.externalDirs[resolveSymlinks(firstDir)] = true
+	server.externalDirs[resolveSymlinks(secondDir)] = true
+	server.mu.Unlock()
+	server.invalidateWorkspaceScanCache()
+
+	workspacePath, status, message := server.resolveWorkspaceForAction("second/shared-ws", secondDir)
+	assert.Equal(t, resolveSymlinks(secondDir), workspacePath)
+	assert.Zero(t, status)
+	assert.Empty(t, message)
 }
 
 func TestHandleAPITogglePin(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/pin", "")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -1552,7 +1670,7 @@ func TestHandleAPITogglePin(t *testing.T) {
 func TestHandleAPIStopSession(t *testing.T) {
 	t.Run("noActiveSession", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		setupTestWorkspace(t, rootDir, "test-ws")
+		setupTestWorkspace(t, server, rootDir, "test-ws")
 
 		w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/stop", "")
 		assert.Equal(t, http.StatusOK, w.Code)
@@ -1562,7 +1680,7 @@ func TestHandleAPIStopSession(t *testing.T) {
 func TestHandleAPIDeleteWorkspace(t *testing.T) {
 	t.Run("missingConfirmation", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		setupTestWorkspace(t, rootDir, "test-ws")
+		setupTestWorkspace(t, server, rootDir, "test-ws")
 
 		w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/delete", `{"confirm":false}`)
 		assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -1570,7 +1688,7 @@ func TestHandleAPIDeleteWorkspace(t *testing.T) {
 
 	t.Run("invalidBody", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		setupTestWorkspace(t, rootDir, "test-ws")
+		setupTestWorkspace(t, server, rootDir, "test-ws")
 
 		w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/delete", `{invalid}`)
 		assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -1584,7 +1702,7 @@ func TestHandleAPIDeleteWorkspace(t *testing.T) {
 
 	t.Run("deleteStandaloneWorkspace", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		setupTestWorkspace(t, rootDir, "standalone-ws")
+		setupTestWorkspace(t, server, rootDir, "standalone-ws")
 
 		w := serveHTTP(server, "POST", "/api/v1/workspaces/standalone-ws/delete", `{"confirm":true}`)
 		assert.Equal(t, http.StatusOK, w.Code)
@@ -1594,7 +1712,7 @@ func TestHandleAPIDeleteWorkspace(t *testing.T) {
 func TestHandleAPIStartSession(t *testing.T) {
 	t.Run("invalidBody", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		setupTestWorkspace(t, rootDir, "test-ws")
+		setupTestWorkspace(t, server, rootDir, "test-ws")
 
 		w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/start", `{invalid}`)
 		assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -1610,7 +1728,7 @@ func TestHandleAPIStartSession(t *testing.T) {
 func TestHandleAPIForkWorkspace(t *testing.T) {
 	t.Run("invalidBody", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		setupTestWorkspace(t, rootDir, "test-ws")
+		setupTestWorkspace(t, server, rootDir, "test-ws")
 
 		w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/fork", `{invalid}`)
 		assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -1632,7 +1750,7 @@ func TestHandleAPIDeleteFork(t *testing.T) {
 
 	t.Run("invalidBody", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		setupTestWorkspace(t, rootDir, "test-ws")
+		setupTestWorkspace(t, server, rootDir, "test-ws")
 		w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/delete-fork", `{invalid}`)
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 	})
@@ -1641,7 +1759,7 @@ func TestHandleAPIDeleteFork(t *testing.T) {
 func TestHandleAPIRespond(t *testing.T) {
 	t.Run("invalidBody", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		setupTestWorkspace(t, rootDir, "test-ws")
+		setupTestWorkspace(t, server, rootDir, "test-ws")
 		w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/respond", `{invalid}`)
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 	})
@@ -1664,7 +1782,7 @@ func TestHandleAPISteer(t *testing.T) {
 func TestHandleAPIWorkflowSVG(t *testing.T) {
 	t.Run("withGoal", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+		wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 		goalContent := "---\nflow: |\n  \"a\" -> \"b\"\n---\n# Test"
 		require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte(goalContent), 0644))
 
@@ -1682,7 +1800,7 @@ func TestHandleAPIForkTemplate(t *testing.T) {
 
 	t.Run("standaloneWorkspace", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		setupTestWorkspace(t, rootDir, "test-ws")
+		setupTestWorkspace(t, server, rootDir, "test-ws")
 		w := serveHTTP(server, "GET", "/api/v1/workspaces/test-ws/fork-template", "")
 		assert.Equal(t, http.StatusOK, w.Code)
 		var resp apiForkTemplateResponse
@@ -1707,7 +1825,7 @@ func TestHandleAPIDeleteMessage(t *testing.T) {
 
 	t.Run("invalidMessageID", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+		wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 		stateFile := filepath.Join(wsDir, ".sgai", "state.json")
 		_, err := state.NewCoordinatorWith(stateFile, state.Workflow{
 			Status:   state.StatusComplete,
@@ -1728,7 +1846,7 @@ func TestHandleAPIListModels(t *testing.T) {
 
 func TestHandleAPIAdhocStatus(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 
 	w := serveHTTP(server, "GET", "/api/v1/workspaces/test-ws/adhoc", "")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -1737,7 +1855,7 @@ func TestHandleAPIAdhocStatus(t *testing.T) {
 func TestHandleAPIAdhoc(t *testing.T) {
 	t.Run("invalidBody", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		setupTestWorkspace(t, rootDir, "test-ws")
+		setupTestWorkspace(t, server, rootDir, "test-ws")
 		w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/adhoc", `{invalid}`)
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 	})
@@ -1752,7 +1870,7 @@ func TestHandleAPISkillDetail(t *testing.T) {
 
 	t.Run("existingSkill", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+		wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 		skillDir := filepath.Join(wsDir, ".sgai", "skills", "test-skill")
 		require.NoError(t, os.MkdirAll(skillDir, 0755))
 		require.NoError(t, os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\ndescription: A test skill\n---\n# Test Skill\nContent here"), 0644))
@@ -1764,7 +1882,7 @@ func TestHandleAPISkillDetail(t *testing.T) {
 
 	t.Run("nonexistentSkill", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		setupTestWorkspace(t, rootDir, "test-ws")
+		setupTestWorkspace(t, server, rootDir, "test-ws")
 
 		w := serveHTTP(server, "GET", "/api/v1/skills/nonexistent?workspace=test-ws", "")
 		assert.Equal(t, http.StatusNotFound, w.Code)
@@ -1780,7 +1898,7 @@ func TestHandleAPISnippetsByLanguage(t *testing.T) {
 
 	t.Run("nonexistentLanguage", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		setupTestWorkspace(t, rootDir, "test-ws")
+		setupTestWorkspace(t, server, rootDir, "test-ws")
 
 		w := serveHTTP(server, "GET", "/api/v1/snippets/rust?workspace=test-ws", "")
 		assert.Equal(t, http.StatusNotFound, w.Code)
@@ -1788,7 +1906,7 @@ func TestHandleAPISnippetsByLanguage(t *testing.T) {
 
 	t.Run("existingLanguage", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+		wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 		snippetDir := filepath.Join(wsDir, ".sgai", "snippets", "go")
 		require.NoError(t, os.MkdirAll(snippetDir, 0755))
 		require.NoError(t, os.WriteFile(filepath.Join(snippetDir, "http-server.go"), []byte("---\ndescription: HTTP server\n---\npackage main"), 0644))
@@ -1808,7 +1926,7 @@ func TestHandleAPISnippetDetail(t *testing.T) {
 
 	t.Run("nonexistentSnippet", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+		wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 		require.NoError(t, os.MkdirAll(filepath.Join(wsDir, ".sgai", "snippets", "go"), 0755))
 
 		w := serveHTTP(server, "GET", "/api/v1/snippets/go/nonexistent?workspace=test-ws", "")
@@ -1817,7 +1935,7 @@ func TestHandleAPISnippetDetail(t *testing.T) {
 
 	t.Run("existingSnippet", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+		wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 		snippetDir := filepath.Join(wsDir, ".sgai", "snippets", "go")
 		require.NoError(t, os.MkdirAll(snippetDir, 0755))
 		require.NoError(t, os.WriteFile(filepath.Join(snippetDir, "http-server.go"), []byte("---\nname: HTTP Server\ndescription: HTTP server setup\nwhen_to_use: when building HTTP servers\n---\npackage main\n\nimport \"net/http\"\n"), 0644))
@@ -1861,7 +1979,7 @@ func TestHandleAPIAdhocStop(t *testing.T) {
 
 	t.Run("noRunningAdhoc", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		setupTestWorkspace(t, rootDir, "test-ws")
+		setupTestWorkspace(t, server, rootDir, "test-ws")
 
 		w := serveHTTP(server, "DELETE", "/api/v1/workspaces/test-ws/adhoc", "")
 		assert.Equal(t, http.StatusOK, w.Code)
@@ -1899,7 +2017,7 @@ func TestHandleAPIDetachWorkspace(t *testing.T) {
 func TestHandleAPIDeleteMessageByID(t *testing.T) {
 	t.Run("validMessageDelete", func(t *testing.T) {
 		server, rootDir := setupTestServer(t)
-		wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+		wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 		stateFile := filepath.Join(wsDir, ".sgai", "state.json")
 		_, err := state.NewCoordinatorWith(stateFile, state.Workflow{
 			Status: state.StatusComplete,
@@ -1916,7 +2034,7 @@ func TestHandleAPIDeleteMessageByID(t *testing.T) {
 
 func TestHandleAPIRespondInvalidBody(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/respond", `{invalid}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -1978,7 +2096,7 @@ func TestHandleAPIWorkflowSVGMissingWorkspace(t *testing.T) {
 
 func TestSPAMiddlewareAPIRoutes(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 
 	w := serveHTTP(server, "GET", "/api/v1/state", "")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -1986,7 +2104,7 @@ func TestSPAMiddlewareAPIRoutes(t *testing.T) {
 
 func TestHandleAPIStartSessionInvalidBody(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/start", `{invalid}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -1994,7 +2112,7 @@ func TestHandleAPIStartSessionInvalidBody(t *testing.T) {
 
 func TestHandleAPISteerInvalidBody(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/steer", `{invalid}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -2002,7 +2120,7 @@ func TestHandleAPISteerInvalidBody(t *testing.T) {
 
 func TestHandleAPIUpdateGoalInvalidBody(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 
 	w := serveHTTP(server, "PUT", "/api/v1/workspaces/test-ws/goal", `{invalid}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -2010,7 +2128,7 @@ func TestHandleAPIUpdateGoalInvalidBody(t *testing.T) {
 
 func TestHandleAPIForkWorkspaceInvalidBody(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/fork", `{invalid}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -2018,7 +2136,7 @@ func TestHandleAPIForkWorkspaceInvalidBody(t *testing.T) {
 
 func TestHandleAPIDeleteForkInvalidBody(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/delete-fork", `{invalid}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -2026,7 +2144,7 @@ func TestHandleAPIDeleteForkInvalidBody(t *testing.T) {
 
 func TestHandleAPIDeleteWorkspaceInvalidBody(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/delete", `{invalid}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -2046,7 +2164,7 @@ func TestHandleAPIStartSessionViaHTTPMissing(t *testing.T) {
 
 func TestHandleAPIStopSessionViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "stop-ws")
+	_ = setupTestWorkspace(t, srv, rootDir, "stop-ws")
 
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/stop-ws/stop", "{}")
 	assert.NotEqual(t, http.StatusNotFound, w.Code)
@@ -2054,7 +2172,7 @@ func TestHandleAPIStopSessionViaHTTP(t *testing.T) {
 
 func TestHandleAPIAgentsViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "agents-ws")
+	_ = setupTestWorkspace(t, srv, rootDir, "agents-ws")
 
 	w := serveHTTP(srv, "GET", "/api/v1/agents?workspace=agents-ws", "")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -2062,7 +2180,7 @@ func TestHandleAPIAgentsViaHTTP(t *testing.T) {
 
 func TestHandleAPISkillsViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "skills-ws")
+	_ = setupTestWorkspace(t, srv, rootDir, "skills-ws")
 
 	w := serveHTTP(srv, "GET", "/api/v1/skills?workspace=skills-ws", "")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -2070,7 +2188,7 @@ func TestHandleAPISkillsViaHTTP(t *testing.T) {
 
 func TestHandleAPISnippetsViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "snippets-ws")
+	_ = setupTestWorkspace(t, srv, rootDir, "snippets-ws")
 
 	w := serveHTTP(srv, "GET", "/api/v1/snippets?workspace=snippets-ws", "")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -2085,7 +2203,7 @@ func TestHandleAPIModelsViaHTTP(t *testing.T) {
 
 func TestHandleAPIDeleteMessageViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "msg-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "msg-ws")
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
 		Status: state.StatusComplete,
@@ -2101,7 +2219,7 @@ func TestHandleAPIDeleteMessageViaHTTP(t *testing.T) {
 
 func TestHandleAPITogglePinViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "pin-ws")
+	_ = setupTestWorkspace(t, srv, rootDir, "pin-ws")
 	srv.pinnedConfigDir = t.TempDir()
 
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/pin-ws/pin", "")
@@ -2110,7 +2228,7 @@ func TestHandleAPITogglePinViaHTTP(t *testing.T) {
 
 func TestHandleAPIUpdateGoalViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "goal-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "goal-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Old Goal"), 0o644))
 
 	w := serveHTTP(srv, "PUT", "/api/v1/workspaces/goal-ws/goal", `{"content":"---\n---\n# New Goal"}`)
@@ -2126,7 +2244,7 @@ func TestHandleAPIBrowseDirectoriesViaHTTP(t *testing.T) {
 
 func TestHandleAPIWorkflowSVGViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "svg-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "svg-ws")
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
 		Status:       state.StatusComplete,
@@ -2141,7 +2259,7 @@ func TestHandleAPIWorkflowSVGViaHTTP(t *testing.T) {
 
 func TestHandleAPIAdhocStatusViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "adhoc-ws")
+	_ = setupTestWorkspace(t, srv, rootDir, "adhoc-ws")
 
 	w := serveHTTP(srv, "GET", "/api/v1/workspaces/adhoc-ws/adhoc", "")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -2149,7 +2267,7 @@ func TestHandleAPIAdhocStatusViaHTTP(t *testing.T) {
 
 func TestHandleAPIAdhocStopViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "adhoc-stop-ws")
+	_ = setupTestWorkspace(t, srv, rootDir, "adhoc-stop-ws")
 
 	w := serveHTTP(srv, "DELETE", "/api/v1/workspaces/adhoc-stop-ws/adhoc", "")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -2157,7 +2275,7 @@ func TestHandleAPIAdhocStopViaHTTP(t *testing.T) {
 
 func TestHandleAPIForkWorkspaceViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "fork-ws")
+	_ = setupTestWorkspace(t, srv, rootDir, "fork-ws")
 
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/fork-ws/fork", `{"goalContent":"# Fork goal"}`)
 	assert.NotEqual(t, http.StatusNotFound, w.Code)
@@ -2165,7 +2283,7 @@ func TestHandleAPIForkWorkspaceViaHTTP(t *testing.T) {
 
 func TestHandleAPIDeleteForkViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "delfork-ws")
+	_ = setupTestWorkspace(t, srv, rootDir, "delfork-ws")
 
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/delfork-ws/delete-fork", `{"forkDir":"/nonexistent"}`)
 	assert.NotEqual(t, http.StatusNotFound, w.Code)
@@ -2173,7 +2291,7 @@ func TestHandleAPIDeleteForkViaHTTP(t *testing.T) {
 
 func TestHandleAPIDeleteMessageValid(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws-delmsg")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws-delmsg")
 	stateFile := filepath.Join(wsDir, ".sgai", "state.json")
 	_, err := state.NewCoordinatorWith(stateFile, state.Workflow{
 		Status: state.StatusComplete,
@@ -2189,7 +2307,7 @@ func TestHandleAPIDeleteMessageValid(t *testing.T) {
 
 func TestHandleAPISteerValid(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws-steer")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws-steer")
 	stateFile := filepath.Join(wsDir, ".sgai", "state.json")
 	_, err := state.NewCoordinatorWith(stateFile, state.Workflow{
 		Status: state.StatusWorking,
@@ -2202,7 +2320,7 @@ func TestHandleAPISteerValid(t *testing.T) {
 
 func TestHandleAPITogglePinValid(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws-pin")
+	setupTestWorkspace(t, server, rootDir, "test-ws-pin")
 
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws-pin/pin", "")
 	assert.Equal(t, 200, w.Code)
@@ -2210,7 +2328,7 @@ func TestHandleAPITogglePinValid(t *testing.T) {
 
 func TestHandleAPIUpdateGoalValid(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws-upgoal")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws-upgoal")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Old"), 0644))
 
 	w := serveHTTP(server, "PUT", "/api/v1/workspaces/test-ws-upgoal/goal", `{"content":"# New Goal"}`)
@@ -2219,7 +2337,7 @@ func TestHandleAPIUpdateGoalValid(t *testing.T) {
 
 func TestHandleAPIOpenEditorGoalViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "editgoal-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "editgoal-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\ntitle: Compose Full\n---\n# Goal\n"), 0o644))
 	srv.editorAvailable = true
 	srv.editor = newConfigurableEditor("echo")
@@ -2230,7 +2348,7 @@ func TestHandleAPIOpenEditorGoalViaHTTP(t *testing.T) {
 
 func TestHandleAPIOpenEditorPMViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "editpm-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "editpm-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, ".sgai", "PROJECT_MANAGEMENT.md"), []byte("# PM"), 0o644))
 	srv.editorAvailable = true
 	srv.editor = newConfigurableEditor("echo")
@@ -2241,7 +2359,7 @@ func TestHandleAPIOpenEditorPMViaHTTP(t *testing.T) {
 
 func TestHandleAPISnippetsByLanguageViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "snippet-lang-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "snippet-lang-ws")
 	goDir := filepath.Join(wsDir, ".sgai", "snippets", "go")
 	require.NoError(t, os.MkdirAll(goDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(goDir, "example.go"), []byte("// snippet\npackage main"), 0o644))
@@ -2262,8 +2380,14 @@ func TestHandleAPIAttachWorkspaceViaHTTP(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(validDir, ".sgai"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(validDir, "GOAL.md"), []byte("# Ext Goal"), 0o644))
 
-	w := serveHTTP(srv, "POST", "/api/v1/workspaces/attach", `{"directory":"`+validDir+`"}`)
-	assert.NotEqual(t, http.StatusNotFound, w.Code)
+	w := serveHTTP(srv, "POST", "/api/v1/workspaces/attach", `{"path":"`+validDir+`"}`)
+	assert.Equal(t, http.StatusCreated, w.Code)
+
+	var resp apiAttachWorkspaceResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, filepath.Base(validDir), resp.Name)
+	assert.True(t, sameWorkspacePath(resp.Dir, validDir))
+	assert.True(t, resp.HasGoal)
 }
 
 func TestHandleAPIDetachWorkspaceViaHTTP(t *testing.T) {
@@ -2275,35 +2399,35 @@ func TestHandleAPIDetachWorkspaceViaHTTP(t *testing.T) {
 
 func TestUpdateGoalEmptyContentViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "upgoal-empty-v2")
+	_ = setupTestWorkspace(t, srv, rootDir, "upgoal-empty-v2")
 	w := serveHTTP(srv, "PUT", "/api/v1/workspaces/upgoal-empty-v2/goal", `{"content":""}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestUpdateGoalInvalidJSONViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "upgoal-badjson")
+	_ = setupTestWorkspace(t, srv, rootDir, "upgoal-badjson")
 	w := serveHTTP(srv, "PUT", "/api/v1/workspaces/upgoal-badjson/goal", `not json`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestDeleteWorkspaceNoConfirmViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "del-noconf-v2")
+	_ = setupTestWorkspace(t, srv, rootDir, "del-noconf-v2")
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/del-noconf-v2/delete", `{"confirm":false}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestDeleteWorkspaceInvalidBodyViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "del-badjson")
+	_ = setupTestWorkspace(t, srv, rootDir, "del-badjson")
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/del-badjson/delete", `not json`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestDeleteWorkspaceStandaloneViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "del-standalone")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "del-standalone")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\ntitle: Compose Full\n---\n# Goal\n"), 0o644))
 
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/del-standalone/delete", `{"confirm":true}`)
@@ -2312,77 +2436,77 @@ func TestDeleteWorkspaceStandaloneViaHTTP(t *testing.T) {
 
 func TestSteerInvalidJSONViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "steer-badjson")
+	_ = setupTestWorkspace(t, srv, rootDir, "steer-badjson")
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/steer-badjson/steer", `not json`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestSteerEmptyMessageViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "steer-emptymsg")
+	_ = setupTestWorkspace(t, srv, rootDir, "steer-emptymsg")
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/steer-emptymsg/steer", `{"message":""}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestGetGoalNoFileViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "getgoal-nofile")
+	_ = setupTestWorkspace(t, srv, rootDir, "getgoal-nofile")
 	w := serveHTTP(srv, "GET", "/api/v1/workspaces/getgoal-nofile/goal", "")
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
 func TestAdhocMissingPromptViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "adhoc-noprompt-v2")
+	_ = setupTestWorkspace(t, srv, rootDir, "adhoc-noprompt-v2")
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/adhoc-noprompt-v2/adhoc", `{"prompt":"","model":""}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestAdhocInvalidJSONViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "adhoc-badjson-v2")
+	_ = setupTestWorkspace(t, srv, rootDir, "adhoc-badjson-v2")
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/adhoc-badjson-v2/adhoc", `not json`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestForkWorkspaceInvalidJSONViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "fork-badjson-v2")
+	_ = setupTestWorkspace(t, srv, rootDir, "fork-badjson-v2")
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/fork-badjson-v2/fork", `not json`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestDeleteForkNoConfirmViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "delfork-noconf-v2")
+	_ = setupTestWorkspace(t, srv, rootDir, "delfork-noconf-v2")
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/delfork-noconf-v2/delete-fork", `{"confirm":false}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestDeleteForkInvalidJSONViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "delfork-badjson-v2")
+	_ = setupTestWorkspace(t, srv, rootDir, "delfork-badjson-v2")
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/delfork-badjson-v2/delete-fork", `not json`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestStartSessionBadBodyViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "start-badjson-v2")
+	_ = setupTestWorkspace(t, srv, rootDir, "start-badjson-v2")
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/start-badjson-v2/start", `not json`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestRespondInvalidJSONViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "respond-badjson")
+	_ = setupTestWorkspace(t, srv, rootDir, "respond-badjson")
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/respond-badjson/respond", `not json`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestRespondNoSessionViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "respond-nosess-v2")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "respond-nosess-v2")
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
 		Status:       state.StatusWorking,
@@ -2426,7 +2550,7 @@ func TestStopSessionNotFoundViaHTTP(t *testing.T) {
 
 func TestOpenEditorNotAvailableViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "editor-unavail")
+	_ = setupTestWorkspace(t, srv, rootDir, "editor-unavail")
 	srv.editorAvailable = false
 
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/editor-unavail/open-editor", "")
@@ -2435,7 +2559,7 @@ func TestOpenEditorNotAvailableViaHTTP(t *testing.T) {
 
 func TestOpenEditorGoalNotAvailableViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "editor-goal-unavail")
+	_ = setupTestWorkspace(t, srv, rootDir, "editor-goal-unavail")
 	srv.editorAvailable = false
 
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/editor-goal-unavail/open-editor/goal", "")
@@ -2444,7 +2568,7 @@ func TestOpenEditorGoalNotAvailableViaHTTP(t *testing.T) {
 
 func TestOpenEditorGoalFileNotFoundViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "editor-goal-nofile")
+	_ = setupTestWorkspace(t, srv, rootDir, "editor-goal-nofile")
 	srv.editorAvailable = true
 	srv.editorName = "test-editor"
 	srv.editor = newConfigurableEditor("echo")
@@ -2455,7 +2579,7 @@ func TestOpenEditorGoalFileNotFoundViaHTTP(t *testing.T) {
 
 func TestOpenEditorPMNotAvailableViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "editor-pm-unavail")
+	_ = setupTestWorkspace(t, srv, rootDir, "editor-pm-unavail")
 	srv.editorAvailable = false
 
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/editor-pm-unavail/open-editor/project-management", "")
@@ -2471,14 +2595,14 @@ func TestHandleAPIListModelsContent(t *testing.T) {
 
 func TestHandleAPISkillDetailNotFound(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "skillnf-ws")
+	_ = setupTestWorkspace(t, srv, rootDir, "skillnf-ws")
 	w := serveHTTP(srv, "GET", "/api/v1/skills/nonexistent?workspace=skillnf-ws", "")
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
 func TestHandleAPISnippetDetailNotFoundLang(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "snipnf-ws")
+	_ = setupTestWorkspace(t, srv, rootDir, "snipnf-ws")
 	w := serveHTTP(srv, "GET", "/api/v1/snippets/nonexistent/file.go?workspace=snipnf-ws", "")
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -2491,7 +2615,7 @@ func TestHandleAPIDiffWorkspaceNotFound(t *testing.T) {
 
 func TestHandleAPIForkTemplateStandaloneViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "tmpl-standalone")
+	_ = setupTestWorkspace(t, srv, rootDir, "tmpl-standalone")
 	w := serveHTTP(srv, "GET", "/api/v1/workspaces/tmpl-standalone/fork-template", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 	var resp apiForkTemplateResponse
@@ -2501,7 +2625,7 @@ func TestHandleAPIForkTemplateStandaloneViaHTTP(t *testing.T) {
 
 func TestBuildWorkspaceFullStateWithMessages(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "msgs-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "msgs-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
@@ -2520,7 +2644,7 @@ func TestBuildWorkspaceFullStateWithMessages(t *testing.T) {
 
 func TestBuildWorkspaceFullStateWithTodos(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "todos-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "todos-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
@@ -2542,7 +2666,7 @@ func TestBuildWorkspaceFullStateWithTodos(t *testing.T) {
 
 func TestHandleAPIStateFullIntegration(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "full-int")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "full-int")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\nflow: |\n  digraph G {\n    \"coordinator\" -> \"builder\"\n    \"builder\" -> \"reviewer\"\n  }\nmodels:\n  coordinator: anthropic/claude-opus-4-6\n---\n# Full Integration\n\nBuild a comprehensive test suite."), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, ".sgai", "PROJECT_MANAGEMENT.md"), []byte("# PM\n\n## Progress\n- Step 1 done"), 0o644))
 
@@ -2585,7 +2709,7 @@ func TestHandleAPIStateFullIntegration(t *testing.T) {
 
 func TestHandleAPIStateWithPendingQuestion(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "pq-int")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "pq-int")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
 	attachRunningSessionCoordinator(t, srv, wsDir, state.Workflow{
@@ -2616,7 +2740,7 @@ func TestHandleAPIStateWithPendingQuestion(t *testing.T) {
 
 func TestHandleAPIStatePendingQuestionUsesPromptToken(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "pq-token")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "pq-token")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
 	coord, errCh, cancel := startWaitingSessionQuestion(t, srv, wsDir, &state.MultiChoiceQuestion{
@@ -2652,7 +2776,7 @@ func TestHandleAPIStatePendingQuestionUsesPromptToken(t *testing.T) {
 
 func TestRespondViaCoordinatorFullPath(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "respond-full")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "respond-full")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
 	coord, errCh, cancel := startWaitingSessionQuestion(t, srv, wsDir, &state.MultiChoiceQuestion{
@@ -2668,7 +2792,7 @@ func TestRespondViaCoordinatorFullPath(t *testing.T) {
 
 func TestRespondViaCoordinatorWithoutActiveToolCall(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "respond-wrong")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "respond-wrong")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
 	attachSessionCoordinator(t, srv, wsDir, state.Workflow{
@@ -2688,7 +2812,7 @@ func TestRespondViaCoordinatorWithoutActiveToolCall(t *testing.T) {
 
 func TestHandleAPIStateWithCaching(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "cache-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "cache-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
 	w1 := serveHTTP(srv, "GET", "/api/v1/state", "")
@@ -2713,7 +2837,7 @@ func TestBuildAdhocArgsWithoutVariantNoFlag(t *testing.T) {
 
 func TestBuildWorkspaceFullStateContinuousMode(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "cont-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "cont-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\ncontinuousModePrompt: run tests every 5m\n---\n# Goal"), 0o644))
 
 	ws := workspaceInfo{DirName: "cont-ws", Directory: wsDir, HasWorkspace: true}
@@ -2723,7 +2847,7 @@ func TestBuildWorkspaceFullStateContinuousMode(t *testing.T) {
 
 func TestBuildWorkspaceFullStateEmptyGoal(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "emptygoal-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "emptygoal-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n"), 0o644))
 
 	ws := workspaceInfo{DirName: "emptygoal-ws", Directory: wsDir, HasWorkspace: true}
@@ -2733,7 +2857,7 @@ func TestBuildWorkspaceFullStateEmptyGoal(t *testing.T) {
 
 func TestBuildWorkspaceFullStateExternal(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ext-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "ext-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
 	ws := workspaceInfo{DirName: "ext-ws", Directory: wsDir, HasWorkspace: true, External: true}
@@ -2743,7 +2867,7 @@ func TestBuildWorkspaceFullStateExternal(t *testing.T) {
 
 func TestBuildWorkspaceFullStateCanonicalTitle(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	goalContent := "---\ntitle: Canonical Repository Title\nflow: |\n  \"a\" -> \"b\"\n---\n# Body Heading That Must Be Ignored\nSome body"
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte(goalContent), 0644))
 
@@ -2756,8 +2880,8 @@ func TestBuildWorkspaceFullStateCanonicalTitle(t *testing.T) {
 
 func TestBuildWorkspaceFullStateUsesComputedTitleForForkedRoot(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	rootWSDir := setupTestWorkspace(t, rootDir, "root-ws")
-	forkWSDir := setupTestWorkspace(t, rootDir, "fork-ws")
+	rootWSDir := setupTestWorkspace(t, server, rootDir, "root-ws")
+	forkWSDir := setupTestWorkspace(t, server, rootDir, "fork-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(rootWSDir, "GOAL.md"), []byte("---\ntitle: Root Goal Title\n---\n# Root Goal\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(forkWSDir, "GOAL.md"), []byte("---\ntitle: Fork Goal Title\n---\n# Fork Goal\n"), 0o644))
 
@@ -2777,8 +2901,8 @@ func TestBuildWorkspaceFullStateUsesComputedTitleForForkedRoot(t *testing.T) {
 
 func TestBuildWorkspaceFullStateUsesComputedTitleForForkInRootGroup(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	rootWSDir := setupTestWorkspace(t, rootDir, "root-ws")
-	forkWSDir := setupTestWorkspace(t, rootDir, "fork-ws")
+	rootWSDir := setupTestWorkspace(t, server, rootDir, "root-ws")
+	forkWSDir := setupTestWorkspace(t, server, rootDir, "fork-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(rootWSDir, "GOAL.md"), []byte("---\ntitle: Root Goal Title\n---\n# Root Goal\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(forkWSDir, "GOAL.md"), []byte("---\ntitle: Fork Goal Title\n---\n# Fork Goal\n"), 0o644))
 
@@ -2798,8 +2922,8 @@ func TestBuildWorkspaceFullStateUsesComputedTitleForForkInRootGroup(t *testing.T
 
 func TestBuildWorkspaceFullStatePreservesLiteralForkGoalTitleText(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	rootWSDir := setupTestWorkspace(t, rootDir, "root-ws")
-	forkWSDir := setupTestWorkspace(t, rootDir, "fork-ws")
+	rootWSDir := setupTestWorkspace(t, server, rootDir, "root-ws")
+	forkWSDir := setupTestWorkspace(t, server, rootDir, "fork-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(rootWSDir, "GOAL.md"), []byte("---\ntitle: Root Goal Title\n---\n# Root Goal\n"), 0o644))
 
 	groups := []workspaceGroup{{
@@ -2835,8 +2959,8 @@ func TestBuildWorkspaceFullStatePreservesLiteralForkGoalTitleText(t *testing.T) 
 
 func TestCollectForksForAPIFromGroupsUsesComputedTitleForForks(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	rootWSDir := setupTestWorkspace(t, rootDir, "root-ws")
-	forkWSDir := setupTestWorkspace(t, rootDir, "fork-ws")
+	rootWSDir := setupTestWorkspace(t, server, rootDir, "root-ws")
+	forkWSDir := setupTestWorkspace(t, server, rootDir, "fork-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(rootWSDir, "GOAL.md"), []byte("---\ntitle: Root Goal Title\n---\n# Root Goal\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(forkWSDir, "GOAL.md"), []byte("---\ntitle: Fork Goal Title\n---\n# Fork Goal\n"), 0o644))
 
@@ -2855,9 +2979,53 @@ func TestCollectForksForAPIFromGroupsUsesComputedTitleForForks(t *testing.T) {
 	assert.Equal(t, "root-ws/Fork Goal Title", result[0].ComputedTitle)
 }
 
+func TestCollectForksForAPIFromGroupsMatchesSymlinkEquivalentRootDir(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	rootWSDir := setupTestWorkspace(t, server, rootDir, "root-ws")
+	forkWSDir := setupTestWorkspace(t, server, rootDir, "fork-ws")
+	aliasParent := t.TempDir()
+	rootAlias := filepath.Join(aliasParent, "root-ws-link")
+	require.NoError(t, os.Symlink(rootWSDir, rootAlias))
+
+	groups := []workspaceGroup{{
+		Root: workspaceInfo{Directory: rootWSDir, DirName: "root-ws", IsRoot: true, HasWorkspace: true},
+		Forks: []workspaceInfo{{
+			Directory:    forkWSDir,
+			DirName:      "fork-ws",
+			HasWorkspace: true,
+		}},
+	}}
+
+	result := server.collectForksForAPIFromGroups(rootAlias, groups)
+	require.Len(t, result, 1)
+	assert.Equal(t, forkWSDir, result[0].Dir)
+}
+
+func TestForkRootDirNameMatchesSymlinkEquivalentForkDir(t *testing.T) {
+	_, rootDir := setupTestServer(t)
+	rootWSDir := setupTestWorkspace(t, nil, rootDir, "root-ws")
+	forkWSDir := setupTestWorkspace(t, nil, rootDir, "fork-ws")
+	aliasParent := t.TempDir()
+	forkAlias := filepath.Join(aliasParent, "fork-ws-link")
+	require.NoError(t, os.Symlink(forkWSDir, forkAlias))
+
+	groups := []workspaceGroup{{
+		Root: workspaceInfo{Directory: rootWSDir, DirName: "root-ws", IsRoot: true, HasWorkspace: true},
+		Forks: []workspaceInfo{{
+			Directory:    forkWSDir,
+			DirName:      "fork-ws",
+			HasWorkspace: true,
+		}},
+	}}
+
+	rootDirName, ok := forkRootDirName(forkAlias, groups)
+	assert.True(t, ok)
+	assert.Equal(t, "root-ws", rootDirName)
+}
+
 func TestBuildWorkspaceFullStateNoGoal(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "nogoal-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "nogoal-ws")
 
 	ws := workspaceInfo{DirName: "nogoal-ws", Directory: wsDir, HasWorkspace: true}
 	result := srv.buildWorkspaceFullState(ws, nil)
@@ -2868,7 +3036,7 @@ func TestBuildWorkspaceFullStateNoGoal(t *testing.T) {
 
 func TestBuildWorkspaceFullStateNoFrontmatterUsesComputedTitle(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "nofm-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "nofm-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Plain Heading\n\nBody"), 0o644))
 
 	ws := workspaceInfo{DirName: "nofm-ws", Directory: wsDir, HasWorkspace: true}
@@ -2879,7 +3047,7 @@ func TestBuildWorkspaceFullStateNoFrontmatterUsesComputedTitle(t *testing.T) {
 
 func TestBuildWorkspaceFullStateRepairsMissingGoalTitle(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "repair-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "repair-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\nflow: |\n  \"a\" -> \"b\"\n---\n# Improve Repository Titles\n\nBody"), 0o644))
 
 	server.goalTitleComposer = func(_ string, _ []byte) (string, error) {
@@ -2906,8 +3074,8 @@ func TestBuildWorkspaceFullStateRepairsMissingGoalTitle(t *testing.T) {
 
 func TestBuildFullFactoryStateRepairsMissingTitlesSequentially(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	firstDir := setupTestWorkspace(t, rootDir, "first-ws")
-	secondDir := setupTestWorkspace(t, rootDir, "second-ws")
+	firstDir := setupTestWorkspace(t, server, rootDir, "first-ws")
+	secondDir := setupTestWorkspace(t, server, rootDir, "second-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(firstDir, "GOAL.md"), []byte("---\nflow: test\n---\n# First Goal"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(secondDir, "GOAL.md"), []byte("---\nflow: test\n---\n# Second Goal"), 0o644))
 
@@ -2950,7 +3118,7 @@ func TestBuildFullFactoryStateRepairsMissingTitlesSequentially(t *testing.T) {
 
 func TestBuildWorkspaceFullStateRunningWithSession(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "running-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "running-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
 	ws := workspaceInfo{DirName: "running-ws", Directory: wsDir, HasWorkspace: true, Running: true}
@@ -2960,7 +3128,7 @@ func TestBuildWorkspaceFullStateRunningWithSession(t *testing.T) {
 
 func TestBuildWorkspaceFullStateSelfDriveModeFlag(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{
 		InteractionMode: state.ModeSelfDrive,
@@ -2974,7 +3142,7 @@ func TestBuildWorkspaceFullStateSelfDriveModeFlag(t *testing.T) {
 
 func TestBuildWorkspaceFullStateWithAgentSequence(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "seq-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "seq-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
@@ -2992,7 +3160,7 @@ func TestBuildWorkspaceFullStateWithAgentSequence(t *testing.T) {
 
 func TestBuildWorkspaceFullStateWithAutoMode(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "auto-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "auto-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
@@ -3008,7 +3176,7 @@ func TestBuildWorkspaceFullStateWithAutoMode(t *testing.T) {
 
 func TestBuildWorkspaceFullStateWithCost(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "cost-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "cost-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
@@ -3026,7 +3194,7 @@ func TestBuildWorkspaceFullStateWithCost(t *testing.T) {
 
 func TestBuildWorkspaceFullStateWithEditedGoal(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "edited-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "edited-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal Content Here"), 0o644))
 
 	ws := workspaceInfo{DirName: "edited-ws", Directory: wsDir, HasWorkspace: true}
@@ -3036,7 +3204,7 @@ func TestBuildWorkspaceFullStateWithEditedGoal(t *testing.T) {
 
 func TestBuildWorkspaceFullStateWithFreeformPending(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	attachRunningSessionCoordinator(t, server, wsDir, state.Workflow{
 		Status:       state.StatusWorking,
 		HumanMessage: "What should I do next?",
@@ -3052,7 +3220,7 @@ func TestBuildWorkspaceFullStateWithFreeformPending(t *testing.T) {
 
 func TestBuildWorkspaceFullStateWithLogLines(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{
 		Status:       state.StatusWorking,
@@ -3079,7 +3247,7 @@ func TestBuildWorkspaceFullStateWithLogLines(t *testing.T) {
 
 func TestBuildWorkspaceFullStateWithMultiChoicePendingQuestion(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	attachRunningSessionCoordinator(t, server, wsDir, state.Workflow{
 		Status: state.StatusWorking,
 		MultiChoiceQuestion: &state.MultiChoiceQuestion{
@@ -3100,7 +3268,7 @@ func TestBuildWorkspaceFullStateWithMultiChoicePendingQuestion(t *testing.T) {
 
 func TestBuildWorkspaceFullStateWithPMFile(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "pm-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "pm-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, ".sgai", "PROJECT_MANAGEMENT.md"), []byte("# PM Content"), 0o644))
 
@@ -3112,7 +3280,7 @@ func TestBuildWorkspaceFullStateWithPMFile(t *testing.T) {
 
 func TestBuildWorkspaceFullStateWithProgress(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "progress-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "progress-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
@@ -3132,7 +3300,7 @@ func TestBuildWorkspaceFullStateWithProgress(t *testing.T) {
 
 func TestBuildWorkspaceFullStateWithWorkGatePending(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	attachRunningSessionCoordinator(t, server, wsDir, state.Workflow{
 		Status: state.StatusWorking,
 		MultiChoiceQuestion: &state.MultiChoiceQuestion{
@@ -3217,7 +3385,7 @@ func TestCoordinatorModelFromWorkspaceNotFoundReturnsEmpty(t *testing.T) {
 
 func TestCoordinatorModelFromWorkspaceWithModelsConfig(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	goalContent := "---\nmodels:\n  coordinator: anthropic/claude-sonnet-4-6\nflow: |\n  \"coordinator\"\n---\n# Test"
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte(goalContent), 0644))
 	result := server.coordinatorModelFromWorkspace("test-ws")
@@ -3226,7 +3394,7 @@ func TestCoordinatorModelFromWorkspaceWithModelsConfig(t *testing.T) {
 
 func TestHandleAPIAdhocAlreadyRunningReturnsOutput(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	st := server.getAdhocState(wsDir)
 	st.mu.Lock()
 	st.running = true
@@ -3278,35 +3446,35 @@ func TestHandleAPIBrowseDirsWithPathParam(t *testing.T) {
 
 func TestHandleAPIDeleteForkConfirmedNoFork(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "delfork-conf-nofork")
+	_ = setupTestWorkspace(t, srv, rootDir, "delfork-conf-nofork")
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/delfork-conf-nofork/delete-fork", `{"confirm":true,"forkDir":"/nonexistent"}`)
 	assert.NotEqual(t, http.StatusNotFound, w.Code)
 }
 
 func TestHandleAPIDeleteForkInvalidBodyJSON(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/delete-fork", "not-json")
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIDeleteForkNoConfirmRequired(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/delete-fork", `{"confirm":false}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIDeleteForkNotRootOrForkWorkspace(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/delete-fork", `{"confirm":true}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIDeleteMessageInvalidID(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "delmsg-badid")
+	_ = setupTestWorkspace(t, srv, rootDir, "delmsg-badid")
 
 	w := serveHTTP(srv, "DELETE", "/api/v1/workspaces/delmsg-badid/messages/notanumber", "")
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -3314,14 +3482,14 @@ func TestHandleAPIDeleteMessageInvalidID(t *testing.T) {
 
 func TestHandleAPIDeleteMessageInvalidIDPath(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "delmsg-path")
+	_ = setupTestWorkspace(t, srv, rootDir, "delmsg-path")
 	w := serveHTTP(srv, "DELETE", "/api/v1/workspaces/delmsg-path/messages/abc", "")
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIDeleteMessageValidViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "delmsg-valid")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "delmsg-valid")
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
 		Status: state.StatusComplete,
@@ -3337,7 +3505,7 @@ func TestHandleAPIDeleteMessageValidViaHTTP(t *testing.T) {
 
 func TestHandleAPIDeleteWorkspaceConfirmedStandalone(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "del-standalone-full")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "del-standalone-full")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0o644))
 
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/del-standalone-full/delete", `{"confirm":true}`)
@@ -3352,21 +3520,21 @@ func TestHandleAPIDeleteWorkspaceDirNotFoundError(t *testing.T) {
 
 func TestHandleAPIDeleteWorkspaceInvalidBodyJSON(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/delete", "not-json")
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIDeleteWorkspaceNoConfirmRequired(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/delete", `{"confirm":false}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIDeleteWorkspaceStandaloneDelete(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/delete", `{"confirm":true}`)
 	assert.Equal(t, http.StatusOK, w.Code)
 	var resp apiDeleteWorkspaceResponse
@@ -3383,21 +3551,21 @@ func TestHandleAPIDetachWorkspaceNotAttached(t *testing.T) {
 
 func TestHandleAPIForkWorkspaceEmptyGoal(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "fork-empty")
+	_ = setupTestWorkspace(t, srv, rootDir, "fork-empty")
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/fork-empty/fork", `{"goalContent":""}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIForkWorkspaceInvalidBodyJSON(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/fork", "not-json")
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIGetGoalSuccessReturnsContent(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# My Goal\nDo things"), 0644))
 	w := serveHTTP(server, "GET", "/api/v1/workspaces/test-ws/goal", "")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -3408,7 +3576,7 @@ func TestHandleAPIGetGoalSuccessReturnsContent(t *testing.T) {
 
 func TestHandleAPIListModelsViaHTTPReturnsModels(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "GET", "/api/v1/models?workspace=test-ws", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 	var resp apiModelsResponse
@@ -3418,7 +3586,7 @@ func TestHandleAPIListModelsViaHTTPReturnsModels(t *testing.T) {
 
 func TestHandleAPIOpenEditorGoalSuccessful(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# test goal"), 0644))
 	server.editorAvailable = true
 	server.editorName = "test-editor"
@@ -3429,7 +3597,7 @@ func TestHandleAPIOpenEditorGoalSuccessful(t *testing.T) {
 
 func TestHandleAPIOpenEditorPMSuccessful(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, ".sgai", "PROJECT_MANAGEMENT.md"), []byte("# PM"), 0644))
 	server.editorAvailable = true
 	server.editorName = "test-editor"
@@ -3440,7 +3608,7 @@ func TestHandleAPIOpenEditorPMSuccessful(t *testing.T) {
 
 func TestHandleAPIOpenEditorSuccessful(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	server.editorAvailable = true
 	server.editorName = "test-editor"
 	editor := &configurableEditor{name: "test-editor", command: "echo"}
@@ -3455,7 +3623,7 @@ func TestHandleAPIOpenEditorSuccessful(t *testing.T) {
 
 func TestHandleAPISkillDetailWithContent(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "skill-detail")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "skill-detail")
 	skillPath := filepath.Join(wsDir, ".sgai", "skills", "coding-practices", "my-skill")
 	require.NoError(t, os.MkdirAll(skillPath, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(skillPath, "SKILL.md"),
@@ -3467,7 +3635,7 @@ func TestHandleAPISkillDetailWithContent(t *testing.T) {
 
 func TestHandleAPISnippetDetailWithExtensionLookup(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	snippetDir := filepath.Join(wsDir, ".sgai", "snippets", "go")
 	require.NoError(t, os.MkdirAll(snippetDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(snippetDir, "hello.go"), []byte("---\nname: Hello\ndescription: A hello snippet\n---\npackage main\nfunc main() {}"), 0644))
@@ -3483,7 +3651,7 @@ func TestHandleAPISnippetDetailWithExtensionLookup(t *testing.T) {
 
 func TestHandleAPISnippetDetailWithFile(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "snippet-detail")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "snippet-detail")
 	snippetDir := filepath.Join(wsDir, ".sgai", "snippets", "python")
 	require.NoError(t, os.MkdirAll(snippetDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(snippetDir, "hello.py"),
@@ -3495,7 +3663,7 @@ func TestHandleAPISnippetDetailWithFile(t *testing.T) {
 
 func TestHandleAPISnippetsByLanguageFoundMatch(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	snippetDir := filepath.Join(wsDir, ".sgai", "snippets", "python")
 	require.NoError(t, os.MkdirAll(snippetDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(snippetDir, "hello.py"), []byte("---\ndescription: py hello\n---\nprint('hi')"), 0644))
@@ -3510,14 +3678,14 @@ func TestHandleAPISnippetsByLanguageFoundMatch(t *testing.T) {
 
 func TestHandleAPISnippetsByLanguageNoMatch(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "GET", "/api/v1/snippets/nonexistent?workspace=test-ws", "")
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
 func TestHandleAPISnippetsByLanguageWithContent(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "sniplang-content")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "sniplang-content")
 	snippetDir := filepath.Join(wsDir, ".sgai", "snippets", "typescript")
 	require.NoError(t, os.MkdirAll(snippetDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(snippetDir, "util.ts"),
@@ -3535,7 +3703,7 @@ func TestHandleAPIStartSessionNonExistent(t *testing.T) {
 
 func TestHandleAPISteerSuccessViaAPI(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{})
 	require.NoError(t, errCoord)
@@ -3545,7 +3713,7 @@ func TestHandleAPISteerSuccessViaAPI(t *testing.T) {
 
 func TestHandleAPISteerWithState(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "steer-state")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "steer-state")
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
 		Status:       state.StatusComplete,
@@ -3559,7 +3727,7 @@ func TestHandleAPISteerWithState(t *testing.T) {
 
 func TestHandleAPISteerWithValidSteer(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "steer-valid-full")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "steer-valid-full")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\nflow: |\n  digraph G {\n    \"coordinator\" -> \"builder\"\n  }\n---\n# Goal"), 0o644))
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
@@ -3574,7 +3742,7 @@ func TestHandleAPISteerWithValidSteer(t *testing.T) {
 
 func TestHandleAPIStopSessionAlreadyStopped(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "stop-already")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "stop-already")
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
 		Status: state.StatusComplete,
@@ -3587,7 +3755,7 @@ func TestHandleAPIStopSessionAlreadyStopped(t *testing.T) {
 
 func TestHandleAPIStopSessionWithState(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "stop-state")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "stop-state")
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
 		Status: state.StatusWorking,
@@ -3600,7 +3768,7 @@ func TestHandleAPIStopSessionWithState(t *testing.T) {
 
 func TestHandleAPITogglePinAndUnpin(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "pin-toggle")
+	_ = setupTestWorkspace(t, srv, rootDir, "pin-toggle")
 	srv.pinnedConfigDir = t.TempDir()
 
 	w1 := serveHTTP(srv, "POST", "/api/v1/workspaces/pin-toggle/pin", "")
@@ -3618,7 +3786,7 @@ func TestHandleAPITogglePinNonExistent(t *testing.T) {
 
 func TestHandleAPITogglePinSuccessToggle(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/pin", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 	var resp apiTogglePinResponse
@@ -3628,14 +3796,14 @@ func TestHandleAPITogglePinSuccessToggle(t *testing.T) {
 
 func TestHandleAPIUpdateGoalInvalidJSONBody(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "PUT", "/api/v1/workspaces/test-ws/goal", "not-json")
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIUpdateGoalSuccessWrites(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("old"), 0644))
 	w := serveHTTP(server, "PUT", "/api/v1/workspaces/test-ws/goal", `{"content":"# New Goal"}`)
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -3649,7 +3817,7 @@ func TestHandleAPIUpdateGoalSuccessWrites(t *testing.T) {
 
 func TestHandleAPIUpdateGoalWithContent(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "upgoal-content")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "upgoal-content")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Old"), 0o644))
 
 	w := serveHTTP(srv, "PUT", "/api/v1/workspaces/upgoal-content/goal", `{"content":"---\nflow: |\n  digraph G {\n    \"a\" -> \"b\"\n  }\n---\n# Updated Goal"}`)
@@ -3662,7 +3830,7 @@ func TestHandleAPIUpdateGoalWithContent(t *testing.T) {
 
 func TestHandleAPIWorkflowSVGAvailableFromCache(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	server.svgCache.set(wsDir+"|Unknown", "<svg>test</svg>")
 	w := serveHTTP(server, "GET", "/api/v1/workspaces/test-ws/workflow.svg", "")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -3672,7 +3840,7 @@ func TestHandleAPIWorkflowSVGAvailableFromCache(t *testing.T) {
 
 func TestHandleAPIWorkflowSVGNotAvailableError(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "GET", "/api/v1/workspaces/test-ws/workflow.svg", "")
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -4011,7 +4179,7 @@ func TestHandleRespondViaCoordinator(t *testing.T) {
 
 	t.Run("stalePromptToken", func(t *testing.T) {
 		srv, rootDir := setupTestServer(t)
-		wsDir := setupTestWorkspace(t, rootDir, "stale-token")
+		wsDir := setupTestWorkspace(t, srv, rootDir, "stale-token")
 		coord := state.NewCoordinatorEmpty(filepath.Join(wsDir, ".sgai", "state.json"))
 		firstErrCh, cancelFirst := startCoordinatorQuestion(t, coord, &state.MultiChoiceQuestion{
 			Questions: []state.QuestionItem{{Question: "Pick one", Choices: []string{"A", "B"}}},
@@ -4047,7 +4215,7 @@ func TestHandleRespondViaCoordinator(t *testing.T) {
 
 func TestResolveForkDir(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "test-ws")
 
 	t.Run("usesRequestForkDirWithinRoot", func(t *testing.T) {
 		forkDir := filepath.Join(rootDir, "fork-1")
@@ -4216,7 +4384,7 @@ var _ fs.FS = fstest.MapFS{}
 
 func TestHandleAPIGetGoalViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "test-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# My Goal\nContent here"), 0o644))
 
 	w := serveHTTP(srv, "GET", "/api/v1/workspaces/test-ws/goal", "")
@@ -4229,7 +4397,7 @@ func TestHandleAPIGetGoalViaHTTP(t *testing.T) {
 
 func TestHandleAPIForkTemplateNotRoot(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "standalone-ws")
+	_ = setupTestWorkspace(t, srv, rootDir, "standalone-ws")
 
 	w := serveHTTP(srv, "GET", "/api/v1/workspaces/standalone-ws/fork-template", "")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -4240,7 +4408,7 @@ func TestHandleAPIForkTemplateNotRoot(t *testing.T) {
 
 func TestHandleAPIDeleteWorkspaceNoConfirm(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, rootDir, "ws")
+	_ = setupTestWorkspace(t, srv, rootDir, "ws")
 
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/ws/delete", `{"confirm": false}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -4308,7 +4476,7 @@ func TestServiceEditorPMService(t *testing.T) {
 
 func TestHandleAPIOpenEditorViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "editor-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "editor-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0o644))
 	srv.editorAvailable = true
 	srv.editor = newConfigurableEditor("echo")
@@ -4325,7 +4493,7 @@ func TestListModelsServiceFallback(t *testing.T) {
 
 func TestHandleAPIWorkspaceDiffRouteRemoved(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "no-jj-ws")
+	setupTestWorkspace(t, srv, rootDir, "no-jj-ws")
 
 	w := serveHTTP(srv, "GET", "/api/v1/workspaces/no-jj-ws/diff", "")
 	assert.Equal(t, http.StatusNotFound, w.Code)
@@ -4333,7 +4501,7 @@ func TestHandleAPIWorkspaceDiffRouteRemoved(t *testing.T) {
 
 func TestHandleAPISteerViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "steer-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "steer-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Original"), 0o644))
 
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
@@ -4426,7 +4594,7 @@ func TestGetWorkspaceStatusPreservesWorkingStatusOnDisk(t *testing.T) {
 
 func TestHandleAPIRespondViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "respond-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "respond-ws")
 	_, errCh, cancel := startWaitingSessionQuestion(t, srv, wsDir, &state.MultiChoiceQuestion{
 		Questions: []state.QuestionItem{{Question: "Pick one", Choices: []string{"A", "B"}}},
 	}, "Pick one")
@@ -4645,21 +4813,21 @@ func TestConvertTodosForAPI(t *testing.T) {
 
 func TestHandleAPIDeleteForkNoConfirm(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/delete-fork", `{"confirm":false}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIDeleteWorkspaceNotFound(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/nonexistent/delete", `{"confirm":true}`)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
 func TestHandleAPIDeleteWorkspaceStandalone(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	require.NoError(t, os.MkdirAll(filepath.Join(wsDir, ".jj"), 0755))
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/delete", `{"confirm":true}`)
 	assert.Contains(t, []int{http.StatusOK, http.StatusInternalServerError, http.StatusNotFound}, w.Code)
@@ -4667,42 +4835,42 @@ func TestHandleAPIDeleteWorkspaceStandalone(t *testing.T) {
 
 func TestHandleAPIGetGoalMissing(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "GET", "/api/v1/workspaces/test-ws/goal", "")
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
 func TestHandleAPIUpdateGoalEmptyContent(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "PUT", "/api/v1/workspaces/test-ws/goal", `{"content":""}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIAdhocInvalidBody(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/adhoc", "{bad}")
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIAdhocEmptyPrompt(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/adhoc", `{"prompt":"","model":"test"}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIAdhocEmptyModel(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/adhoc", `{"prompt":"test","model":""}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIStartSessionRootWorkspace(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	canonicalDir := resolveSymlinks(wsDir)
 	server.mu.Lock()
 	server.externalDirs[canonicalDir] = true
@@ -4720,7 +4888,7 @@ func TestHandleAPIStartSessionInvalidModelReturnsActionableError(t *testing.T) {
 
 	if os.Getenv("SGAI_HELPER_INVALID_MODEL_START") == "1" {
 		server, rootDir := setupTestServer(t)
-		wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+		wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 		require.NoError(t, initializeWorkspace(wsDir))
 
 		goalContent := strings.Join([]string{
@@ -4749,7 +4917,7 @@ func TestHandleAPIStartSessionInvalidModelReturnsActionableError(t *testing.T) {
 
 func TestHandleAPIForkWorkspaceStandalone(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/fork", `{"goalContent":"# Test"}`)
 	assert.Contains(t, []int{http.StatusBadRequest, http.StatusInternalServerError, http.StatusCreated}, w.Code)
 }
@@ -4762,7 +4930,7 @@ func TestHandleAPIAttachWorkspaceInvalidBody(t *testing.T) {
 
 func TestHandleAPIOpenEditorForWorkspace(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	server.editorAvailable = true
 	server.editor = newConfigurableEditor("echo")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/open-editor", "")
@@ -4771,7 +4939,7 @@ func TestHandleAPIOpenEditorForWorkspace(t *testing.T) {
 
 func TestHandleAPIDeleteMessageNumericNotFound(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "DELETE", "/api/v1/workspaces/test-ws/messages/99999", "")
 	assert.Contains(t, []int{http.StatusOK, http.StatusNotFound, http.StatusInternalServerError}, w.Code)
 }
@@ -4810,7 +4978,7 @@ func TestResolveRootForDeleteFork(t *testing.T) {
 
 func TestHandleAPIDeleteWorkspaceRootBlocked(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/delete", `{"confirm":true}`)
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), "external workspace detached")
@@ -4822,7 +4990,7 @@ func TestHandleAPIDeleteWorkspaceRootBlocked(t *testing.T) {
 
 func TestHandleAPIDeleteWorkspaceConfirmed(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Test"), 0644))
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/delete", `{"confirm":true}`)
 	assert.Contains(t, []int{http.StatusOK, http.StatusInternalServerError}, w.Code)
@@ -4836,7 +5004,7 @@ func TestHandleAPIStopSessionNotFoundNewBatch(t *testing.T) {
 
 func TestHandleAPIForkTemplateRootNewBatch(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	server.classifyCache.set(wsDir, workspaceRoot)
 	w := serveHTTP(server, "GET", "/api/v1/workspaces/test-ws/fork-template", "")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -4851,7 +5019,7 @@ func TestHandleAPIDeleteForkNotFoundNewBatch(t *testing.T) {
 
 func TestHandleAPIDeleteForkStandaloneBlocked(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/delete-fork", `{}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "not a root or fork")
@@ -4859,7 +5027,7 @@ func TestHandleAPIDeleteForkStandaloneBlocked(t *testing.T) {
 
 func TestHandleAPIDeleteForkInvalidForkDir(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	server.classifyCache.set(wsDir, workspaceRoot)
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/delete-fork", `{"confirm":true,"forkDir":"../bad"}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -4867,14 +5035,14 @@ func TestHandleAPIDeleteForkInvalidForkDir(t *testing.T) {
 
 func TestHandleAPIAdhocInvalidJSON(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/adhoc", "{invalid}")
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIAdhocMissingPrompt(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/adhoc", `{"prompt":"","model":"test"}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "prompt and model are required")
@@ -4882,14 +5050,14 @@ func TestHandleAPIAdhocMissingPrompt(t *testing.T) {
 
 func TestHandleAPIAdhocMissingModel(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/adhoc", `{"prompt":"test","model":""}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIAdhocStopNotRunning(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "DELETE", "/api/v1/workspaces/test-ws/adhoc", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), "stopped")
@@ -4897,7 +5065,7 @@ func TestHandleAPIAdhocStopNotRunning(t *testing.T) {
 
 func TestHandleAPIUpdateGoalValidContent(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Old"), 0644))
 	w := serveHTTP(server, "PUT", "/api/v1/workspaces/test-ws/goal", `{"content":"# New Goal"}`)
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -4905,7 +5073,7 @@ func TestHandleAPIUpdateGoalValidContent(t *testing.T) {
 
 func TestHandleAPIRespondNoPendingQuestion(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/respond", `{"promptToken":"q1","answer":"test"}`)
 	assert.Equal(t, http.StatusConflict, w.Code)
 	assert.Contains(t, w.Body.String(), "no pending question")
@@ -4925,14 +5093,14 @@ func TestHandleAPIDetachNonexistentWorkspace(t *testing.T) {
 
 func TestHandleAPIForkEmptyGoal(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/fork", `{"goalContent":""}`)
 	assert.Contains(t, []int{http.StatusBadRequest, http.StatusInternalServerError}, w.Code)
 }
 
 func TestHandleAPIListModelsWithWorkspaceNewBatch(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	w := serveHTTP(server, "GET", "/api/v1/models?workspace=test-ws", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 }
@@ -4996,7 +5164,7 @@ func TestParseAgentIdentityHeaderNewBatch(t *testing.T) {
 
 func TestHandleAPIOpenEditorProjectMgmt(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "test-ws")
+	setupTestWorkspace(t, server, rootDir, "test-ws")
 	server.editorAvailable = true
 	server.editor = newConfigurableEditor("echo")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/open-editor/project-management", "")
@@ -5005,14 +5173,14 @@ func TestHandleAPIOpenEditorProjectMgmt(t *testing.T) {
 
 func TestStartSessionServiceClassification(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "classify-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "classify-ws")
 	kind := server.classifyWorkspaceCached(wsDir)
 	assert.Equal(t, workspaceStandalone, kind)
 }
 
 func TestStopSessionServiceAlreadyStopped(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "stopped-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "stopped-ws")
 
 	result := server.stopSessionService(wsDir)
 	assert.Equal(t, "stopped", result.Status)
@@ -5022,7 +5190,7 @@ func TestStopSessionServiceAlreadyStopped(t *testing.T) {
 
 func TestRespondServiceNoPendingQuestion(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "respond-ws2")
+	wsDir := setupTestWorkspace(t, server, rootDir, "respond-ws2")
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	require.NoError(t, os.WriteFile(statePath, []byte(`{"status":"working"}`), 0644))
 
@@ -5032,7 +5200,7 @@ func TestRespondServiceNoPendingQuestion(t *testing.T) {
 
 func TestSteerServiceEmptyMessage(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "steer-ws2")
+	wsDir := setupTestWorkspace(t, server, rootDir, "steer-ws2")
 
 	_, err := server.steerService(wsDir, "")
 	assert.Error(t, err)
@@ -5041,7 +5209,7 @@ func TestSteerServiceEmptyMessage(t *testing.T) {
 
 func TestSteerServiceValidMessage(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "steer-ws3")
+	wsDir := setupTestWorkspace(t, server, rootDir, "steer-ws3")
 	goalContent := "---\nflow: |\n  \"a\" -> \"b\"\n---\n# Test"
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte(goalContent), 0644))
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
@@ -5054,21 +5222,21 @@ func TestSteerServiceValidMessage(t *testing.T) {
 
 func TestHandleAPIDeleteForkNotConfirmedNew(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "fork-ws")
+	setupTestWorkspace(t, server, rootDir, "fork-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/fork-ws/delete-fork", `{"confirm":false}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIDeleteWorkspaceNotConfirmed(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "del-ws")
+	setupTestWorkspace(t, server, rootDir, "del-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/del-ws/delete", `{"confirm":false}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIAdhocStatusNotRunning(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "adhoc-ws")
+	setupTestWorkspace(t, server, rootDir, "adhoc-ws")
 	w := serveHTTP(server, "GET", "/api/v1/workspaces/adhoc-ws/adhoc", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 
@@ -5079,7 +5247,7 @@ func TestHandleAPIAdhocStatusNotRunning(t *testing.T) {
 
 func TestHandleAPIAdhocStopWhenNotRunning(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "adhoc-ws2")
+	setupTestWorkspace(t, server, rootDir, "adhoc-ws2")
 	w := serveHTTP(server, "DELETE", "/api/v1/workspaces/adhoc-ws2/adhoc", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 
@@ -5090,7 +5258,7 @@ func TestHandleAPIAdhocStopWhenNotRunning(t *testing.T) {
 
 func TestHandleAPIStopSessionNoSessionNew(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "stop-ws")
+	setupTestWorkspace(t, server, rootDir, "stop-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/stop-ws/stop", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 }
@@ -5103,14 +5271,14 @@ func TestHandleAPIBrowseDirectoriesEmptyPath(t *testing.T) {
 
 func TestHandleAPIDeleteMessageNotFoundNew(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "msg-ws3")
+	setupTestWorkspace(t, server, rootDir, "msg-ws3")
 	w := serveHTTP(server, "DELETE", "/api/v1/workspaces/msg-ws3/messages/999", "")
 	assert.Contains(t, []int{http.StatusOK, http.StatusNotFound, http.StatusBadRequest}, w.Code)
 }
 
 func TestHandleAPISteerEmptyMessage(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "steer-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "steer-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\nflow: |\n  \"a\" -> \"b\"\n---\n# Test"), 0644))
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/steer-ws/steer", `{"message":""}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -5118,7 +5286,7 @@ func TestHandleAPISteerEmptyMessage(t *testing.T) {
 
 func TestHandleAPIForkTemplateNoGroupsNew(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "template-ws")
+	setupTestWorkspace(t, server, rootDir, "template-ws")
 	w := serveHTTP(server, "GET", "/api/v1/workspaces/template-ws/fork-template", "")
 	assert.Contains(t, []int{http.StatusOK, http.StatusBadRequest}, w.Code)
 }
@@ -5199,7 +5367,7 @@ func TestHandleAPIStateOmitsForkCommitFields(t *testing.T) {
 
 func TestHandleAPIOpenEditorNoEditorNew(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "editor-ws")
+	setupTestWorkspace(t, server, rootDir, "editor-ws")
 	server.editorAvailable = false
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/editor-ws/open-editor", "")
 	assert.Contains(t, []int{http.StatusServiceUnavailable, http.StatusInternalServerError}, w.Code)
@@ -5207,7 +5375,7 @@ func TestHandleAPIOpenEditorNoEditorNew(t *testing.T) {
 
 func TestDeleteWorkspaceServiceDirect(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "del-svc-api")
+	wsDir := setupTestWorkspace(t, server, rootDir, "del-svc-api")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0644))
 
 	result, err := server.deleteWorkspaceService(wsDir)
@@ -5220,7 +5388,7 @@ func TestDeleteWorkspaceServiceDirect(t *testing.T) {
 
 func TestDeleteMessageServiceDirect(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "msg-svc-api")
+	wsDir := setupTestWorkspace(t, server, rootDir, "msg-svc-api")
 
 	coord := server.workspaceCoordinator(wsDir)
 	require.NoError(t, coord.UpdateState(func(wf *state.Workflow) {
@@ -5235,14 +5403,14 @@ func TestDeleteMessageServiceDirect(t *testing.T) {
 
 func TestDeleteMessageServiceNotFoundDirect(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "msg-svc2-api")
+	wsDir := setupTestWorkspace(t, server, rootDir, "msg-svc2-api")
 	_, err := server.deleteMessageService(wsDir, 999)
 	assert.Error(t, err)
 }
 
 func TestResolveForkTemplateContentNoForks(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "template-svc-api")
+	wsDir := setupTestWorkspace(t, server, rootDir, "template-svc-api")
 	content := server.resolveForkTemplateContent(wsDir)
 	assert.NotEmpty(t, content)
 }
@@ -5262,7 +5430,7 @@ func TestHandleAPIBrowseDirectoriesRelativePath(t *testing.T) {
 
 func TestHandleAPIAdhocStatusState(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "adhoc-state")
+	setupTestWorkspace(t, server, rootDir, "adhoc-state")
 	w := serveHTTP(server, "GET", "/api/v1/workspaces/adhoc-state/adhoc", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), "adhoc status")
@@ -5270,14 +5438,14 @@ func TestHandleAPIAdhocStatusState(t *testing.T) {
 
 func TestHandleAPIAdhocStopWhenNotRunningDirect(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "adhoc-stop-direct")
+	setupTestWorkspace(t, server, rootDir, "adhoc-stop-direct")
 	w := serveHTTP(server, "DELETE", "/api/v1/workspaces/adhoc-stop-direct/adhoc", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
 func TestHandleAPISnippetsWithWorkspaceNew(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "snippets-ws-new")
+	wsDir := setupTestWorkspace(t, server, rootDir, "snippets-ws-new")
 	goDir := filepath.Join(wsDir, ".sgai", "snippets", "go")
 	require.NoError(t, os.MkdirAll(goDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(goDir, "test.go"), []byte("---\nname: Test\ndescription: Test snippet\n---\npackage main"), 0644))
@@ -5293,7 +5461,7 @@ func TestHandleAPIOpenEditorMissingWorkspace(t *testing.T) {
 
 func TestHandleAPISteerValidMessageNew(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "steer-valid-new")
+	wsDir := setupTestWorkspace(t, server, rootDir, "steer-valid-new")
 	stateFile := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(stateFile, state.Workflow{
 		Status: state.StatusWorking,
@@ -5305,14 +5473,14 @@ func TestHandleAPISteerValidMessageNew(t *testing.T) {
 
 func TestHandleAPIAdhocPostNoPrompt(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "adhoc-noprompt")
+	setupTestWorkspace(t, server, rootDir, "adhoc-noprompt")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/adhoc-noprompt/adhoc", `{"prompt":""}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIAdhocPostInvalidBody(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "adhoc-badbody")
+	setupTestWorkspace(t, server, rootDir, "adhoc-badbody")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/adhoc-badbody/adhoc", "not json")
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -5425,7 +5593,7 @@ func TestServeReactIndexSuccess(t *testing.T) {
 
 func TestHandleAPIDeleteWorkspaceDirNotExist(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "ws-phantom")
+	setupTestWorkspace(t, server, rootDir, "ws-phantom")
 	require.NoError(t, os.RemoveAll(filepath.Join(rootDir, "ws-phantom")))
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/ws-phantom/delete", `{"confirm": true}`)
 	assert.Equal(t, http.StatusNotFound, w.Code)
@@ -5433,7 +5601,7 @@ func TestHandleAPIDeleteWorkspaceDirNotExist(t *testing.T) {
 
 func TestHandleAPISteerSuccess(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ws-steer3")
+	wsDir := setupTestWorkspace(t, server, rootDir, "ws-steer3")
 	sgaiDir := filepath.Join(wsDir, ".sgai")
 	require.NoError(t, os.MkdirAll(sgaiDir, 0755))
 	statePath := filepath.Join(sgaiDir, "state.json")
@@ -5448,7 +5616,7 @@ func TestHandleAPISteerSuccess(t *testing.T) {
 
 func TestHandleAPIGetGoalSuccess(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ws-goal")
+	wsDir := setupTestWorkspace(t, server, rootDir, "ws-goal")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# My Goal"), 0644))
 	w := serveHTTP(server, "GET", "/api/v1/workspaces/ws-goal/goal", "")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -5459,7 +5627,7 @@ func TestHandleAPIGetGoalSuccess(t *testing.T) {
 
 func TestHandleAPIUpdateGoalSuccess(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ws-upgoal3")
+	wsDir := setupTestWorkspace(t, server, rootDir, "ws-upgoal3")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Old"), 0644))
 	w := serveHTTP(server, "PUT", "/api/v1/workspaces/ws-upgoal3/goal", `{"content": "# New Goal"}`)
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -5470,7 +5638,7 @@ func TestHandleAPIUpdateGoalSuccess(t *testing.T) {
 
 func TestHandleAPITogglePinSuccess(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ws-pin")
+	wsDir := setupTestWorkspace(t, server, rootDir, "ws-pin")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0644))
 	server.pinnedConfigDir = t.TempDir()
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/ws-pin/pin", "")
@@ -5482,14 +5650,14 @@ func TestHandleAPITogglePinSuccess(t *testing.T) {
 
 func TestHandleAPIDeleteForkNotRootOrFork(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "ws-delfork3")
+	setupTestWorkspace(t, server, rootDir, "ws-delfork3")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/ws-delfork3/delete-fork", `{"confirm":true}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIDeleteMessageMissingID(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "ws-delmsg")
+	setupTestWorkspace(t, server, rootDir, "ws-delmsg")
 	mux := http.NewServeMux()
 	server.registerAPIRoutes(mux)
 	req := httptest.NewRequest("DELETE", "/api/v1/workspaces/ws-delmsg/messages/", nil)
@@ -5500,7 +5668,7 @@ func TestHandleAPIDeleteMessageMissingID(t *testing.T) {
 
 func TestHandleAPIDeleteMessageNotFound(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ws-delmsg3")
+	wsDir := setupTestWorkspace(t, server, rootDir, "ws-delmsg3")
 	sgaiDir := filepath.Join(wsDir, ".sgai")
 	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "state.json"), []byte(`{"status":"working","messages":[]}`), 0644))
 	mux := http.NewServeMux()
@@ -5513,7 +5681,7 @@ func TestHandleAPIDeleteMessageNotFound(t *testing.T) {
 
 func TestHandleAPIDeleteMessageSuccess(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ws-delmsg4")
+	wsDir := setupTestWorkspace(t, server, rootDir, "ws-delmsg4")
 	sgaiDir := filepath.Join(wsDir, ".sgai")
 	stateData := `{"status":"working","messages":[{"id":1,"fromAgent":"a","toAgent":"b","body":"msg","read":false}]}`
 	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "state.json"), []byte(stateData), 0644))
@@ -5531,7 +5699,7 @@ func TestHandleAPIDeleteMessageSuccess(t *testing.T) {
 
 func TestHandleAPIOpenEditorNotAvailable(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "ws-editor")
+	setupTestWorkspace(t, server, rootDir, "ws-editor")
 	server.editorAvailable = false
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/ws-editor/open-editor", "")
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
@@ -5539,7 +5707,7 @@ func TestHandleAPIOpenEditorNotAvailable(t *testing.T) {
 
 func TestHandleAPIOpenEditorGoalNotAvailable(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "ws-editgoal")
+	setupTestWorkspace(t, server, rootDir, "ws-editgoal")
 	server.editorAvailable = false
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/ws-editgoal/open-editor/goal", "")
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
@@ -5547,7 +5715,7 @@ func TestHandleAPIOpenEditorGoalNotAvailable(t *testing.T) {
 
 func TestHandleAPIOpenEditorGoalFileNotFound(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "ws-editgoal2")
+	setupTestWorkspace(t, server, rootDir, "ws-editgoal2")
 	server.editorAvailable = true
 	server.editor = newConfigurableEditor("echo")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/ws-editgoal2/open-editor/goal", "")
@@ -5556,7 +5724,7 @@ func TestHandleAPIOpenEditorGoalFileNotFound(t *testing.T) {
 
 func TestHandleAPIOpenEditorGoalSuccess(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ws-editgoal3")
+	wsDir := setupTestWorkspace(t, server, rootDir, "ws-editgoal3")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0644))
 	server.editorAvailable = true
 	server.editorName = "echo"
@@ -5567,7 +5735,7 @@ func TestHandleAPIOpenEditorGoalSuccess(t *testing.T) {
 
 func TestDeleteMessageServiceSuccess(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ws-delsvc")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "ws-delsvc")
 	sgaiDir := filepath.Join(wsDir, ".sgai")
 	stateData := `{"status":"working","messages":[{"id":5,"fromAgent":"a","toAgent":"b","body":"test","read":false}]}`
 	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "state.json"), []byte(stateData), 0644))
@@ -5579,7 +5747,7 @@ func TestDeleteMessageServiceSuccess(t *testing.T) {
 
 func TestDeleteMessageServiceNotFound(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ws-delsvc2")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "ws-delsvc2")
 	sgaiDir := filepath.Join(wsDir, ".sgai")
 	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "state.json"), []byte(`{"status":"working","messages":[]}`), 0644))
 	_, err := srv.deleteMessageService(wsDir, 99)
@@ -5598,14 +5766,14 @@ func TestTogglePin(t *testing.T) {
 
 func TestHandleAPIAdhocPostMissingModel(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "ws-adhoc-m")
+	setupTestWorkspace(t, server, rootDir, "ws-adhoc-m")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/ws-adhoc-m/adhoc", `{"prompt":"test","model":""}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIAdhocStopSuccess(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ws-adhocstop")
+	wsDir := setupTestWorkspace(t, server, rootDir, "ws-adhocstop")
 	_ = server.getAdhocState(wsDir)
 	mux := http.NewServeMux()
 	server.registerAPIRoutes(mux)
@@ -5617,7 +5785,7 @@ func TestHandleAPIAdhocStopSuccess(t *testing.T) {
 
 func TestHandleAPIWorkflowSVGNotAvailable(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "ws-svg")
+	setupTestWorkspace(t, server, rootDir, "ws-svg")
 	w := serveHTTP(server, "GET", "/api/v1/workspaces/ws-svg/workflow-svg", "")
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -5653,7 +5821,7 @@ func TestHandleAPISignalStream(t *testing.T) {
 
 func TestHandleAPIOpenEditorPMNotAvailable(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "ws-editpm")
+	setupTestWorkspace(t, server, rootDir, "ws-editpm")
 	server.editorAvailable = false
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/ws-editpm/open-editor/project-management", "")
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
@@ -5661,7 +5829,7 @@ func TestHandleAPIOpenEditorPMNotAvailable(t *testing.T) {
 
 func TestHandleAPIOpenEditorPMSuccess(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ws-editpm2")
+	wsDir := setupTestWorkspace(t, server, rootDir, "ws-editpm2")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, ".sgai", "PROJECT_MANAGEMENT.md"), []byte("# PM"), 0644))
 	server.editorAvailable = true
 	server.editorName = "echo"
@@ -5672,7 +5840,7 @@ func TestHandleAPIOpenEditorPMSuccess(t *testing.T) {
 
 func TestHandleAPIOpenEditorSuccess(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "ws-edit-open")
+	setupTestWorkspace(t, server, rootDir, "ws-edit-open")
 	server.editorAvailable = true
 	server.editorName = "echo"
 	server.editor = newConfigurableEditor("echo")
@@ -5682,7 +5850,7 @@ func TestHandleAPIOpenEditorSuccess(t *testing.T) {
 
 func TestStartSessionAlreadyRunning(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ws-start-double")
+	wsDir := setupTestWorkspace(t, server, rootDir, "ws-start-double")
 	server.mu.Lock()
 	server.sessions[wsDir] = &session{running: true}
 	server.mu.Unlock()
@@ -5693,7 +5861,7 @@ func TestStartSessionAlreadyRunning(t *testing.T) {
 
 func TestPollWorkspaceStates(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ws-poll")
+	wsDir := setupTestWorkspace(t, server, rootDir, "ws-poll")
 	sgaiDir := filepath.Join(wsDir, ".sgai")
 	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "state.json"), []byte(`{"status":"working"}`), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\nflow: |\n  \"a\" -> \"b\"\n---\n# Test"), 0644))
@@ -5705,7 +5873,7 @@ func TestPollWorkspaceStates(t *testing.T) {
 
 func TestCheckWorkspaceStateNoState(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ws-check-no-state")
+	wsDir := setupTestWorkspace(t, server, rootDir, "ws-check-no-state")
 	snapshots := make(map[string]workspaceStateSnapshot)
 	active := make(map[string]bool)
 	server.checkWorkspaceState(wsDir, snapshots, active)
@@ -5715,7 +5883,7 @@ func TestCheckWorkspaceStateNoState(t *testing.T) {
 
 func TestCheckWorkspaceStateWithState(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ws-check-state")
+	wsDir := setupTestWorkspace(t, server, rootDir, "ws-check-state")
 	sgaiDir := filepath.Join(wsDir, ".sgai")
 	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "state.json"), []byte(`{"status":"working"}`), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Test"), 0644))
@@ -5727,7 +5895,7 @@ func TestCheckWorkspaceStateWithState(t *testing.T) {
 
 func TestCheckWorkspaceStateChanged(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ws-check-change")
+	wsDir := setupTestWorkspace(t, server, rootDir, "ws-check-change")
 	sgaiDir := filepath.Join(wsDir, ".sgai")
 	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "state.json"), []byte(`{"status":"working"}`), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Test"), 0644))
@@ -5750,13 +5918,13 @@ func TestInitializeWorkspaceFullPath(t *testing.T) {
 
 func TestStopSessionNotRunning(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ws-stop-norun")
+	wsDir := setupTestWorkspace(t, server, rootDir, "ws-stop-norun")
 	server.stopSession(wsDir)
 }
 
 func TestHandleAPIStartSessionAlreadyRunningViaHTTP(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "ws-start-api")
+	wsDir := setupTestWorkspace(t, server, rootDir, "ws-start-api")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\nflow: |\n  \"a\" -> \"b\"\n---\n# Test"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, ".sgai", "state.json"), []byte(`{"status":"working"}`), 0644))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -5776,7 +5944,7 @@ func TestHandleAPIStartSessionAlreadyRunningViaHTTP(t *testing.T) {
 
 func TestHandleAPIListModelsWithWorkspaceParam(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "models-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "models-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\nmodels:\n  coordinator: [\"anthropic/claude-opus-4-6\"]\n---\n# Models Test"), 0644))
 	w := serveHTTP(server, "GET", "/api/v1/models?workspace=models-ws", "")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -5784,28 +5952,28 @@ func TestHandleAPIListModelsWithWorkspaceParam(t *testing.T) {
 
 func TestHandleAPIDeleteForkNotARoot(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "standalone-delfork")
+	setupTestWorkspace(t, server, rootDir, "standalone-delfork")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/standalone-delfork/delete-fork", `{"forkDir":"/tmp/nope","confirm":true}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIDeleteForkNoConfirmation(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "noconfirm-delfork")
+	setupTestWorkspace(t, server, rootDir, "noconfirm-delfork")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/noconfirm-delfork/delete-fork", `{"forkDir":"/tmp/nope","confirm":false}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandleAPIForkWorkspaceNotRootStandalone(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, rootDir, "not-root-ws")
+	setupTestWorkspace(t, server, rootDir, "not-root-ws")
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/not-root-ws/fork", `{"goalContent":"# Test Goal"}`)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
 func TestHandleAPIStopSessionRunning(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "stop-session-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "stop-session-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0644))
 	server.mu.Lock()
 	server.sessions[wsDir] = &session{running: true}
@@ -5816,7 +5984,7 @@ func TestHandleAPIStopSessionRunning(t *testing.T) {
 
 func TestHandleAPIDeleteWorkspaceStandaloneConfirmed(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "delete-standalone-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "delete-standalone-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0644))
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/delete-standalone-ws/delete", `{"confirm": true}`)
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -5827,7 +5995,7 @@ func TestHandleAPIDeleteWorkspaceStandaloneConfirmed(t *testing.T) {
 
 func TestHandleAPIWorkflowSVGForWorkspaceWithFlow(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "svg-flow-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "svg-flow-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\nflow: coordinator -> worker\n---\n# Goal"), 0644))
 	w := serveHTTP(server, "GET", "/api/v1/workspaces/svg-flow-ws/workflow.svg", "")
 	assert.Contains(t, []int{http.StatusOK, http.StatusNotFound}, w.Code)
@@ -5835,7 +6003,7 @@ func TestHandleAPIWorkflowSVGForWorkspaceWithFlow(t *testing.T) {
 
 func TestHandleAPIDeleteWorkspaceNoConfirmField(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "delete-noconfirm2-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "delete-noconfirm2-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0644))
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/delete-noconfirm2-ws/delete", `{"confirm": false}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -5843,7 +6011,7 @@ func TestHandleAPIDeleteWorkspaceNoConfirmField(t *testing.T) {
 
 func TestHandleAPIDeleteWorkspaceDirAlreadyRemoved(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "delete-removed-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "delete-removed-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0644))
 	require.NoError(t, os.RemoveAll(wsDir))
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/delete-removed-ws/delete", `{"confirm": true}`)
@@ -5913,7 +6081,7 @@ func TestHandleAPIAttachWorkspaceWithGoal(t *testing.T) {
 
 func TestHandleAPIResetSessionSuccess(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "reset-success-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "reset-success-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0644))
 
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
@@ -5937,7 +6105,7 @@ func TestHandleAPIResetSessionSuccess(t *testing.T) {
 
 func TestHandleAPIResetSessionRunning(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "reset-running-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "reset-running-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0644))
 
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
@@ -5957,7 +6125,7 @@ func TestHandleAPIResetSessionRunning(t *testing.T) {
 
 func TestHandleAPIResetSessionNoState(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "reset-nostate-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "reset-nostate-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0644))
 
 	w := serveHTTP(server, "POST", "/api/v1/workspaces/reset-nostate-ws/reset", "")
@@ -5971,7 +6139,7 @@ func TestHandleAPIResetSessionNoState(t *testing.T) {
 
 func TestHandleAPIResetSessionAlreadyComplete(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "reset-complete-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "reset-complete-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0644))
 
 	sp := filepath.Join(wsDir, ".sgai", "state.json")

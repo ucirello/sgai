@@ -197,6 +197,21 @@ func canonicalGoalTitleRepairPath(workspacePath string) string {
 	return resolveSymlinks(workspacePath)
 }
 
+func overwriteExistingFile(path string, data []byte) error {
+	f, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
+	if errOpen != nil {
+		return errOpen
+	}
+	if _, errWrite := f.Write(data); errWrite != nil {
+		_ = f.Close()
+		return errWrite
+	}
+	if errClose := f.Close(); errClose != nil {
+		return errClose
+	}
+	return nil
+}
+
 func (s *Server) enqueueGoalTitleRepair(workspacePath string) {
 	workspacePath = canonicalGoalTitleRepairPath(workspacePath)
 	if workspacePath == "" {
@@ -287,7 +302,10 @@ func (s *Server) repairGoalTitle(workspacePath string) error {
 	if errUpdate != nil {
 		return fmt.Errorf("insert title: %w", errUpdate)
 	}
-	if errWrite := os.WriteFile(goalPath, updatedContent, 0o644); errWrite != nil {
+	if errWrite := overwriteExistingFile(goalPath, updatedContent); errWrite != nil {
+		if os.IsNotExist(errWrite) {
+			return nil
+		}
 		return fmt.Errorf("write GOAL.md: %w", errWrite)
 	}
 	s.notifyStateChange()

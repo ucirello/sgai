@@ -1,5 +1,7 @@
 THE ONLY ACCEPTABLE PLACE FOR PROJECT_MANAGEMENT.md IS `.sgai/PROJECT_MANAGEMENT.md` -- never place `cmd/sgai/skel/.sgai/PROJECT_MANAGEMENT.md`.
 
+THE ONLY ACCEPTABLE PLACE FOR PR_INFO IS `.sgai/PR_INFO` -- never place `cmd/sgai/skel/.sgai/PR_INFO` and never place `sgai/PR_INFO`.
+
 Every time you are asked to make a source code (or prompt) modification  to `/.sgai` you have to make the modification to `sgai/` (the overlay directory) instead.
 
 When work involves external attachment rules or standalone/root/forked repository behavior, consult the decision records in `PRDs/` before changing code, prompts, tests, or reviews.

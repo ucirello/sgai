@@ -8,7 +8,7 @@ webapp-test:
 	cd cmd/sgai/webapp && bun install && bun test
 
 test: webapp-test webapp-build
-	go test -v ./...
+	go test ./...
 	$(MAKE) lint
 
 webapp-check-deps:

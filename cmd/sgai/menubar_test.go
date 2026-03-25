@@ -430,7 +430,7 @@ func TestFilterVisibleItemsResult(t *testing.T) {
 
 func TestToMenuBarItemRepairsMissingGoalTitle(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	goalPath := filepath.Join(wsDir, "GOAL.md")
 	require.NoError(t, os.WriteFile(goalPath, []byte("---\nflow: test\n---\n# Improve Menu Title"), 0o644))
 

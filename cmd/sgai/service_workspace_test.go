@@ -886,7 +886,7 @@ func TestWriteGoalContent(t *testing.T) {
 
 func TestDeleteMessageServiceNotFoundError(t *testing.T) {
 	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "test-ws-delmsg-nf")
+	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws-delmsg-nf")
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{})
 	require.NoError(t, errCoord)

@@ -362,7 +362,7 @@ func TestCheckWorkspaceStateSecondVisitNoChange(t *testing.T) {
 
 func TestCheckWorkspaceStateWithMapChanges(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "cwsc-ws")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "cwsc-ws")
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{
 		Status: state.StatusComplete,
@@ -419,8 +419,8 @@ func TestHashGoalFileValidInfo(t *testing.T) {
 
 func TestPollWorkspaceStatesWithMultipleWorkspaces(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir1 := setupTestWorkspace(t, rootDir, "poll-ws1")
-	wsDir2 := setupTestWorkspace(t, rootDir, "poll-ws2")
+	wsDir1 := setupTestWorkspace(t, srv, rootDir, "poll-ws1")
+	wsDir2 := setupTestWorkspace(t, srv, rootDir, "poll-ws2")
 	sp1 := filepath.Join(wsDir1, ".sgai", "state.json")
 	_, errCoord1 := state.NewCoordinatorWith(sp1, state.Workflow{
 		Status: state.StatusComplete,
@@ -443,7 +443,7 @@ func TestPollWorkspaceStatesWithMultipleWorkspaces(t *testing.T) {
 
 func TestPollWorkspaceStatesCleanupRemoved(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, rootDir, "poll-cleanup")
+	wsDir := setupTestWorkspace(t, srv, rootDir, "poll-cleanup")
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{
 		Status: state.StatusComplete,

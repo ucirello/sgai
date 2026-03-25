@@ -109,6 +109,44 @@ export function buildWorkspacePath(workspace: WorkspaceIdentity, suffix = ""): s
   return `${path}?${WORKSPACE_DIR_SEARCH_PARAM}=${encodeURIComponent(workspace.dir)}`;
 }
 
+export function buildWorkspaceRoutedNames(workspaces: WorkspaceIdentity[]): Map<string, string> {
+  const grouped = new Map<string, WorkspaceIdentity[]>();
+
+  for (const workspace of workspaces) {
+    const existing = grouped.get(workspace.name) ?? [];
+    existing.push(workspace);
+    grouped.set(workspace.name, existing);
+  }
+
+  const routedNames = new Map<string, string>();
+
+  for (const [workspaceName, group] of grouped) {
+    if (group.length < 2) {
+      for (const workspace of group) {
+        routedNames.set(workspace.dir, workspaceName);
+      }
+      continue;
+    }
+
+    const groupDisambiguators = buildGroupDisambiguators(group);
+    for (const workspace of group) {
+      const disambiguator = groupDisambiguators.get(workspace.dir) ?? workspace.dir;
+      routedNames.set(workspace.dir, `${disambiguator}/${workspace.name}`);
+    }
+  }
+
+  return routedNames;
+}
+
+export function getWorkspaceRoutedName(workspace: WorkspaceIdentity, workspaces: WorkspaceIdentity[]): string {
+  return buildWorkspaceRoutedNames(workspaces).get(workspace.dir) ?? workspace.name;
+}
+
+export function buildWorkspaceGoalEditPath(workspace: WorkspaceIdentity, workspaces: WorkspaceIdentity[]): string {
+  const routedName = getWorkspaceRoutedName(workspace, workspaces);
+  return `/workspaces/${encodeURIComponent(routedName)}/goal/edit`;
+}
+
 export function resolveWorkspaceByIdentity<T extends WorkspaceIdentity>(
   workspaces: T[],
   workspaceName: string,
@@ -125,6 +163,37 @@ export function resolveWorkspaceByIdentity<T extends WorkspaceIdentity>(
   }
 
   return matches[0] ?? null;
+}
+
+export function resolveWorkspaceByRoutedName<T extends WorkspaceIdentity>(workspaces: T[], workspaceRoutedName: string): T | null {
+  const exactMatch = resolveWorkspaceByExactRoutedName(workspaces, workspaceRoutedName);
+
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  const basenameMatches = workspaces.filter((workspace) => workspace.name === workspaceRoutedName);
+
+  if (basenameMatches.length !== 1) {
+    return null;
+  }
+
+  return basenameMatches[0] ?? null;
+}
+
+export function resolveWorkspaceByExactRoutedName<T extends WorkspaceIdentity>(
+  workspaces: T[],
+  workspaceRoutedName: string,
+): T | null {
+  const routedNames = buildWorkspaceRoutedNames(workspaces);
+
+  for (const workspace of workspaces) {
+    if ((routedNames.get(workspace.dir) ?? workspace.name) === workspaceRoutedName) {
+      return workspace;
+    }
+  }
+
+  return null;
 }
 
 export function isSameWorkspace(
