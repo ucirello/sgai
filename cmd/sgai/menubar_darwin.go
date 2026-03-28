@@ -7,8 +7,14 @@ package main
 #cgo LDFLAGS: -framework Cocoa
 
 #include <stdlib.h>
+#include <stdint.h>
+
+static void MenuBarFreeString(char *s) {
+    free(s);
+}
 
 extern void MenuBarInit(void);
+extern void MenuBarSetGoHandle(uintptr_t handle);
 extern void MenuBarSetTitle(const char *title);
 extern void MenuBarClear(void);
 extern void MenuBarAddItem(const char *title, int tag, int enabled);
@@ -22,35 +28,49 @@ import "C"
 import (
 	"context"
 	"fmt"
-	"unsafe"
+	"runtime/cgo"
 )
 
 type darwinMenuBarState struct {
 	menuBarState
+
 	baseURL    string
 	cancelFunc context.CancelFunc
 }
 
-var menuBarClickCh = make(chan int, 1)
-
 //export goMenuItemClicked
-func goMenuItemClicked(tag C.int) {
+func goMenuItemClicked(handle C.uintptr_t, tag C.int) {
+	if handle == 0 {
+		return
+	}
+	clickCh, ok := cgo.Handle(handle).Value().(chan int)
+	if !ok {
+		return
+	}
 	select {
-	case menuBarClickCh <- int(tag):
+	case clickCh <- int(tag):
 	default:
 	}
 }
 
 func startMenuBar(ctx context.Context, baseURL string, srv *Server, cancel context.CancelFunc) {
+	clickCh := make(chan int, 1)
+	clickHandle := cgo.NewHandle(clickCh)
+	defer func() {
+		C.MenuBarSetGoHandle(C.uintptr_t(0))
+		clickHandle.Delete()
+	}()
+	C.MenuBarSetGoHandle(C.uintptr_t(clickHandle))
+
 	state := &darwinMenuBarState{
-		menuBarState: menuBarState{tags: make(map[int]menuBarAction)},
+		menuBarState: newMenuBarState(),
 		baseURL:      baseURL,
 		cancelFunc:   cancel,
 	}
 
 	C.MenuBarInit()
 
-	go menuBarClickHandler(ctx, state)
+	go menuBarClickHandler(ctx, state, clickCh)
 	go menuBarUpdateLoop(ctx, srv, state)
 	go func() {
 		<-ctx.Done()
@@ -60,12 +80,12 @@ func startMenuBar(ctx context.Context, baseURL string, srv *Server, cancel conte
 	C.MenuBarRunLoop()
 }
 
-func menuBarClickHandler(ctx context.Context, state *darwinMenuBarState) {
+func menuBarClickHandler(ctx context.Context, state *darwinMenuBarState, clickCh <-chan int) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case tag := <-menuBarClickCh:
+		case tag := <-clickCh:
 			state.mu.Lock()
 			action, ok := state.tags[tag]
 			cancel := state.cancelFunc
@@ -81,7 +101,7 @@ func menuBarClickHandler(ctx context.Context, state *darwinMenuBarState) {
 			}
 			cURL := C.CString(action.actionURL)
 			C.MenuBarOpenURL(cURL)
-			C.free(unsafe.Pointer(cURL))
+			C.MenuBarFreeString(cURL)
 		}
 	}
 }
@@ -159,13 +179,13 @@ func setMenuTitle(runningCount, totalActive, attentionCount int) {
 		title = fmt.Sprintf("\u25CF %d/%d", runningCount, totalActive)
 	}
 	cTitle := C.CString(title)
-	defer C.free(unsafe.Pointer(cTitle))
+	defer C.MenuBarFreeString(cTitle)
 	C.MenuBarSetTitle(cTitle)
 }
 
 func addMenuEntry(label string, tag int, enabled bool) {
 	cLabel := C.CString(label)
-	defer C.free(unsafe.Pointer(cLabel))
+	defer C.MenuBarFreeString(cLabel)
 	e := 0
 	if enabled {
 		e = 1

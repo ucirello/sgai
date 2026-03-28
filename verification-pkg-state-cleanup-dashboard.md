@@ -1,0 +1,27 @@
+- generic [ref=e2]:
+  - alert [ref=e3]:
+    - generic [ref=e4]: Enable browser notifications to get alerted when a workspace needs your input.
+    - generic [ref=e5]:
+      - button "Enable" [ref=e6]
+      - button "Dismiss" [ref=e7]
+  - main [ref=e9]:
+    - generic [ref=e22]:
+      - generic [ref=e25]:
+        - generic [ref=e26]:
+          - img "SGAI" [ref=e28]
+          - generic [ref=e29]:
+            - generic [ref=e30]: Workspaces
+            - generic "All factories stopped" [ref=e32]: ○
+        - list [ref=e35]:
+          - paragraph [ref=e36]: No workspaces found.
+        - button "Attach external repository" [ref=e38]:
+          - generic [ref=e39]: "[ + ]"
+          - img
+          - generic [ref=e40]: Attach External
+        - button "Toggle Sidebar" [ref=e41]
+      - generic [ref=e43]:
+        - button "Toggle Sidebar" [ref=e45]:
+          - img
+          - generic [ref=e46]: Toggle Sidebar
+        - main [ref=e47]:
+          - paragraph [ref=e49]: Select a workspace to view its details

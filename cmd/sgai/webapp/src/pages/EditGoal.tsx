@@ -8,7 +8,7 @@ import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { api, ApiError } from "@/lib/api";
 import { triggerFactoryRefresh, useFactoryState } from "@/lib/factory-state";
 import { getRepositoryTitle } from "@/lib/repository-title";
-import { getWorkspaceRoutedName, resolveWorkspaceByExactRoutedName } from "@/lib/workspace-identity";
+import { resolveWorkspaceByName } from "@/lib/workspace-identity";
 import { ArrowLeft, Save, Loader2, Check } from "lucide-react";
 import { Link } from "react-router";
 
@@ -34,25 +34,24 @@ export function EditGoal(): JSX.Element {
   } | null>(null);
   const { workspaces, fetchStatus, lastFetchedAt } = useFactoryState();
   const workspace = useMemo(
-    () => resolveWorkspaceByExactRoutedName(workspaces, workspaceRouteName),
+    () => resolveWorkspaceByName(workspaces, workspaceRouteName),
     [workspaces, workspaceRouteName],
   );
-  const workspaceName = workspace?.name ?? workspaceRouteName.split("/").pop() ?? workspaceRouteName;
+  const workspaceName = workspace?.name ?? workspaceRouteName;
   const workspaceLabel = getRepositoryTitle(workspace ?? { name: workspaceName });
   const isWorkspaceStatePending = lastFetchedAt === null && fetchStatus !== "error";
   const isAmbiguousWorkspaceRoute =
     !workspace
-    && !workspaceRouteName.includes("/")
     && workspaces.filter((candidate) => candidate.name === workspaceRouteName).length > 1;
   const routeError = fetchStatus === "error"
     ? "Failed to load workspace state"
     : isAmbiguousWorkspaceRoute
-      ? "Workspace route is ambiguous. Open the routed Edit GOAL link for this workspace."
+      ? "Workspace route is ambiguous."
       : "Workspace not found.";
   const dir = workspace?.dir ?? "";
-  const goalTarget = workspace ? getWorkspaceRoutedName(workspace, workspaces) : "";
+  const goalTarget = workspace?.name ?? "";
   const hasLoadedGoal = goalTarget !== "" && loadedGoalTargetRef.current === goalTarget;
-  const workspaceReturnTarget = goalTarget || workspaceRouteName || workspaceName;
+  const workspaceReturnTarget = workspace?.name ?? workspaceRouteName ?? workspaceName;
   const workspaceDetailPath = `/workspaces/${encodeURIComponent(workspaceReturnTarget)}`;
 
   useEffect(() => {

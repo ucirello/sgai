@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,7 +15,7 @@ type openEditorResult struct {
 
 func (s *Server) openEditorService(workspacePath string) (openEditorResult, error) {
 	if !s.editorAvailable {
-		return openEditorResult{}, fmt.Errorf("no editor available")
+		return openEditorResult{}, errors.New("no editor available")
 	}
 
 	if errOpen := s.editor.open(workspacePath); errOpen != nil {
@@ -34,12 +35,12 @@ func (s *Server) openEditorProjectManagementService(workspacePath string) (openE
 
 func (s *Server) openEditorFileService(workspacePath, relPath string) (openEditorResult, error) {
 	if !s.editorAvailable {
-		return openEditorResult{}, fmt.Errorf("no editor available")
+		return openEditorResult{}, errors.New("no editor available")
 	}
 
 	targetPath := filepath.Join(workspacePath, relPath)
 	if _, errStat := os.Stat(targetPath); errStat != nil {
-		return openEditorResult{}, fmt.Errorf("file not found")
+		return openEditorResult{}, errors.New("file not found")
 	}
 
 	if errOpen := s.editor.open(targetPath); errOpen != nil {

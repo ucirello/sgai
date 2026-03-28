@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -8,22 +9,22 @@ import (
 func (s *Server) actionRunService(workspacePath, actionName string, values map[string]string) adhocStartResult {
 	actionName = strings.TrimSpace(actionName)
 	if actionName == "" {
-		return adhocStartResult{Error: fmt.Errorf("action name is required")}
+		return adhocStartError(errors.New("action name is required"))
 	}
 
 	config, errFind := findActionConfigByName(workspacePath, actionName)
 	if errFind != nil {
-		return adhocStartResult{Error: errFind}
+		return adhocStartError(errFind)
 	}
 
-	parsed, errValidate := validateAndParseAction(config)
+	parsed, errValidate := validateAndParseAction(&config)
 	if errValidate != nil {
-		return adhocStartResult{Error: errValidate}
+		return adhocStartError(errValidate)
 	}
 
-	rendered, errRender := renderParsedAction(parsed, values)
+	rendered, errRender := renderParsedAction(&parsed, values)
 	if errRender != nil {
-		return adhocStartResult{Error: fmt.Errorf("action %q %w", actionName, errRender)}
+		return adhocStartError(fmt.Errorf("action %q %w", actionName, errRender))
 	}
 
 	if parsed.kind == actionKindPrompt {
@@ -32,7 +33,7 @@ func (s *Server) actionRunService(workspacePath, actionName string, values map[s
 
 	argv, errSplit := splitActionCommand(rendered)
 	if errSplit != nil {
-		return adhocStartResult{Error: fmt.Errorf("action %q rendered an invalid command: %w", actionName, errSplit)}
+		return adhocStartError(fmt.Errorf("action %q rendered an invalid command: %w", actionName, errSplit))
 	}
 	return s.runScriptAction(workspacePath, actionName, argv)
 }
@@ -56,7 +57,7 @@ func findActionConfigByName(workspacePath, actionName string) (actionConfig, err
 
 func splitActionCommand(command string) ([]string, error) {
 	if strings.TrimSpace(command) == "" {
-		return nil, fmt.Errorf("empty command")
+		return nil, errors.New("empty command")
 	}
 
 	runes := []rune(command)
@@ -91,7 +92,7 @@ func splitActionCommand(command string) ([]string, error) {
 				inDouble = false
 			case '\\':
 				if i+1 >= len(runes) {
-					return nil, fmt.Errorf("unterminated escape sequence")
+					return nil, errors.New("unterminated escape sequence")
 				}
 				if runes[i+1] == '"' {
 					current.WriteRune('"')
@@ -109,7 +110,7 @@ func splitActionCommand(command string) ([]string, error) {
 			switch r {
 			case '\\':
 				if i+1 >= len(runes) {
-					return nil, fmt.Errorf("unterminated escape sequence")
+					return nil, errors.New("unterminated escape sequence")
 				}
 				next := runes[i+1]
 				if isSplitActionWhitespace(next) || next == '\'' || next == '"' || next == '\\' || isUnsupportedShellOperator(next) {
@@ -139,12 +140,12 @@ func splitActionCommand(command string) ([]string, error) {
 	}
 
 	if inSingle || inDouble {
-		return nil, fmt.Errorf("unterminated quoted string")
+		return nil, errors.New("unterminated quoted string")
 	}
 
 	flushCurrent()
 	if len(args) == 0 {
-		return nil, fmt.Errorf("empty command")
+		return nil, errors.New("empty command")
 	}
 	return args, nil
 }

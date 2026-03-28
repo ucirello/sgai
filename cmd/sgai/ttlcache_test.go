@@ -18,7 +18,7 @@ func TestTTLCacheGetSet(t *testing.T) {
 
 	value, ok = cache.get("nonexistent")
 	assert.False(t, ok)
-	assert.Equal(t, "", value)
+	assert.Empty(t, value)
 }
 
 func TestTTLCacheExpiration(t *testing.T) {
@@ -34,7 +34,7 @@ func TestTTLCacheExpiration(t *testing.T) {
 
 	value, ok = cache.get("key1")
 	assert.False(t, ok)
-	assert.Equal(t, "", value)
+	assert.Empty(t, value)
 }
 
 func TestTTLCacheDelete(t *testing.T) {
@@ -45,7 +45,7 @@ func TestTTLCacheDelete(t *testing.T) {
 
 	value, ok := cache.get("key1")
 	assert.False(t, ok)
-	assert.Equal(t, "", value)
+	assert.Empty(t, value)
 }
 
 func TestTTLCacheDeleteFunc(t *testing.T) {
@@ -72,7 +72,7 @@ func TestTTLCacheConcurrent(_ *testing.T) {
 	cache := newTTLCache[int, int](1 * time.Minute)
 	var wg sync.WaitGroup
 
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		wg.Add(3)
 		go func(n int) {
 			defer wg.Done()

@@ -36,7 +36,7 @@ Use useSyncExternalStore for external data sources (SSE store). Use useReducer+C
 When modifying cmd/sgai/webapp/, always run `bun run build && make build` to verify both the React build and Go binary compile correctly.
 
 CRITICAL(code quality): ensure good Go code quality by calling `make lint`
-CRITICAL(code quality): never use `log.Fatal*` or similar -- because they crash the whole server
+CRITICAL(code quality): never use `log.Fatal*` or similar -- because they crash the whole server (and the trick of using `fmt.Fprint*(os.Stderr); os.Exit(1)` is also not allowed, the trick of using `log.Print*(os.Stderr); os.Exit(1)` is also not allowed)
 
 You must use the skill `browser-bug-testing-workflow` - remember to use visual diffs and screenshots to evaluate the problem
 You must use the skill `run-long-running-processes-in-tmux`

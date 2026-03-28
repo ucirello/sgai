@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -26,7 +25,7 @@ func TestAdhocStartServiceEmptyPrompt(t *testing.T) {
 	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 
 	result := server.adhocStartService(wsDir, "", "claude-opus-4")
-	assert.Error(t, result.Error)
+	require.Error(t, result.Error)
 	assert.Contains(t, result.Error.Error(), "required")
 }
 
@@ -35,7 +34,7 @@ func TestAdhocStartServiceEmptyModel(t *testing.T) {
 	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 
 	result := server.adhocStartService(wsDir, "do something", "")
-	assert.Error(t, result.Error)
+	require.Error(t, result.Error)
 	assert.Contains(t, result.Error.Error(), "required")
 }
 
@@ -57,7 +56,7 @@ func TestAdhocStartServiceAlreadyRunningReturnsExisting(t *testing.T) {
 	st.output.WriteString("test output")
 	st.mu.Unlock()
 	result := server.adhocStartService(wsDir, "prompt", "model")
-	assert.Nil(t, result.Error)
+	require.NoError(t, result.Error)
 	assert.True(t, result.Running)
 	assert.Contains(t, result.Output, "test output")
 }
@@ -71,16 +70,7 @@ func TestGetAdhocStateCreation(t *testing.T) {
 }
 
 func TestAdhocStopNotRunning(t *testing.T) {
-	st := &adhocPromptState{}
-	st.stop()
-	assert.False(t, st.running)
-}
-
-func TestAdhocStopAlreadyStopped(t *testing.T) {
-	st := &adhocPromptState{}
-	st.mu.Lock()
-	st.running = false
-	st.mu.Unlock()
+	st := new(adhocPromptState)
 	st.stop()
 	assert.False(t, st.running)
 }
@@ -90,7 +80,7 @@ func TestLockedWriterStripsANSI(t *testing.T) {
 	var buf bytes.Buffer
 	w := &lockedWriter{mu: &mu, buf: &buf}
 	_, err := w.Write([]byte("\x1b[31mred text\x1b[0m"))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, "red text", buf.String())
 }
 
@@ -99,7 +89,7 @@ func TestLockedWriterPlainTextPassthrough(t *testing.T) {
 	var buf bytes.Buffer
 	w := &lockedWriter{mu: &mu, buf: &buf}
 	n, err := w.Write([]byte("plain text"))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, 10, n)
 	assert.Equal(t, "plain text", buf.String())
 }
@@ -150,10 +140,13 @@ func TestAdhocStopServiceDoesNotReportStopAsCommandError(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "stop-coordination-ws")
 
-	result := server.startCommandService(wsDir, commandStartSpec{
+	result := server.startCommandService(wsDir, &commandStartSpec{
 		command:               "sleep",
 		args:                  []string{"30"},
+		stdin:                 "",
+		env:                   nil,
 		logLabel:              "test",
+		headerLines:           nil,
 		startedMessage:        "started",
 		alreadyRunningMessage: "already running",
 	})
@@ -181,5 +174,5 @@ func TestAdhocStopServiceDoesNotReportStopAsCommandError(t *testing.T) {
 	output := st.output.String()
 	st.mu.Unlock()
 
-	assert.False(t, strings.Contains(output, "[command exited with error:"), output)
+	assert.NotContains(t, output, "[command exited with error:", output)
 }

@@ -50,7 +50,7 @@ func TestRequiresOpencode(t *testing.T) {
 
 func TestRunInternalMCPBridgeExposesCoordinatorToolsWhenIdentityForwarded(t *testing.T) {
 	stateFile := filepath.Join(t.TempDir(), "state.json")
-	coord, errCoord := state.NewCoordinatorWith(stateFile, state.Workflow{})
+	coord, errCoord := state.NewCoordinatorWith(stateFile, state.NewWorkflow())
 	require.NoError(t, errCoord)
 
 	mcpURL, closeFn, errStart := startMCPHTTPServer(t.TempDir(), coord, []string{"builder", "coordinator"})
@@ -66,14 +66,20 @@ func TestRunInternalMCPBridgeExposesCoordinatorToolsWhenIdentityForwarded(t *tes
 		errBridgeCh <- runInternalMCPBridge(ctx, mcpURL, "coordinator|model-a", serverTransport, nil)
 	}()
 
-	client := mcp.NewClient(&mcp.Implementation{Name: "test-client"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{
+		Name:       "test-client",
+		Title:      "",
+		Version:    "test-version",
+		WebsiteURL: "",
+		Icons:      nil,
+	}, nil)
 	cs, errClient := client.Connect(context.Background(), clientTransport, nil)
 	require.NoError(t, errClient)
 	t.Cleanup(func() {
 		_ = cs.Close()
 	})
 
-	result, errList := cs.ListTools(context.Background(), &mcp.ListToolsParams{})
+	result, errList := cs.ListTools(context.Background(), &mcp.ListToolsParams{Meta: mcp.Meta{}, Cursor: ""})
 	require.NoError(t, errList)
 	assert.True(t, slices.Contains(mcpToolNames(result.Tools), "delete_unread_messages"))
 
@@ -87,12 +93,14 @@ func TestInternalMCPHeaderRoundTripperUsesSharedAgentIdentityHeader(t *testing.T
 	roundTripper := internalMCPHeaderRoundTripper{
 		baseTransport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			gotRequest = r.Clone(r.Context())
-			return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody}, nil
+			recorder := httptest.NewRecorder()
+			recorder.WriteHeader(http.StatusNoContent)
+			return recorder.Result(), nil
 		}),
 		agentIdentity: "builder|model-a",
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/mcp", nil)
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/mcp", http.NoBody)
 	resp, errRoundTrip := roundTripper.RoundTrip(req)
 	require.NoError(t, errRoundTrip)
 	require.NoError(t, resp.Body.Close())

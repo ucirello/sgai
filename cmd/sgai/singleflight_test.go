@@ -26,10 +26,11 @@ func TestSingleflightDo(t *testing.T) {
 			wantErr:  false,
 		},
 		{
-			name:    "error",
-			key:     "test-key",
-			fn:      func() (string, error) { return "", errors.New("test error") },
-			wantErr: true,
+			name:     "error",
+			key:      "test-key",
+			fn:       func() (string, error) { return "", errors.New("test error") },
+			expected: "",
+			wantErr:  true,
 		},
 	}
 
@@ -70,14 +71,12 @@ func TestSingleflightDeduplication(t *testing.T) {
 	var wg sync.WaitGroup
 	results := make(chan int, 10)
 
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 10 {
+		wg.Go(func() {
 			result, err := sf.do("same-key", fn)
 			require.NoError(t, err)
 			results <- result
-		}()
+		})
 	}
 
 	wg.Wait()

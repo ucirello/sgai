@@ -36,77 +36,10 @@ import (
 //go:embed GOAL.example.md
 var goalExampleContent string
 
-var tmplFallbackSVG = template.Must(template.New("fallbackSVG").Parse(
-	`<svg xmlns="http://www.w3.org/2000/svg" width="400" height="{{.Height}}" viewBox="0 0 400 {{.Height}}">
+const fallbackSVGTemplate = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="{{.Height}}" viewBox="0 0 400 {{.Height}}">
 <rect width="100%" height="100%" fill="#f8fafc"/>
 <text x="10" y="20" font-family="monospace" font-size="12" fill="#475569">{{range .Lines}}<tspan x="10" dy="{{.DY}}">{{.Text}}</tspan>{{end}}</text>
-</svg>`))
-
-type project struct {
-	Directory    string
-	DirName      string
-	LastModified time.Time
-	HasWorkspace bool
-}
-
-func scanForProjects(rootDir string) ([]project, error) {
-	entries, err := os.ReadDir(rootDir)
-	if err != nil {
-		return nil, err
-	}
-
-	var projects []project
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-
-		name := entry.Name()
-		if name == "." || name == ".." {
-			continue
-		}
-
-		dirPath := filepath.Join(rootDir, name)
-		sgaiDir := filepath.Join(dirPath, ".sgai")
-		goalPath := filepath.Join(dirPath, "GOAL.md")
-
-		sgaiInfo, errStatSGAI := os.Stat(sgaiDir)
-		hasWorkspace := errStatSGAI == nil && sgaiInfo.IsDir()
-
-		_, errStatGoal := os.Stat(goalPath)
-		hasGoalMD := errStatGoal == nil
-
-		if !hasWorkspace && !hasGoalMD {
-			continue
-		}
-
-		var modTime time.Time
-		if hasWorkspace {
-			modTime = sgaiInfo.ModTime()
-		} else if hasGoalMD {
-			if errMkdir := os.MkdirAll(sgaiDir, 0755); errMkdir == nil {
-				hasWorkspace = true
-			}
-			entryInfo, errEntry := entry.Info()
-			if errEntry == nil {
-				modTime = entryInfo.ModTime()
-			}
-		}
-
-		projects = append(projects, project{
-			Directory:    dirPath,
-			DirName:      entry.Name(),
-			LastModified: modTime,
-			HasWorkspace: hasWorkspace,
-		})
-	}
-
-	slices.SortFunc(projects, func(a, b project) int {
-		return strings.Compare(strings.ToLower(a.DirName), strings.ToLower(b.DirName))
-	})
-
-	return projects, nil
-}
+</svg>`
 
 func stripFrontmatter(content string) string {
 	sections, errSplit := splitFrontmatterSections([]byte(content))
@@ -141,25 +74,6 @@ type serverPaths struct {
 
 const defaultEditorPreset = "code"
 
-// editorPreset defines a preset editor configuration with its command template
-// and whether it runs in a terminal.
-type editorPreset struct {
-	command    string
-	isTerminal bool
-}
-
-var editorPresets = map[string]editorPreset{
-	"code":   {command: "code", isTerminal: false},
-	"cursor": {command: "cursor", isTerminal: false},
-	"zed":    {command: "zed", isTerminal: false},
-	"subl":   {command: "subl", isTerminal: false},
-	"idea":   {command: "idea", isTerminal: false},
-	"emacs":  {command: "emacsclient -n", isTerminal: false},
-	"nvim":   {command: "nvim", isTerminal: true},
-	"vim":    {command: "vim", isTerminal: true},
-	"atom":   {command: "atom", isTerminal: false},
-}
-
 // configurableEditor implements editorOpener with configurable editor support.
 type configurableEditor struct {
 	name       string
@@ -168,7 +82,11 @@ type configurableEditor struct {
 }
 
 func (e *configurableEditor) open(path string) error {
-	cmd := exec.Command(e.command, path)
+	parts, errSplit := splitActionCommand(e.command)
+	if errSplit != nil {
+		return fmt.Errorf("parse editor command: %w", errSplit)
+	}
+	cmd := exec.Command(parts[0], append(parts[1:], path)...)
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -179,7 +97,10 @@ func (e *configurableEditor) open(path string) error {
 	fallback.Stderr = os.Stderr
 	fallback.Stdin = os.Stdin
 	fallback.Stdout = os.Stdout
-	return fallback.Run()
+	if errRun := fallback.Run(); errRun != nil {
+		return fmt.Errorf("opening %s in VS Code: %w", path, errRun)
+	}
+	return nil
 }
 
 func resolveEditor(configEditor string) (name, command string, isTerminal bool) {
@@ -194,8 +115,13 @@ func resolveEditor(configEditor string) (name, command string, isTerminal bool) 
 		editorSpec = defaultEditorPreset
 	}
 
-	if preset, ok := editorPresets[editorSpec]; ok {
-		return editorSpec, preset.command, preset.isTerminal
+	switch editorSpec {
+	case "code", "cursor", "zed", "subl", "idea", "atom":
+		return editorSpec, editorSpec, false
+	case "emacs":
+		return editorSpec, "emacsclient -n", false
+	case "nvim", "vim":
+		return editorSpec, editorSpec, true
 	}
 
 	return editorSpec, editorSpec, false
@@ -211,8 +137,8 @@ func newConfigurableEditor(configEditor string) *configurableEditor {
 }
 
 func isEditorAvailable(command string) bool {
-	parts := strings.Fields(command)
-	if len(parts) == 0 {
+	parts, errSplit := splitActionCommand(command)
+	if errSplit != nil {
 		return false
 	}
 	_, err := exec.LookPath(parts[0])
@@ -242,16 +168,15 @@ type Server struct {
 	promptActionRunner func(workspacePath, prompt, model string) adhocStartResult
 	scriptActionRunner func(workspacePath, actionName string, argv []string) adhocStartResult
 
-	workspaceScanFlight   singleflight[string, []workspaceGroup]
-	workspaceScanCache    *ttlCache[string, []workspaceGroup]
-	classifyFlight        singleflight[string, workspaceKind]
-	classifyCache         *ttlCache[string, workspaceKind]
-	repositoryTitleFlight singleflight[string, string]
-	svgFlight             singleflight[string, string]
-	svgCache              *ttlCache[string, string]
-	stateFlight           singleflight[string, apiFactoryState]
-	stateCache            *ttlCache[string, apiFactoryState]
-	stateGeneration       uint64
+	workspaceScanFlight singleflight[string, []workspaceGroup]
+	workspaceScanCache  *ttlCache[string, []workspaceGroup]
+	classifyFlight      singleflight[string, workspaceKind]
+	classifyCache       *ttlCache[string, workspaceKind]
+	svgFlight           singleflight[string, string]
+	svgCache            *ttlCache[string, string]
+	stateFlight         singleflight[string, apiFactoryState]
+	stateCache          *ttlCache[string, apiFactoryState]
+	stateGeneration     uint64
 
 	goalTitleComposer      func(workspacePath string, goalContent []byte) (string, error)
 	goalTitleReadFile      func(path string) ([]byte, error)
@@ -279,27 +204,38 @@ func NewServer(rootDir string, paths serverPaths, editorConfig string) *Server {
 		}
 	}
 	return &Server{
-		sessions:              make(map[string]*session),
-		everStartedDirs:       make(map[string]bool),
-		pinnedDirs:            make(map[string]bool),
-		pinnedConfigDir:       paths.pinnedConfigDir,
-		externalDirs:          make(map[string]bool),
-		externalConfigDir:     paths.externalConfigDir,
-		adhocStates:           make(map[string]*adhocPromptState),
-		shutdownCtx:           context.Background(),
-		signals:               newSignalBroker(),
-		rootDir:               absRootDir,
-		editorAvailable:       editorAvail,
-		isTerminalEditor:      editor.isTerminal,
-		editorName:            editor.name,
-		editor:                editor,
-		workspaceScanCache:    newTTLCache[string, []workspaceGroup](3 * time.Second),
-		classifyCache:         newTTLCache[string, workspaceKind](5 * time.Second),
-		svgCache:              newTTLCache[string, string](10 * time.Second),
-		stateCache:            newTTLCache[string, apiFactoryState](30 * time.Second),
-		goalTitleComposer:     defaultGoalTitleComposer,
-		goalTitleReadFile:     os.ReadFile,
-		goalTitleRepairQueued: make(map[string]struct{}),
+		mu:                     sync.Mutex{},
+		sessions:               make(map[string]*session),
+		everStartedDirs:        make(map[string]bool),
+		pinnedDirs:             make(map[string]bool),
+		pinnedConfigDir:        paths.pinnedConfigDir,
+		externalDirs:           make(map[string]bool),
+		externalConfigDir:      paths.externalConfigDir,
+		adhocStates:            make(map[string]*adhocPromptState),
+		shutdownCtx:            context.Background(),
+		signals:                newSignalBroker(),
+		rootDir:                absRootDir,
+		editorAvailable:        editorAvail,
+		isTerminalEditor:       editor.isTerminal,
+		editorName:             editor.name,
+		editor:                 editor,
+		workspaceScanCache:     newTTLCache[string, []workspaceGroup](3 * time.Second),
+		classifyCache:          newTTLCache[string, workspaceKind](5 * time.Second),
+		svgCache:               newTTLCache[string, string](10 * time.Second),
+		stateCache:             newTTLCache[string, apiFactoryState](30 * time.Second),
+		promptActionRunner:     nil,
+		scriptActionRunner:     nil,
+		workspaceScanFlight:    singleflight[string, []workspaceGroup]{mu: sync.Mutex{}, calls: nil},
+		classifyFlight:         singleflight[string, workspaceKind]{mu: sync.Mutex{}, calls: nil},
+		svgFlight:              singleflight[string, string]{mu: sync.Mutex{}, calls: nil},
+		stateFlight:            singleflight[string, apiFactoryState]{mu: sync.Mutex{}, calls: nil},
+		stateGeneration:        0,
+		goalTitleComposer:      defaultGoalTitleComposer,
+		goalTitleReadFile:      os.ReadFile,
+		goalTitleRepairMu:      sync.Mutex{},
+		goalTitleRepairQueue:   nil,
+		goalTitleRepairQueued:  make(map[string]struct{}),
+		goalTitleRepairRunning: false,
 	}
 }
 
@@ -340,7 +276,7 @@ func (s *Server) notifyStateChange() {
 
 func (s *Server) validateDirectory(dir string) (string, error) {
 	if dir == "" {
-		return "", fmt.Errorf("directory is required")
+		return "", errors.New("directory is required")
 	}
 
 	absDir, err := filepath.Abs(dir)
@@ -392,11 +328,11 @@ func (s *Server) validateDirectory(dir string) (string, error) {
 
 	relPath, err := filepath.Rel(realRoot, realDir)
 	if err != nil {
-		return "", fmt.Errorf("path traversal denied")
+		return "", errors.New("path traversal denied")
 	}
 
 	if strings.HasPrefix(relPath, "..") {
-		return "", fmt.Errorf("path traversal denied")
+		return "", errors.New("path traversal denied")
 	}
 
 	return cleanDir, nil
@@ -417,10 +353,12 @@ func (s *Server) startSession(workspacePath string) startSessionResult {
 	sess := s.sessions[workspacePath]
 	if sess != nil && sess.running {
 		s.mu.Unlock()
-		return startSessionResult{alreadyRunning: true, sess: sess}
+		return startSessionResult{alreadyRunning: true, sess: sess, startError: nil}
 	}
 
-	sess = &session{running: true, outputLog: newCircularLogBuffer()}
+	sess = new(session)
+	sess.running = true
+	sess.outputLog = newCircularLogBuffer()
 	s.sessions[workspacePath] = sess
 	s.everStartedDirs[workspacePath] = true
 	s.mu.Unlock()
@@ -430,7 +368,7 @@ func (s *Server) startSession(workspacePath string) startSessionResult {
 		sess.mu.Lock()
 		sess.running = false
 		sess.mu.Unlock()
-		return startSessionResult{startError: fmt.Errorf("creating coordinator: %w", errCoord)}
+		return startSessionResult{alreadyRunning: false, sess: nil, startError: fmt.Errorf("creating coordinator: %w", errCoord)}
 	}
 	if errCoord != nil {
 		coord = state.NewCoordinatorEmpty(statePath(workspacePath))
@@ -443,7 +381,7 @@ func (s *Server) startSession(workspacePath string) startSessionResult {
 		sess.mu.Lock()
 		sess.running = false
 		sess.mu.Unlock()
-		return startSessionResult{startError: fmt.Errorf("updating state: %w", errUpdate)}
+		return startSessionResult{alreadyRunning: false, sess: nil, startError: fmt.Errorf("updating state: %w", errUpdate)}
 	}
 	sess.mu.Lock()
 	sess.coord = coord
@@ -456,7 +394,7 @@ func (s *Server) startSession(workspacePath string) startSessionResult {
 		sess.mu.Lock()
 		sess.running = false
 		sess.mu.Unlock()
-		return startSessionResult{startError: errMCP}
+		return startSessionResult{alreadyRunning: false, sess: nil, startError: errMCP}
 	}
 	sess.mu.Lock()
 	sess.mcpCloseFn = mcpCloseFn
@@ -490,7 +428,7 @@ func (s *Server) startSession(workspacePath string) startSessionResult {
 		}
 	}()
 
-	return startSessionResult{sess: sess}
+	return startSessionResult{alreadyRunning: false, sess: sess, startError: nil}
 }
 
 func (s *Server) stopSession(workspacePath string) {
@@ -514,7 +452,7 @@ func (s *Server) stopSession(workspacePath string) {
 	s.notifyStateChange()
 }
 
-func badgeStatus(wfState state.Workflow, running bool) (class, text string) {
+func badgeStatus(wfState *state.Workflow, running bool) (class, text string) {
 	if wfState.NeedsHumanInput() {
 		return "badge-needs-input", "Needs Input"
 	}
@@ -556,13 +494,15 @@ func cmdServe(args []string) {
 		var err error
 		rootDir, err = os.Getwd()
 		if err != nil {
-			log.Fatalf("failed to get working directory: %v", err)
+			log.Printf("failed to get working directory: %v", err)
+			return
 		}
 	}
 
 	listener, errListen := net.Listen("tcp4", *listenAddr)
 	if errListen != nil {
-		log.Fatalln("failed to listen:", errListen)
+		log.Println("failed to listen:", errListen)
+		return
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -582,17 +522,23 @@ func cmdServe(args []string) {
 
 	mux := http.NewServeMux()
 	srv.registerAPIRoutes(mux)
-	mux.Handle("/mcp/external", buildExternalMCPHandler(srv))
+	externalMCPHandler, errExternalMCP := buildExternalMCPHandler(srv)
+	if errExternalMCP != nil {
+		log.Println("failed to build external MCP handler:", errExternalMCP)
+		return
+	}
+	mux.Handle("/mcp/external", externalMCPHandler)
 	handler := srv.spaMiddleware(mux)
 
-	httpServer := &http.Server{Handler: handler}
+	var httpServer http.Server
+	httpServer.Handler = handler
 
 	baseURL := dashboardBaseURL(listener.Addr().String())
 	log.Println("sgai serve listening on", baseURL)
 
 	go func() {
 		if errServe := httpServer.Serve(listener); errServe != nil && !errors.Is(errServe, http.ErrServerClosed) {
-			log.Fatalln("server error:", errServe)
+			log.Println("server error:", errServe)
 		}
 	}()
 
@@ -629,7 +575,7 @@ func renderDotAsFallbackSVG(dotContent string) string {
 		DY   int
 		Text string
 	}
-	var lineItems []lineData
+	lineItems := make([]lineData, 0, len(lines))
 	for i, line := range lines {
 		dy := 16
 		if i == 0 {
@@ -639,6 +585,10 @@ func renderDotAsFallbackSVG(dotContent string) string {
 	}
 
 	var buf bytes.Buffer
+	tmplFallbackSVG, errTemplate := template.New("fallbackSVG").Parse(fallbackSVGTemplate)
+	if errTemplate != nil {
+		return ""
+	}
 	data := struct {
 		Height int
 		Lines  []lineData
@@ -663,7 +613,7 @@ func linesWithTrailingEmpty(content string) []string {
 	return lines
 }
 
-func getWorkflowSVG(dir string, currentAgent string) string {
+func getWorkflowSVG(dir, currentAgent string) string {
 	goalPath := filepath.Join(dir, "GOAL.md")
 	goalData, err := os.ReadFile(goalPath)
 	if err != nil {
@@ -680,7 +630,7 @@ func getWorkflowSVG(dir string, currentAgent string) string {
 		return ""
 	}
 
-	if retrospectiveEnabled(metadata) {
+	if retrospectiveEnabled(metadata.Retrospective) {
 		d.injectRetrospectiveEdge()
 	}
 
@@ -694,7 +644,7 @@ func getWorkflowSVG(dir string, currentAgent string) string {
 	return renderDotToSVG(dotContent)
 }
 
-func (s *Server) getWorkflowSVGCached(dir string, currentAgent string) string {
+func (s *Server) getWorkflowSVGCached(dir, currentAgent string) string {
 	cacheKey := dir + "|" + currentAgent
 	if cached, ok := s.svgCache.get(cacheKey); ok {
 		return cached
@@ -712,7 +662,7 @@ func (s *Server) getWorkflowSVGCached(dir string, currentAgent string) string {
 	return svg
 }
 
-func (s *Server) getWorkflowSVGHashCached(dir string, currentAgent string) string {
+func (s *Server) getWorkflowSVGHashCached(dir, currentAgent string) string {
 	svg := s.getWorkflowSVGCached(dir, currentAgent)
 	if svg == "" {
 		return ""
@@ -738,10 +688,12 @@ func formatProgressForDisplay(entries []state.ProgressEntry) []eventsProgressDis
 		parsedTime, err := time.Parse(time.RFC3339, entry.Timestamp)
 		if err != nil {
 			result = append(result, eventsProgressDisplay{
-				Timestamp:     entry.Timestamp,
-				FormattedTime: entry.Timestamp,
-				Agent:         entry.Agent,
-				Description:   entry.Description,
+				Timestamp:       entry.Timestamp,
+				FormattedTime:   entry.Timestamp,
+				Agent:           entry.Agent,
+				Description:     entry.Description,
+				ShowDateDivider: false,
+				DateDivider:     "",
 			})
 			continue
 		}
@@ -774,7 +726,7 @@ func renderMarkdown(content []byte) (string, error) {
 		goldmark.WithRendererOptions(html.WithHardWraps()),
 	)
 	if err := md.Convert(content, &buf); err != nil {
-		return "", err
+		return "", fmt.Errorf("rendering markdown: %w", err)
 	}
 	return buf.String(), nil
 }
@@ -786,7 +738,7 @@ type agentSequenceDisplay struct {
 	IsCurrent   bool
 }
 
-func prepareAgentSequenceDisplay(sequence []state.AgentSequenceEntry, running bool, lastActivityTime string, workspacePath string) []agentSequenceDisplay {
+func prepareAgentSequenceDisplay(sequence []state.AgentSequenceEntry, running bool, lastActivityTime, workspacePath string) []agentSequenceDisplay {
 	now := time.Now().UTC()
 	result := make([]agentSequenceDisplay, 0, len(sequence))
 
@@ -880,7 +832,7 @@ func workspaceDagAgents(workspacePath string) []string {
 	if errFlow != nil {
 		return nil
 	}
-	if retrospectiveEnabled(metadata) {
+	if retrospectiveEnabled(metadata.Retrospective) {
 		flowDag.injectRetrospectiveEdge()
 	}
 	return flowDag.allAgents()
@@ -920,8 +872,8 @@ func extractSubject(body string) string {
 }
 
 func injectCurrentAgentStyle(dot, currentAgent string) string {
-	agentLine := fmt.Sprintf(`    "%s"`, currentAgent)
-	styledLine := fmt.Sprintf(`    "%s" [style=filled, fillcolor="#10b981", fontcolor=white]`, currentAgent)
+	agentLine := fmt.Sprintf("    %q", currentAgent)
+	styledLine := fmt.Sprintf("    %q [style=filled, fillcolor=\"#10b981\", fontcolor=white]", currentAgent)
 
 	if !strings.Contains(dot, agentLine) {
 		return dot
@@ -1016,7 +968,7 @@ func workspaceCount(dir string) (int, error) {
 	cmd.Dir = dir
 	output, errOutput := cmd.Output()
 	if errOutput != nil {
-		return 0, errOutput
+		return 0, fmt.Errorf("listing jj workspaces in %s: %w", dir, errOutput)
 	}
 	trimmed := strings.TrimSpace(string(output))
 	if trimmed == "" {
@@ -1113,7 +1065,7 @@ func (s *Server) workspaceCoordinator(workspacePath string) *state.Coordinator {
 	return coord
 }
 
-func (s *Server) getWorkspaceStatus(dir string) (running bool, needsInput bool) {
+func (s *Server) getWorkspaceStatus(dir string) (running, needsInput bool) {
 	s.mu.Lock()
 	sess := s.sessions[dir]
 	s.mu.Unlock()
@@ -1194,18 +1146,18 @@ func (s *Server) loadPinnedProjects() error {
 		s.mu.Unlock()
 		return nil
 	}
-	state := s.currentWorkspaceListState()
-	state.pinnedDirs = existing
-	if errSave := s.saveWorkspaceListState(state, false, true); errSave != nil {
+	workspaceState := s.currentWorkspaceListState()
+	workspaceState.pinnedDirs = existing
+	if errSave := s.saveWorkspaceListState(workspaceState, false, true); errSave != nil {
 		return errSave
 	}
-	s.commitWorkspaceListState(state)
+	s.commitWorkspaceListState(workspaceState)
 	return nil
 }
 
 func (s *Server) savePinnedProjects() error {
-	state := s.currentWorkspaceListState()
-	return s.saveWorkspaceListState(state, false, true)
+	workspaceState := s.currentWorkspaceListState()
+	return s.saveWorkspaceListState(workspaceState, false, true)
 }
 
 func (s *Server) isPinned(dir string) bool {
@@ -1216,16 +1168,16 @@ func (s *Server) isPinned(dir string) bool {
 
 func (s *Server) togglePin(dir string) error {
 	canonical := resolveSymlinks(dir)
-	state := s.currentWorkspaceListState()
-	if state.pinnedDirs[canonical] {
-		delete(state.pinnedDirs, canonical)
+	workspaceState := s.currentWorkspaceListState()
+	if workspaceState.pinnedDirs[canonical] {
+		delete(workspaceState.pinnedDirs, canonical)
 	} else {
-		state.pinnedDirs[canonical] = true
+		workspaceState.pinnedDirs[canonical] = true
 	}
-	if errSave := s.saveWorkspaceListState(state, false, true); errSave != nil {
+	if errSave := s.saveWorkspaceListState(workspaceState, false, true); errSave != nil {
 		return errSave
 	}
-	s.commitWorkspaceListState(state)
+	s.commitWorkspaceListState(workspaceState)
 	return nil
 }
 
@@ -1248,14 +1200,14 @@ func (s *Server) invalidateWorkspaceScanCache() {
 }
 
 func (s *Server) doScanWorkspaceGroups() []workspaceGroup {
-	state := s.currentWorkspaceListState()
-	if len(state.externalDirs) == 0 {
+	workspaceState := s.currentWorkspaceListState()
+	if len(workspaceState.externalDirs) == 0 {
 		return nil
 	}
 
-	attached := make([]scannedAttachedWorkspace, 0, len(state.externalDirs))
+	attached := make([]scannedAttachedWorkspace, 0, len(workspaceState.externalDirs))
 	var missingDirs []string
-	for dir := range state.externalDirs {
+	for dir := range workspaceState.externalDirs {
 		if _, errStat := os.Stat(dir); errStat != nil {
 			if os.IsNotExist(errStat) {
 				missingDirs = append(missingDirs, resolveSymlinks(dir))
@@ -1281,7 +1233,7 @@ func (s *Server) doScanWorkspaceGroups() []workspaceGroup {
 	}
 
 	if len(missingDirs) > 0 {
-		s.pruneMissingAttachedDirs(state, missingDirs)
+		s.pruneMissingAttachedDirs(workspaceState, missingDirs)
 	}
 
 	return s.groupAttachedWorkspaces(attached)
@@ -1300,35 +1252,41 @@ func (s *Server) groupAttachedWorkspaces(attached []scannedAttachedWorkspace) []
 			continue
 		}
 		rootMap[ws.resolvedDir] = &workspaceGroup{
-			Root: s.createWorkspaceInfo(ws.directory, ws.dirName, ws.kind, ws.hasWorkspace, true),
+			Root:  s.createWorkspaceInfo(ws.directory, ws.dirName, ws.kind, ws.hasWorkspace, true),
+			Forks: nil,
 		}
 	}
 
 	for _, ws := range attached {
 		switch ws.kind {
+		case workspaceRoot:
+			continue
 		case workspaceFork:
 			if ws.rootDir == "" {
 				standaloneGroups = append(standaloneGroups, workspaceGroup{
-					Root: s.createWorkspaceInfo(ws.directory, ws.dirName, ws.kind, ws.hasWorkspace, true),
+					Root:  s.createWorkspaceInfo(ws.directory, ws.dirName, ws.kind, ws.hasWorkspace, true),
+					Forks: nil,
 				})
 				continue
 			}
 			grp, exists := rootMap[ws.rootDir]
 			if !exists {
 				standaloneGroups = append(standaloneGroups, workspaceGroup{
-					Root: s.createWorkspaceInfo(ws.directory, ws.dirName, ws.kind, ws.hasWorkspace, true),
+					Root:  s.createWorkspaceInfo(ws.directory, ws.dirName, ws.kind, ws.hasWorkspace, true),
+					Forks: nil,
 				})
 				continue
 			}
 			grp.Forks = append(grp.Forks, s.createWorkspaceInfo(ws.directory, ws.dirName, ws.kind, ws.hasWorkspace, true))
 		case workspaceStandalone:
 			standaloneGroups = append(standaloneGroups, workspaceGroup{
-				Root: s.createWorkspaceInfo(ws.directory, ws.dirName, ws.kind, ws.hasWorkspace, true),
+				Root:  s.createWorkspaceInfo(ws.directory, ws.dirName, ws.kind, ws.hasWorkspace, true),
+				Forks: nil,
 			})
 		}
 	}
 
-	var groups []workspaceGroup
+	groups := make([]workspaceGroup, 0, len(rootMap)+len(standaloneGroups))
 	for _, grp := range rootMap {
 		groups = append(groups, *grp)
 	}
@@ -1341,13 +1299,13 @@ func (s *Server) groupAttachedWorkspaces(attached []scannedAttachedWorkspace) []
 	return groups
 }
 
-func (s *Server) pruneMissingAttachedDirs(state workspaceListState, missingDirs []string) workspaceListState {
+func (s *Server) pruneMissingAttachedDirs(workspaceState workspaceListState, missingDirs []string) workspaceListState {
 	if len(missingDirs) == 0 {
-		return state
+		return workspaceState
 	}
 	nextState := workspaceListState{
-		externalDirs: maps.Clone(state.externalDirs),
-		pinnedDirs:   maps.Clone(state.pinnedDirs),
+		externalDirs: maps.Clone(workspaceState.externalDirs),
+		pinnedDirs:   maps.Clone(workspaceState.pinnedDirs),
 	}
 	changed := false
 	for _, dir := range missingDirs {
@@ -1361,11 +1319,11 @@ func (s *Server) pruneMissingAttachedDirs(state workspaceListState, missingDirs 
 		}
 	}
 	if !changed {
-		return state
+		return workspaceState
 	}
 	if errSave := s.saveWorkspaceListState(nextState, true, true); errSave != nil {
 		log.Println("warning: failed to prune missing attached workspace state:", errSave)
-		return state
+		return workspaceState
 	}
 	s.commitWorkspaceListState(nextState)
 	s.invalidateWorkspaceScanCache()
@@ -1381,109 +1339,37 @@ func (s *Server) resolveWorkspaceNameToPath(workspaceName string) string {
 		return ""
 	}
 
-	paths := s.resolveWorkspaceNameToPaths(workspaceName)
-	if len(paths) == 0 {
-		return ""
-	}
-	return paths[0]
+	workspacePath, _, _ := s.resolveSingleWorkspacePath(workspaceName)
+	return workspacePath
 }
 
-func splitWorkspacePathSegments(path string) []string {
-	return strings.FieldsFunc(path, func(r rune) bool {
-		return r == '/' || r == '\\'
-	})
+func (s *Server) resolveSingleWorkspacePath(workspaceName string) (workspacePath string, statusCode int, errMessage string) {
+	if workspaceName == "" {
+		return "", http.StatusBadRequest, "workspace name is required"
+	}
+
+	workspacePaths := s.resolveWorkspaceNameToPaths(workspaceName)
+	switch len(workspacePaths) {
+	case 0:
+		return "", http.StatusNotFound, "workspace not found"
+	case 1:
+		return workspacePaths[0], 0, ""
+	default:
+		return "", http.StatusConflict, "workspace name is ambiguous"
+	}
 }
 
 func workspaceInfos(groups []workspaceGroup) []workspaceInfo {
-	var workspaces []workspaceInfo
+	total := 0
+	for _, group := range groups {
+		total += 1 + len(group.Forks)
+	}
+	workspaces := make([]workspaceInfo, 0, total)
 	for _, group := range groups {
 		workspaces = append(workspaces, group.Root)
 		workspaces = append(workspaces, group.Forks...)
 	}
 	return workspaces
-}
-
-func buildWorkspaceRouteDisambiguators(workspaces []workspaceInfo) map[string]string {
-	type workspaceSegments struct {
-		dir      string
-		segments []string
-	}
-
-	parentSegments := make([]workspaceSegments, 0, len(workspaces))
-	maxDepth := 0
-	for _, workspace := range workspaces {
-		segments := splitWorkspacePathSegments(workspace.Directory)
-		if len(segments) > 0 {
-			segments = segments[:len(segments)-1]
-		}
-		parentSegments = append(parentSegments, workspaceSegments{dir: workspace.Directory, segments: segments})
-		maxDepth = max(maxDepth, len(segments))
-	}
-
-	disambiguators := make(map[string]string, len(parentSegments))
-	for _, current := range parentSegments {
-		resolved := current.dir
-		for depth := 1; depth <= max(maxDepth, 1); depth++ {
-			currentStart := max(0, len(current.segments)-depth)
-			candidate := strings.Join(current.segments[currentStart:], "/")
-			normalizedCandidate := candidate
-			if normalizedCandidate == "" {
-				normalizedCandidate = current.dir
-			}
-
-			isUnique := true
-			for _, other := range parentSegments {
-				if other.dir == current.dir {
-					continue
-				}
-				otherStart := max(0, len(other.segments)-depth)
-				otherCandidate := strings.Join(other.segments[otherStart:], "/")
-				if otherCandidate == "" {
-					otherCandidate = other.dir
-				}
-				if otherCandidate == normalizedCandidate {
-					isUnique = false
-					break
-				}
-			}
-
-			if isUnique {
-				resolved = normalizedCandidate
-				break
-			}
-		}
-		disambiguators[current.dir] = resolved
-	}
-
-	return disambiguators
-}
-
-func buildWorkspaceRoutedNames(workspaces []workspaceInfo) map[string]string {
-	grouped := make(map[string][]workspaceInfo)
-	for _, workspace := range workspaces {
-		grouped[workspace.DirName] = append(grouped[workspace.DirName], workspace)
-	}
-
-	routedNames := make(map[string]string, len(workspaces))
-	for workspaceName, group := range grouped {
-		if len(group) < 2 {
-			for _, workspace := range group {
-				routedNames[workspace.Directory] = workspaceName
-			}
-			continue
-		}
-
-		disambiguators := buildWorkspaceRouteDisambiguators(group)
-		for _, workspace := range group {
-			disambiguator := disambiguators[workspace.Directory]
-			if disambiguator == "" {
-				disambiguator = workspace.Directory
-			}
-			routedNames[workspace.Directory] = disambiguator + "/" + workspace.DirName
-		}
-	}
-
-	return routedNames
 }
 
 func (s *Server) resolveWorkspaceNameToPaths(workspaceName string) []string {
@@ -1503,17 +1389,6 @@ func (s *Server) resolveWorkspaceNameToPaths(workspaceName string) []string {
 			paths = append(paths, workspace.Directory)
 		}
 	}
-	if len(paths) > 0 {
-		return paths
-	}
-
-	routedNames := buildWorkspaceRoutedNames(workspaces)
-	for _, workspace := range workspaces {
-		if routedNames[workspace.Directory] == workspaceName {
-			return []string{workspace.Directory}
-		}
-	}
-
 	return paths
 }
 
@@ -1597,26 +1472,33 @@ func unpackSkeleton(workspacePath string) error {
 	if err != nil {
 		return fmt.Errorf("accessing skeleton subdirectory: %w", err)
 	}
-	return fs.WalkDir(subFS, ".", func(path string, d fs.DirEntry, err error) error {
+	errWalk := fs.WalkDir(subFS, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			return fmt.Errorf("walking skeleton path %s: %w", path, err)
 		}
 		outPath := filepath.Join(workspacePath, path)
 		if err := rejectSymlinkedWorkspacePath(workspacePath, outPath); err != nil {
 			return err
 		}
 		if d.IsDir() {
-			if err := os.MkdirAll(outPath, 0755); err != nil {
-				return err
+			if err := os.MkdirAll(outPath, 0o755); err != nil {
+				return fmt.Errorf("creating skeleton directory %s: %w", outPath, err)
 			}
 			return nil
 		}
 		data, errRead := fs.ReadFile(subFS, path)
 		if errRead != nil {
-			return errRead
+			return fmt.Errorf("reading skeleton file %s: %w", path, errRead)
 		}
-		return os.WriteFile(outPath, data, 0644)
+		if errWrite := os.WriteFile(outPath, data, 0o644); errWrite != nil {
+			return fmt.Errorf("writing skeleton file %s: %w", outPath, errWrite)
+		}
+		return nil
 	})
+	if errWalk != nil {
+		return fmt.Errorf("walking skeleton files: %w", errWalk)
+	}
+	return nil
 }
 
 func gitMetadataDirForWorkspace(dir string) (string, error) {
@@ -1629,7 +1511,7 @@ func gitMetadataDirForWorkspace(dir string) (string, error) {
 		return "", fmt.Errorf("statting .git: %w", errStat)
 	}
 	if gitInfo.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("statting .git: symlinked .git entry is not allowed")
+		return "", errors.New("statting .git: symlinked .git entry is not allowed")
 	}
 	if gitInfo.IsDir() {
 		return gitPath, nil
@@ -1650,12 +1532,12 @@ func gitMetadataDirForWorkspace(dir string) (string, error) {
 func gitDirFromFile(workspaceDir string, content []byte) (string, error) {
 	line := strings.TrimSpace(string(content))
 	if !strings.HasPrefix(line, "gitdir:") {
-		return "", fmt.Errorf("parsing .git file: missing gitdir prefix")
+		return "", errors.New("parsing .git file: missing gitdir prefix")
 	}
 
 	rawGitDir := strings.TrimSpace(strings.TrimPrefix(line, "gitdir:"))
 	if rawGitDir == "" {
-		return "", fmt.Errorf("parsing .git file: missing gitdir path")
+		return "", errors.New("parsing .git file: missing gitdir path")
 	}
 
 	gitDir, errGitDir := resolveGitPointerPath(workspaceDir, rawGitDir)
@@ -1683,7 +1565,7 @@ func gitDirFromFile(workspaceDir string, content []byte) (string, error) {
 		return resolvedGitDir, nil
 	}
 
-	return "", fmt.Errorf("parsing .git file: gitdir path escapes repository metadata boundary")
+	return "", errors.New("parsing .git file: gitdir path escapes repository metadata boundary")
 }
 
 func resolveGitPointerPath(baseDir, rawPath string) (string, error) {
@@ -1787,7 +1669,7 @@ func addGitExclude(dir string) error {
 	if err := rejectSymlinkedGitMetadataPath(gitDir, gitInfoDir); err != nil {
 		return fmt.Errorf("checking .git/info directory: %w", err)
 	}
-	if err := os.MkdirAll(gitInfoDir, 0755); err != nil {
+	if err := os.MkdirAll(gitInfoDir, 0o755); err != nil {
 		return fmt.Errorf("creating .git/info directory: %w", err)
 	}
 
@@ -1806,7 +1688,7 @@ func addGitExclude(dir string) error {
 		existingContent = append(existingContent, '\n')
 	}
 	existingContent = append(existingContent, []byte("/.sgai\n")...)
-	if err := os.WriteFile(excludePath, existingContent, 0644); err != nil {
+	if err := os.WriteFile(excludePath, existingContent, 0o644); err != nil {
 		return fmt.Errorf("writing .git/info/exclude: %w", err)
 	}
 	return nil
@@ -1891,7 +1773,7 @@ func gitMetadataRegularFileExists(path string) (bool, error) {
 		return false, nil
 	}
 	if errLstat != nil {
-		return false, errLstat
+		return false, fmt.Errorf("statting %s: %w", path, errLstat)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		return false, fmt.Errorf("symlinked path is not allowed: %s", path)
@@ -1908,7 +1790,7 @@ func gitMetadataDirectoryExists(path string) (bool, error) {
 		return false, nil
 	}
 	if errLstat != nil {
-		return false, errLstat
+		return false, fmt.Errorf("statting %s: %w", path, errLstat)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		return false, fmt.Errorf("symlinked path is not allowed: %s", path)
@@ -1919,7 +1801,7 @@ func gitMetadataDirectoryExists(path string) (bool, error) {
 func readGitMetadataFile(path, name string) ([]byte, error) {
 	info, errLstat := os.Lstat(path)
 	if errLstat != nil {
-		return nil, errLstat
+		return nil, fmt.Errorf("statting %s: %w", path, errLstat)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("symlinked %s is not allowed", name)
@@ -1930,7 +1812,7 @@ func readGitMetadataFile(path, name string) ([]byte, error) {
 
 	content, errRead := os.ReadFile(path)
 	if errRead != nil {
-		return nil, errRead
+		return nil, fmt.Errorf("reading %s: %w", path, errRead)
 	}
 	return content, nil
 }
@@ -1959,7 +1841,7 @@ func rejectSymlinkedPath(rootPath, dstPath, boundaryLabel, pathLabel string) err
 	}
 
 	currentPath := absRootPath
-	for _, pathPart := range strings.Split(relPath, string(os.PathSeparator)) {
+	for pathPart := range strings.SplitSeq(relPath, string(os.PathSeparator)) {
 		if pathPart == "." || pathPart == "" {
 			continue
 		}
@@ -1981,7 +1863,10 @@ func rejectSymlinkedPath(rootPath, dstPath, boundaryLabel, pathLabel string) err
 
 func writeGoalExample(dir string) error {
 	goalPath := filepath.Join(dir, "GOAL.md")
-	return os.WriteFile(goalPath, []byte(goalExampleContent), 0644)
+	if errWrite := os.WriteFile(goalPath, []byte(goalExampleContent), 0o644); errWrite != nil {
+		return fmt.Errorf("writing GOAL.md example: %w", errWrite)
+	}
+	return nil
 }
 
 func validateWorkspaceName(name string) string {

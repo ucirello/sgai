@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -245,24 +246,17 @@ type askUserWorkGateArgs struct {
 	Summary string `json:"summary" jsonschema:"A comprehensive summary of the definition for the human to review before approving. Must include: GOAL items, brainstorming decisions, task breakdown, and validation criteria."`
 }
 
-func mustSchema[T any]() *jsonschema.Schema {
-	s, err := jsonschema.For[T](nil)
-	if err != nil {
-		panic(fmt.Sprintf("failed to create schema: %v", err))
-	}
-	return s
+func schemaFor[T any]() (*jsonschema.Schema, error) {
+	return jsonschema.For[T](nil)
 }
 
-var (
-	schemaFindSkills       = mustSchema[findSkillsArgs]()
-	schemaFindSnippets     = mustSchema[findSnippetsArgs]()
-	schemaSendMessage      = mustSchema[sendMessageArgs]()
-	schemaDeleteUnreadMsgs = mustSchema[deleteUnreadMessagesArgs]()
-	schemaEmpty            = mustSchema[struct{}]()
-	schemaProjectTodoWrite = mustSchema[projectTodoWriteArgs]()
-	schemaAskUserQuestion  = mustSchema[askUserQuestionArgs]()
-	schemaAskUserWorkGate  = mustSchema[askUserWorkGateArgs]()
-)
+func buildToolSchema[T any](toolName string) (*jsonschema.Schema, error) {
+	schema, errSchema := schemaFor[T]()
+	if errSchema != nil {
+		return nil, fmt.Errorf("build %s schema: %w", toolName, errSchema)
+	}
+	return schema, nil
+}
 
 const (
 	autoProceedAnswer           = "I defer to your judgement, proceed with your recommendations"
@@ -280,7 +274,7 @@ type humanToolCallbacks struct {
 	workGate askUserWorkGateFunc
 }
 
-func startMCPHTTPServer(workingDir string, coord *state.Coordinator, dagAgents []string) (string, func(), error) {
+func startMCPHTTPServer(workingDir string, coord *state.Coordinator, dagAgents []string) (serverURL string, closeFn func(), err error) {
 	listener, errListen := net.Listen("tcp", "127.0.0.1:0")
 	if errListen != nil {
 		return "", nil, fmt.Errorf("failed to listen on random port: %w", errListen)
@@ -288,9 +282,17 @@ func startMCPHTTPServer(workingDir string, coord *state.Coordinator, dagAgents [
 
 	humanTools := selectHumanToolCallbacks(workingDir, coord)
 	serveMux := http.NewServeMux()
-	serveMux.Handle("/mcp", buildMCPHTTPHandler(workingDir, coord, dagAgents, humanTools))
+	handler, errHandler := buildMCPHTTPHandler(workingDir, coord, dagAgents, humanTools)
+	if errHandler != nil {
+		if errClose := listener.Close(); errClose != nil {
+			log.Println("failed to close MCP listener after setup error:", errClose)
+		}
+		return "", nil, fmt.Errorf("build MCP HTTP handler: %w", errHandler)
+	}
+	serveMux.Handle("/mcp", handler)
 
-	httpServer := &http.Server{Handler: serveMux}
+	httpServer := new(http.Server)
+	httpServer.Handler = serveMux
 	go func() {
 		if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Println("MCP HTTP server error:", err)
@@ -300,7 +302,7 @@ func startMCPHTTPServer(workingDir string, coord *state.Coordinator, dagAgents [
 	addr := listener.Addr().(*net.TCPAddr)
 	url := fmt.Sprintf("http://127.0.0.1:%d/mcp", addr.Port)
 
-	closeFn := func() {
+	closeFn = func() {
 		if err := httpServer.Close(); err != nil {
 			log.Println("failed to close MCP HTTP server:", err)
 		}
@@ -337,103 +339,150 @@ func resolveCallerAgent(headerAgent string, coord *state.Coordinator) string {
 	return "coordinator"
 }
 
-func buildMCPHTTPHandler(workingDir string, coord *state.Coordinator, dagAgents []string, humanTools humanToolCallbacks) http.Handler {
+func buildMCPHTTPHandler(workingDir string, coord *state.Coordinator, dagAgents []string, humanTools humanToolCallbacks) (http.Handler, error) {
+	if _, errBuild := buildMCPServerForAgent(workingDir, coord, dagAgents, humanTools, "coordinator"); errBuild != nil {
+		return nil, errBuild
+	}
+	if _, errBuild := buildMCPServerForAgent(workingDir, coord, dagAgents, humanTools, "builder"); errBuild != nil {
+		return nil, errBuild
+	}
 	return mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-		return buildMCPServer(workingDir, r, coord, dagAgents, humanTools)
-	}, nil)
+		server, errBuild := buildMCPServer(workingDir, r, coord, dagAgents, humanTools)
+		if errBuild != nil {
+			log.Println("failed to build MCP server:", errBuild)
+			return mcp.NewServer(newMCPImplementation("sgai"), nil)
+		}
+		return server
+	}, nil), nil
 }
 
-func buildMCPServer(workingDir string, r *http.Request, coord *state.Coordinator, dagAgents []string, humanTools humanToolCallbacks) *mcp.Server {
+func buildMCPServer(workingDir string, r *http.Request, coord *state.Coordinator, dagAgents []string, humanTools humanToolCallbacks) (*mcp.Server, error) {
 	agentName := resolveCallerAgent(parseAgentIdentityHeader(r), coord)
+	return buildMCPServerForAgent(workingDir, coord, dagAgents, humanTools, agentName)
+}
 
-	server := mcp.NewServer(&mcp.Implementation{Name: "sgai"}, nil)
+func buildMCPServerForAgent(workingDir string, coord *state.Coordinator, dagAgents []string, humanTools humanToolCallbacks, agentName string) (*mcp.Server, error) {
+	server := mcp.NewServer(newMCPImplementation("sgai"), nil)
 	mcpCtx := &mcpContext{workingDir: workingDir, coord: coord, dagAgents: dagAgents, agentName: agentName, humanTools: humanTools}
 
-	registerCommonTools(server, mcpCtx, agentName)
-
-	if agentName == "coordinator" {
-		registerCoordinatorTools(server, mcpCtx, workingDir)
+	if errRegister := registerCommonTools(server, mcpCtx, agentName); errRegister != nil {
+		return nil, errRegister
 	}
 
-	return server
+	if agentName == "coordinator" {
+		if errRegister := registerCoordinatorTools(server, mcpCtx); errRegister != nil {
+			return nil, errRegister
+		}
+	}
+
+	return server, nil
 }
 
-func registerCommonTools(server *mcp.Server, mcpCtx *mcpContext, agentName string) {
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "find_skills",
-		Description: "Search for skills by name or keywords. Returns skill names and descriptions. Use the 'skill' tool to load a skill's full content.",
-		InputSchema: schemaFindSkills,
-	}, mcpCtx.findSkillsHandler)
+func newMCPImplementation(name string) *mcp.Implementation {
+	return &mcp.Implementation{
+		Name:       name,
+		Title:      "",
+		Version:    "",
+		WebsiteURL: "",
+		Icons:      nil,
+	}
+}
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "find_snippets",
-		Description: "Find code snippets by language and query.",
-		InputSchema: schemaFindSnippets,
-	}, mcpCtx.findSnippetsHandler)
+func newMCPTool(name, description string, inputSchema *jsonschema.Schema) *mcp.Tool {
+	return &mcp.Tool{
+		Meta:         mcp.Meta{},
+		Annotations:  nil,
+		Name:         name,
+		Description:  description,
+		InputSchema:  inputSchema,
+		OutputSchema: nil,
+		Title:        "",
+		Icons:        nil,
+	}
+}
+
+func newTextContent(text string) *mcp.TextContent {
+	return &mcp.TextContent{Text: text, Meta: mcp.Meta{}, Annotations: nil}
+}
+
+func newTextCallToolResult(text string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		Meta:              mcp.Meta{},
+		Content:           []mcp.Content{newTextContent(text)},
+		StructuredContent: nil,
+		IsError:           false,
+	}
+}
+
+func registerCommonTools(server *mcp.Server, mcpCtx *mcpContext, agentName string) error {
+	findSkillsSchema, errSchema := buildToolSchema[findSkillsArgs]("find_skills")
+	if errSchema != nil {
+		return errSchema
+	}
+	findSnippetsSchema, errSchema := buildToolSchema[findSnippetsArgs]("find_snippets")
+	if errSchema != nil {
+		return errSchema
+	}
+	sendMessageSchema, errSchema := buildToolSchema[sendMessageArgs]("send_message")
+	if errSchema != nil {
+		return errSchema
+	}
+	questionSchema, errSchema := buildToolSchema[askUserQuestionArgs]("ask_user_question")
+	if errSchema != nil {
+		return errSchema
+	}
+	workGateSchema, errSchema := buildToolSchema[askUserWorkGateArgs]("ask_user_work_gate")
+	if errSchema != nil {
+		return errSchema
+	}
+	emptySchema, errSchema := buildToolSchema[struct{}]("empty")
+	if errSchema != nil {
+		return errSchema
+	}
+
+	mcp.AddTool(server, newMCPTool("find_skills", "Search for skills by name or keywords. Returns skill names and descriptions. Use the 'skill' tool to load a skill's full content.", findSkillsSchema), mcpCtx.findSkillsHandler)
+
+	mcp.AddTool(server, newMCPTool("find_snippets", "Find code snippets by language and query.", findSnippetsSchema), mcpCtx.findSnippetsHandler)
 
 	updateWorkflowStateSchema, updateWorkflowStateDescription := buildUpdateWorkflowStateSchema(agentName)
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "update_workflow_state",
-		Description: updateWorkflowStateDescription,
-		InputSchema: updateWorkflowStateSchema,
-	}, mcpCtx.updateWorkflowStateHandler)
+	mcp.AddTool(server, newMCPTool("update_workflow_state", updateWorkflowStateDescription, updateWorkflowStateSchema), mcpCtx.updateWorkflowStateHandler)
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "send_message",
-		Description: "Send a message to another agent in the workflow. The message will be stored and delivered when the target agent starts.",
-		InputSchema: schemaSendMessage,
-	}, mcpCtx.sendMessageHandler)
+	mcp.AddTool(server, newMCPTool("send_message", "Send a message to another agent in the workflow. The message will be stored and delivered when the target agent starts.", sendMessageSchema), mcpCtx.sendMessageHandler)
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "check_inbox",
-		Description: "Check for messages sent to the current agent. Returns all unread messages from other agents.",
-		InputSchema: schemaEmpty,
-	}, mcpCtx.checkInboxHandler)
+	mcp.AddTool(server, newMCPTool("check_inbox", "Check for messages sent to the current agent. Returns all unread messages from other agents.", emptySchema), mcpCtx.checkInboxHandler)
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "check_outbox",
-		Description: "Check for messages you have already sent. Returns all messages sent by the current agent.",
-		InputSchema: schemaEmpty,
-	}, mcpCtx.checkOutboxHandler)
+	mcp.AddTool(server, newMCPTool("check_outbox", "Check for messages you have already sent. Returns all messages sent by the current agent.", emptySchema), mcpCtx.checkOutboxHandler)
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "ask_user_question",
-		Description: "Present one or more multiple-choice questions to the human partner. Depending on the session mode, this tool may wait for the human or return an environment-provided response.",
-		InputSchema: schemaAskUserQuestion,
-	}, mcpCtx.askUserQuestionHandler)
+	mcp.AddTool(server, newMCPTool("ask_user_question", "Present one or more multiple-choice questions to the human partner. Depending on the session mode, this tool may wait for the human or return an environment-provided response.", questionSchema), mcpCtx.askUserQuestionHandler)
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "ask_user_work_gate",
-		Description: "Present the work gate approval question. Depending on the session mode, this tool may wait for the human or return an environment-provided response.",
-		InputSchema: schemaAskUserWorkGate,
-	}, mcpCtx.askUserWorkGateHandler)
+	mcp.AddTool(server, newMCPTool("ask_user_work_gate", "Present the work gate approval question. Depending on the session mode, this tool may wait for the human or return an environment-provided response.", workGateSchema), mcpCtx.askUserWorkGateHandler)
+
+	return nil
 }
 
-func registerCoordinatorTools(server *mcp.Server, mcpCtx *mcpContext, _ string) {
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "peek_message_bus",
-		Description: "Check all messages in the system (both pending and read). Returns all messages in reverse chronological order (most recent first). Coordinator-only tool for monitoring inter-agent communication.",
-		InputSchema: schemaEmpty,
-	}, mcpCtx.peekMessageBusHandler)
+func registerCoordinatorTools(server *mcp.Server, mcpCtx *mcpContext) error {
+	emptySchema, errSchema := buildToolSchema[struct{}]("empty")
+	if errSchema != nil {
+		return errSchema
+	}
+	deleteUnreadMessagesSchema, errSchema := buildToolSchema[deleteUnreadMessagesArgs]("delete_unread_messages")
+	if errSchema != nil {
+		return errSchema
+	}
+	projectTodoWriteSchema, errSchema := buildToolSchema[projectTodoWriteArgs]("project_todowrite")
+	if errSchema != nil {
+		return errSchema
+	}
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "delete_unread_messages",
-		Description: "Delete one or more unread messages from the message bus by ID. Coordinator-only tool. All provided IDs must refer to unread messages.",
-		InputSchema: schemaDeleteUnreadMsgs,
-	}, mcpCtx.deleteUnreadMessagesHandler)
+	mcp.AddTool(server, newMCPTool("peek_message_bus", "Check all messages in the system (both pending and read). Returns all messages in reverse chronological order (most recent first). Coordinator-only tool for monitoring inter-agent communication.", emptySchema), mcpCtx.peekMessageBusHandler)
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "project_todowrite",
-		Description: todoWriteDescription,
-		InputSchema: schemaProjectTodoWrite,
-	}, mcpCtx.projectTodoWriteHandler)
+	mcp.AddTool(server, newMCPTool("delete_unread_messages", "Delete one or more unread messages from the message bus by ID. Coordinator-only tool. All provided IDs must refer to unread messages.", deleteUnreadMessagesSchema), mcpCtx.deleteUnreadMessagesHandler)
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "project_todoread",
-		Description: todoReadDescription,
-		InputSchema: schemaEmpty,
-	}, mcpCtx.projectTodoReadHandler)
+	mcp.AddTool(server, newMCPTool("project_todowrite", todoWriteDescription, projectTodoWriteSchema), mcpCtx.projectTodoWriteHandler)
 
+	mcp.AddTool(server, newMCPTool("project_todoread", todoReadDescription, emptySchema), mcpCtx.projectTodoReadHandler)
+
+	return nil
 }
 
 type mcpContext struct {
@@ -451,9 +500,7 @@ func (c *mcpContext) findSkillsHandler(_ context.Context, _ *mcp.CallToolRequest
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: result}},
-	}, emptyResult{}, nil
+	return newTextCallToolResult(result), emptyResult{}, nil
 }
 
 func (c *mcpContext) findSnippetsHandler(_ context.Context, _ *mcp.CallToolRequest, args findSnippetsArgs) (*mcp.CallToolResult, emptyResult, error) {
@@ -461,9 +508,7 @@ func (c *mcpContext) findSnippetsHandler(_ context.Context, _ *mcp.CallToolReque
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: result}},
-	}, emptyResult{}, nil
+	return newTextCallToolResult(result), emptyResult{}, nil
 }
 
 func (c *mcpContext) updateWorkflowStateHandler(_ context.Context, _ *mcp.CallToolRequest, args updateWorkflowStateArgs) (*mcp.CallToolResult, emptyResult, error) {
@@ -471,9 +516,7 @@ func (c *mcpContext) updateWorkflowStateHandler(_ context.Context, _ *mcp.CallTo
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: result}},
-	}, emptyResult{}, nil
+	return newTextCallToolResult(result), emptyResult{}, nil
 }
 
 func (c *mcpContext) sendMessageHandler(_ context.Context, _ *mcp.CallToolRequest, args sendMessageArgs) (*mcp.CallToolResult, emptyResult, error) {
@@ -481,9 +524,7 @@ func (c *mcpContext) sendMessageHandler(_ context.Context, _ *mcp.CallToolReques
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: result}},
-	}, emptyResult{}, nil
+	return newTextCallToolResult(result), emptyResult{}, nil
 }
 
 func (c *mcpContext) checkInboxHandler(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, emptyResult, error) {
@@ -491,9 +532,7 @@ func (c *mcpContext) checkInboxHandler(_ context.Context, _ *mcp.CallToolRequest
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: result}},
-	}, emptyResult{}, nil
+	return newTextCallToolResult(result), emptyResult{}, nil
 }
 
 func (c *mcpContext) checkOutboxHandler(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, emptyResult, error) {
@@ -501,9 +540,7 @@ func (c *mcpContext) checkOutboxHandler(_ context.Context, _ *mcp.CallToolReques
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: result}},
-	}, emptyResult{}, nil
+	return newTextCallToolResult(result), emptyResult{}, nil
 }
 
 func (c *mcpContext) peekMessageBusHandler(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, emptyResult, error) {
@@ -511,9 +548,7 @@ func (c *mcpContext) peekMessageBusHandler(_ context.Context, _ *mcp.CallToolReq
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: result}},
-	}, emptyResult{}, nil
+	return newTextCallToolResult(result), emptyResult{}, nil
 }
 
 func (c *mcpContext) deleteUnreadMessagesHandler(_ context.Context, _ *mcp.CallToolRequest, args deleteUnreadMessagesArgs) (*mcp.CallToolResult, emptyResult, error) {
@@ -521,9 +556,7 @@ func (c *mcpContext) deleteUnreadMessagesHandler(_ context.Context, _ *mcp.CallT
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: result}},
-	}, emptyResult{}, nil
+	return newTextCallToolResult(result), emptyResult{}, nil
 }
 
 func (c *mcpContext) projectTodoWriteHandler(_ context.Context, _ *mcp.CallToolRequest, args projectTodoWriteArgs) (*mcp.CallToolResult, emptyResult, error) {
@@ -531,9 +564,7 @@ func (c *mcpContext) projectTodoWriteHandler(_ context.Context, _ *mcp.CallToolR
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: result}},
-	}, emptyResult{}, nil
+	return newTextCallToolResult(result), emptyResult{}, nil
 }
 
 func (c *mcpContext) projectTodoReadHandler(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, emptyResult, error) {
@@ -541,9 +572,7 @@ func (c *mcpContext) projectTodoReadHandler(_ context.Context, _ *mcp.CallToolRe
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: result}},
-	}, emptyResult{}, nil
+	return newTextCallToolResult(result), emptyResult{}, nil
 }
 
 func (c *mcpContext) askUserQuestionHandler(ctx context.Context, _ *mcp.CallToolRequest, args askUserQuestionArgs) (*mcp.CallToolResult, emptyResult, error) {
@@ -551,9 +580,7 @@ func (c *mcpContext) askUserQuestionHandler(ctx context.Context, _ *mcp.CallTool
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: result}},
-	}, emptyResult{}, nil
+	return newTextCallToolResult(result), emptyResult{}, nil
 }
 
 func (c *mcpContext) askUserWorkGateHandler(ctx context.Context, _ *mcp.CallToolRequest, args askUserWorkGateArgs) (*mcp.CallToolResult, emptyResult, error) {
@@ -561,9 +588,7 @@ func (c *mcpContext) askUserWorkGateHandler(ctx context.Context, _ *mcp.CallTool
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: result}},
-	}, emptyResult{}, nil
+	return newTextCallToolResult(result), emptyResult{}, nil
 }
 
 func (c *mcpContext) askUserQuestionResponder() askUserQuestionFunc {
@@ -634,7 +659,7 @@ func validateAskUserQuestionArgs(args askUserQuestionArgs) string {
 	return ""
 }
 
-func buildQuestionRequest(args askUserQuestionArgs) (*state.MultiChoiceQuestion, string, string) {
+func buildQuestionRequest(args askUserQuestionArgs) (question *state.MultiChoiceQuestion, humanMessage, questionSummary string) {
 	questions := make([]state.QuestionItem, len(args.Questions))
 	for i, q := range args.Questions {
 		questions[i] = state.QuestionItem{
@@ -644,8 +669,8 @@ func buildQuestionRequest(args askUserQuestionArgs) (*state.MultiChoiceQuestion,
 		}
 	}
 
-	question := &state.MultiChoiceQuestion{Questions: questions}
-	humanMessage := args.Questions[0].Question
+	question = &state.MultiChoiceQuestion{Questions: questions, IsWorkGate: false}
+	humanMessage = args.Questions[0].Question
 
 	var result strings.Builder
 	fmt.Fprintf(&result, "Presented %d question(s) to user:\n", len(args.Questions))
@@ -724,9 +749,9 @@ func validateAskUserWorkGateSummary(summary string) string {
 	return ""
 }
 
-func waitForHumanResponse(ctx context.Context, coord *state.Coordinator, question *state.MultiChoiceQuestion, humanMessage string, toolName string) (string, error) {
+func waitForHumanResponse(ctx context.Context, coord *state.Coordinator, question *state.MultiChoiceQuestion, humanMessage, toolName string) (string, error) {
 	if coord == nil {
-		return "", fmt.Errorf("workflow coordinator not available")
+		return "", errors.New("workflow coordinator not available")
 	}
 
 	ctxWait, cancel := context.WithTimeout(ctx, humanToolTimeout)
@@ -744,7 +769,7 @@ func waitForHumanResponse(ctx context.Context, coord *state.Coordinator, questio
 		log.Printf("%s stopped waiting at %s: %v", toolName, timestamp, errWait)
 	}
 
-	return "", errWait
+	return "", fmt.Errorf("waiting for %s approval: %w", toolName, errWait)
 }
 
 func promoteAfterWorkGate(coord *state.Coordinator) error {
@@ -777,7 +802,7 @@ func selectHumanToolCallbacks(workingDir string, coord *state.Coordinator) human
 	}
 
 	metadata := readGoalMetadata(workingDir)
-	if !retrospectiveEnabled(metadata) {
+	if !retrospectiveEnabled(metadata.Retrospective) {
 		return humanToolCallbacks{
 			question: askUserQuestionAutoResponse(autoProceedAnswer),
 			workGate: askUserWorkGateAutoResponse(autoSkipRetrospectiveAnswer),
@@ -789,17 +814,20 @@ func selectHumanToolCallbacks(workingDir string, coord *state.Coordinator) human
 
 func readGoalMetadata(workingDir string) GoalMetadata {
 	if workingDir == "" {
-		return GoalMetadata{}
+		var metadata GoalMetadata
+		return metadata
 	}
 
 	data, errRead := os.ReadFile(filepath.Join(workingDir, "GOAL.md"))
 	if errRead != nil {
-		return GoalMetadata{}
+		var metadata GoalMetadata
+		return metadata
 	}
 
 	metadata, errParse := parseYAMLFrontmatter(data)
 	if errParse != nil {
-		return GoalMetadata{}
+		var emptyMetadata GoalMetadata
+		return emptyMetadata
 	}
 
 	return metadata
@@ -843,7 +871,10 @@ func collectSkillFiles(skillsDir string) ([]string, error) {
 		}
 		return nil
 	})
-	return files, err
+	if err != nil {
+		return nil, fmt.Errorf("walking skills directory %s: %w", skillsDir, err)
+	}
+	return files, nil
 }
 
 func skillDisplayName(frontmatter map[string]string, relName string) string {
@@ -976,7 +1007,7 @@ func findSkillsByFuzzyMatch(skillsDir string, skillFiles []string, name string) 
 // When language is empty, it lists available languages. When query is empty,
 // it lists all snippets for the language. Otherwise, it searches for matching snippets.
 //
-//nolint:unparam // error is always nil by design - errors are handled by returning empty strings
+
 func findSnippets(workingDir, language, query string) (string, error) {
 	snippetsDir := filepath.Join(workingDir, ".sgai", "snippets")
 
@@ -1128,18 +1159,19 @@ func updateWorkflowState(coord *state.Coordinator, callerAgent string, args upda
 
 	errUpdate := coord.UpdateState(func(currentState *state.Workflow) {
 		nextStatus := currentState.Status
+		statusPolicy := workflowStatusPolicyForAgent(callerAgent)
 
 		if args.Status != "" {
 			status := strings.Trim(string(args.Status), "\"'")
-			if !slices.Contains(state.ValidStatuses, status) {
-				response = fmt.Sprintf("Error: Invalid status '%s'. Must be one of: %s", status, strings.Join(state.ValidStatuses, ", "))
+			if !slices.Contains(statusPolicy.statuses, status) {
+				response = fmt.Sprintf("Error: Invalid status '%s'. Must be one of: %s", status, strings.Join(statusPolicy.statuses, ", "))
 				return
 			}
 			nextStatus = status
 		}
 
 		if nextStatus == state.StatusAgentDone || nextStatus == state.StatusComplete {
-			pendingCount := countPendingTodos(*currentState, currentState.CurrentAgent)
+			pendingCount := countPendingTodos(todosForAgent(currentState, callerAgent))
 			if pendingCount > 0 {
 				response = fmt.Sprintf("Error: Cannot transition to '%s' with %d pending TODO items. Please complete all TODO items first.", nextStatus, pendingCount)
 				return
@@ -1192,7 +1224,7 @@ func updateWorkflowState(coord *state.Coordinator, callerAgent string, args upda
 	}
 
 	if shouldStartWatchdog {
-		coord.StartAgentDoneWatchdog(coord.GetAgentCancel())
+		coord.StartAgentDoneWatchdog(coord.AgentCancel())
 	}
 
 	return response, nil
@@ -1212,7 +1244,7 @@ func sendMessage(workingDir string, coord *state.Coordinator, dagAgents []string
 		fromAgent string
 		result    string
 	)
-	recipients := messageRecipientsForAgent(workingDir, toAgent, GoalMetadata{})
+	recipients := messageRecipientsForAgent(workingDir, toAgent, nil)
 
 	errUpdate := coord.UpdateState(func(currentState *state.Workflow) {
 		if currentState.Messages == nil {
@@ -1226,14 +1258,7 @@ func sendMessage(workingDir string, coord *state.Coordinator, dagAgents []string
 
 		createdAt := time.Now().UTC().Format(time.RFC3339)
 		for _, recipient := range recipients {
-			message := state.Message{
-				ID:        nextMessageID(currentState.Messages),
-				FromAgent: fromAgent,
-				ToAgent:   recipient,
-				Body:      body,
-				Read:      false,
-				CreatedAt: createdAt,
-			}
+			message := newStateMessage(nextMessageID(currentState.Messages), fromAgent, recipient, body, createdAt)
 			currentState.Messages = append(currentState.Messages, message)
 		}
 
@@ -1254,6 +1279,19 @@ func sendMessage(workingDir string, coord *state.Coordinator, dagAgents []string
 	return result, nil
 }
 
+func newStateMessage(id int, fromAgent, toAgent, body, createdAt string) state.Message {
+	return state.Message{
+		ID:        id,
+		FromAgent: fromAgent,
+		ToAgent:   toAgent,
+		Body:      body,
+		Read:      false,
+		ReadAt:    "",
+		ReadBy:    "",
+		CreatedAt: createdAt,
+	}
+}
+
 func checkInbox(coord *state.Coordinator, callerAgent string) (string, error) {
 	if coord == nil {
 		return "Error: Could not read state.json. Has the workflow been initialized?", nil
@@ -1263,9 +1301,9 @@ func checkInbox(coord *state.Coordinator, callerAgent string) (string, error) {
 	currentModel := snapshot.CurrentModel
 
 	var unreadMessages []state.Message
-	for _, msg := range snapshot.Messages {
-		if messageMatchesRecipient(msg, callerAgent, currentModel) && !msg.Read {
-			unreadMessages = append(unreadMessages, msg)
+	for i := range snapshot.Messages {
+		if messageMatchesRecipient(&snapshot.Messages[i], callerAgent, currentModel) && !snapshot.Messages[i].Read {
+			unreadMessages = append(unreadMessages, snapshot.Messages[i])
 		}
 	}
 
@@ -1276,7 +1314,7 @@ func checkInbox(coord *state.Coordinator, callerAgent string) (string, error) {
 	timestamp := time.Now().Format(time.RFC3339)
 	errUpdate := coord.UpdateState(func(wf *state.Workflow) {
 		for i := range wf.Messages {
-			if messageMatchesRecipient(wf.Messages[i], callerAgent, currentModel) && !wf.Messages[i].Read {
+			if messageMatchesRecipient(&wf.Messages[i], callerAgent, currentModel) && !wf.Messages[i].Read {
 				wf.Messages[i].Read = true
 				wf.Messages[i].ReadAt = timestamp
 				wf.Messages[i].ReadBy = callerAgent
@@ -1308,12 +1346,12 @@ func checkOutbox(coord *state.Coordinator, callerAgent string) (string, error) {
 
 	var unreadMessages []state.Message
 	var readMessages []state.Message
-	for _, msg := range snapshot.Messages {
-		if messageMatchesSender(msg, callerAgent, currentModel) {
-			if msg.Read {
-				readMessages = append(readMessages, msg)
+	for i := range snapshot.Messages {
+		if messageMatchesSender(&snapshot.Messages[i], callerAgent, currentModel) {
+			if snapshot.Messages[i].Read {
+				readMessages = append(readMessages, snapshot.Messages[i])
 			} else {
-				unreadMessages = append(unreadMessages, msg)
+				unreadMessages = append(unreadMessages, snapshot.Messages[i])
 			}
 		}
 	}
@@ -1339,7 +1377,7 @@ func checkOutbox(coord *state.Coordinator, callerAgent string) (string, error) {
 			subject := strings.Split(msg.Body, "\n")[0]
 			readStatus := "Unread"
 			if msg.ReadAt != "" {
-				readStatus = fmt.Sprintf("Read at %s", msg.ReadAt)
+				readStatus = "Read at " + msg.ReadAt
 			}
 			fmt.Fprintf(&result, "  %d. To: %s | Subject: %s | %s\n", i+1, msg.ToAgent, subject, readStatus)
 		}
@@ -1420,7 +1458,7 @@ func deleteUnreadMessages(coord *state.Coordinator, agentName string, ids []int)
 		return fmt.Sprintf("Error: Message IDs %s must all be unread", joinMessageIDs(invalidIDs)), nil
 	}
 
-	return fmt.Sprintf("Deleted unread messages: %s", joinMessageIDs(normalizedIDs)), nil
+	return "Deleted unread messages: " + joinMessageIDs(normalizedIDs), nil
 }
 
 func invalidUnreadMessageIDs(messages []state.Message, ids []int) []int {
@@ -1450,7 +1488,7 @@ func normalizedMessageIDs(ids []int) []int {
 func joinMessageIDs(ids []int) string {
 	parts := make([]string, len(ids))
 	for i, id := range ids {
-		parts[i] = fmt.Sprintf("%d", id)
+		parts[i] = strconv.Itoa(id)
 	}
 	return strings.Join(parts, ", ")
 }
@@ -1495,7 +1533,7 @@ func projectTodoRead(coord *state.Coordinator) (string, error) {
 	return formatTodoList(coord.State().ProjectTodos), nil
 }
 
-func messageMatchesRecipient(msg state.Message, currentAgent, currentModel string) bool {
+func messageMatchesRecipient(msg *state.Message, currentAgent, currentModel string) bool {
 	if msg.ToAgent == currentAgent {
 		return true
 	}
@@ -1505,7 +1543,7 @@ func messageMatchesRecipient(msg state.Message, currentAgent, currentModel strin
 	return false
 }
 
-func messageMatchesSender(msg state.Message, currentAgent, currentModel string) bool {
+func messageMatchesSender(msg *state.Message, currentAgent, currentModel string) bool {
 	if msg.FromAgent == currentAgent {
 		return true
 	}
@@ -1515,33 +1553,61 @@ func messageMatchesSender(msg state.Message, currentAgent, currentModel string) 
 	return false
 }
 
-func buildUpdateWorkflowStateSchema(currentAgent string) (*jsonschema.Schema, string) {
-	statusEnum := []any{"working", "agent-done"}
-	description := "Update the workflow state file (.sgai/state.json). Use this tool to track your progress throughout your work. Update regularly after each major step. Examples: Set task when starting work, add progress notes as you complete steps, mark complete when done."
+type workflowStatusPolicy struct {
+	statuses    []string
+	description string
+}
 
-	if currentAgent == "coordinator" {
-		statusEnum = append(statusEnum, "complete")
+func workflowStatusPolicyForAgent(agent string) workflowStatusPolicy {
+	policy := workflowStatusPolicy{
+		statuses:    []string{state.StatusWorking, state.StatusAgentDone},
+		description: "Overall workflow status: 'working' (actively working - may need iteration) or 'agent-done' (agent's work done - needs goal verification). Valid values: working, agent-done",
+	}
+	if agent == "coordinator" {
+		policy.statuses = append(policy.statuses, state.StatusComplete)
+		policy.description = "Overall workflow status: 'working' (actively working - may need iteration) or 'agent-done' (agent's work done - needs goal verification) or 'complete' (goals verified as achieved). Valid values: working, agent-done, complete"
+	}
+	return policy
+}
+
+func newStringSchema(description string) *jsonschema.Schema {
+	schema := new(jsonschema.Schema)
+	schema.Type = "string"
+	schema.Description = description
+	return schema
+}
+
+func newEnumStringSchema(enum []any, description string) *jsonschema.Schema {
+	schema := newStringSchema(description)
+	schema.Enum = enum
+	return schema
+}
+
+func newObjectSchema(properties map[string]*jsonschema.Schema, required []string) *jsonschema.Schema {
+	schema := new(jsonschema.Schema)
+	schema.Type = "object"
+	schema.Properties = properties
+	schema.Required = required
+	return schema
+}
+
+func buildUpdateWorkflowStateSchema(currentAgent string) (schema *jsonschema.Schema, description string) {
+	description = "Update the workflow state file (.sgai/state.json). Use this tool to track your progress throughout your work. Update regularly after each major step. Examples: Set task when starting work, add progress notes as you complete steps, mark complete when done."
+	statusPolicy := workflowStatusPolicyForAgent(currentAgent)
+	statusEnum := make([]any, len(statusPolicy.statuses))
+	for i, status := range statusPolicy.statuses {
+		statusEnum[i] = status
 	}
 
-	schema := &jsonschema.Schema{
-		Type: "object",
-		Properties: map[string]*jsonschema.Schema{
-			"status": {
-				Type:        "string",
-				Enum:        statusEnum,
-				Description: "Overall workflow status: 'working' (actively working - may need iteration) or 'agent-done' (agent's work done - needs goal verification) or 'complete' (goals verified as achieved). Valid values: working, agent-done, complete",
-			},
-			"task": {
-				Type:        "string",
-				Description: "Current task being worked on (e.g. 'Writing tests for auth endpoints'). Use empty string to clear. Be specific about what you're doing.",
-			},
-			"addProgress": {
-				Type:        "string",
-				Description: "Add a progress note to track what you've accomplished. This will be appended to the progress array. Use this frequently to document your steps.",
-			},
-		},
-		Required: []string{"status", "task", "addProgress"},
-	}
+	statusSchema := newEnumStringSchema(statusEnum, statusPolicy.description)
+	taskSchema := newStringSchema("Current task being worked on (e.g. 'Writing tests for auth endpoints'). Use empty string to clear. Be specific about what you're doing.")
+	addProgressSchema := newStringSchema("Add a progress note to track what you've accomplished. This will be appended to the progress array. Use this frequently to document your steps.")
+
+	schema = newObjectSchema(map[string]*jsonschema.Schema{
+		"status":      statusSchema,
+		"task":        taskSchema,
+		"addProgress": addProgressSchema,
+	}, []string{"status", "task", "addProgress"})
 
 	return schema, description
 }

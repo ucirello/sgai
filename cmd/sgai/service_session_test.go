@@ -35,81 +35,6 @@ func waitForSessionPromptToken(t *testing.T, coord *state.Coordinator) string {
 	return coord.CurrentPromptToken()
 }
 
-func TestStartSessionService(t *testing.T) {
-	t.Skip("Integration test - requires full workflow execution")
-	tests := []struct {
-		name        string
-		auto        bool
-		setupFunc   func(*testing.T, string)
-		wantErr     bool
-		errContains string
-		validate    func(*testing.T, startSessionResult2)
-	}{
-		{
-			name: "startSessionInBrainstormingMode",
-			auto: false,
-			setupFunc: func(t *testing.T, workspacePath string) {
-				require.NoError(t, initializeWorkspace(workspacePath))
-				goalContent := "---\nflow: |\n  \"agent1\" -> \"agent2\"\n---\n# Test Goal"
-				goalPath := filepath.Join(workspacePath, "GOAL.md")
-				require.NoError(t, os.WriteFile(goalPath, []byte(goalContent), 0644))
-			},
-			wantErr: false,
-			validate: func(t *testing.T, result startSessionResult2) {
-				assert.Equal(t, "running", result.Status)
-				assert.True(t, result.Running)
-			},
-		},
-		{
-			name: "startSessionInSelfDriveMode",
-			auto: true,
-			setupFunc: func(t *testing.T, workspacePath string) {
-				require.NoError(t, initializeWorkspace(workspacePath))
-				goalContent := "---\nflow: |\n  \"agent1\" -> \"agent2\"\n---\n# Test Goal"
-				goalPath := filepath.Join(workspacePath, "GOAL.md")
-				require.NoError(t, os.WriteFile(goalPath, []byte(goalContent), 0644))
-			},
-			wantErr: false,
-			validate: func(t *testing.T, result startSessionResult2) {
-				assert.Equal(t, "running", result.Status)
-				assert.True(t, result.Running)
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			server.shutdownCtx = ctx
-
-			workspacePath := filepath.Join(rootDir, "test-workspace")
-			require.NoError(t, os.MkdirAll(workspacePath, 0755))
-			tt.setupFunc(t, workspacePath)
-
-			result, err := server.startSessionService(workspacePath, tt.auto)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errContains != "" {
-					assert.Contains(t, err.Error(), tt.errContains)
-				}
-				return
-			}
-
-			require.NoError(t, err)
-			if tt.validate != nil {
-				tt.validate(t, result)
-			}
-
-			server.stopSessionService(workspacePath)
-			time.Sleep(100 * time.Millisecond)
-		})
-	}
-}
-
 func TestStopSessionService(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -119,9 +44,11 @@ func TestStopSessionService(t *testing.T) {
 		{
 			name: "stopRunningSession",
 			setupFunc: func(t *testing.T, workspacePath string, _ *Server) {
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			validate: func(t *testing.T, result stopSessionResult) {
+				t.Helper()
 				assert.Equal(t, "stopped", result.Status)
 				assert.False(t, result.Running)
 				assert.Contains(t, result.Message, "session")
@@ -130,9 +57,11 @@ func TestStopSessionService(t *testing.T) {
 		{
 			name: "stopAlreadyStoppedSession",
 			setupFunc: func(t *testing.T, workspacePath string, _ *Server) {
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			validate: func(t *testing.T, result stopSessionResult) {
+				t.Helper()
 				assert.Equal(t, "stopped", result.Status)
 				assert.False(t, result.Running)
 			},
@@ -142,10 +71,10 @@ func TestStopSessionService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
+			server := NewServer(rootDir, newTestServerPaths(), "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
-			require.NoError(t, os.MkdirAll(workspacePath, 0755))
+			require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 			tt.setupFunc(t, workspacePath, server)
 
 			result := server.stopSessionService(workspacePath)
@@ -174,10 +103,12 @@ func TestRespondService(t *testing.T) {
 			answer:          "Test answer",
 			selectedChoices: []string{},
 			setupFunc: func(t *testing.T, workspacePath string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			wantErr:     true,
 			errContains: "no pending question",
+			validate:    nil,
 		},
 		{
 			name:            "respondWithEmptyAnswer",
@@ -185,20 +116,22 @@ func TestRespondService(t *testing.T) {
 			answer:          "",
 			selectedChoices: []string{},
 			setupFunc: func(t *testing.T, workspacePath string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			wantErr:     true,
 			errContains: "no pending question",
+			validate:    nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
+			server := NewServer(rootDir, newTestServerPaths(), "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
-			require.NoError(t, os.MkdirAll(workspacePath, 0755))
+			require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 			tt.setupFunc(t, workspacePath)
 
 			result, err := server.respondService(workspacePath, tt.promptToken, tt.answer, tt.selectedChoices)
@@ -232,10 +165,13 @@ func TestSteerService(t *testing.T) {
 			name:    "steerWithValidMessage",
 			message: "Please focus on the database implementation",
 			setupFunc: func(t *testing.T, workspacePath string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, result steerResult) {
+				t.Helper()
 				assert.True(t, result.Success)
 				assert.Equal(t, "steering instruction added", result.Message)
 			},
@@ -244,29 +180,33 @@ func TestSteerService(t *testing.T) {
 			name:    "steerWithEmptyMessage",
 			message: "",
 			setupFunc: func(t *testing.T, workspacePath string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			wantErr:     true,
 			errContains: "message cannot be empty",
+			validate:    nil,
 		},
 		{
 			name:    "steerWithWhitespaceOnlyMessage",
 			message: "   \t\n  ",
 			setupFunc: func(t *testing.T, workspacePath string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			wantErr:     true,
 			errContains: "message cannot be empty",
+			validate:    nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
+			server := NewServer(rootDir, newTestServerPaths(), "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
-			require.NoError(t, os.MkdirAll(workspacePath, 0755))
+			require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 			tt.setupFunc(t, workspacePath)
 
 			result, err := server.steerService(workspacePath, tt.message)
@@ -287,67 +227,13 @@ func TestSteerService(t *testing.T) {
 	}
 }
 
-func TestStartSessionServiceValidation(t *testing.T) {
-	t.Skip("Integration test - requires full workflow execution with MCP server and agent coordination")
-	tests := []struct {
-		name        string
-		workspace   string
-		auto        bool
-		setupFunc   func(*testing.T, string)
-		wantErr     bool
-		errContains string
-	}{
-		{
-			name:      "startSessionOnStandaloneWorkspace",
-			workspace: "standalone-workspace",
-			auto:      false,
-			setupFunc: func(t *testing.T, rootDir string) {
-				workspacePath := filepath.Join(rootDir, "standalone-workspace")
-				require.NoError(t, os.MkdirAll(workspacePath, 0755))
-				require.NoError(t, initializeWorkspace(workspacePath))
-			},
-			wantErr: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			server.shutdownCtx = ctx
-
-			tt.setupFunc(t, rootDir)
-
-			workspacePath := filepath.Join(rootDir, tt.workspace)
-			result, err := server.startSessionService(workspacePath, tt.auto)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errContains != "" {
-					assert.Contains(t, err.Error(), tt.errContains)
-				}
-				return
-			}
-
-			require.NoError(t, err)
-			assert.Equal(t, "running", result.Status)
-			assert.True(t, result.Running)
-
-			server.stopSessionService(workspacePath)
-			time.Sleep(100 * time.Millisecond)
-		})
-	}
-}
-
 func TestStopSessionServiceIdempotency(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir, serverPaths{}, "")
+	server := NewServer(rootDir, newTestServerPaths(), "")
 
 	workspacePath := filepath.Join(rootDir, "test-workspace")
-	require.NoError(t, os.MkdirAll(workspacePath, 0755))
-	require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+	require.NoError(t, os.MkdirAll(workspacePath, 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 
 	result1 := server.stopSessionService(workspacePath)
 	assert.Equal(t, "stopped", result1.Status)
@@ -376,7 +262,8 @@ func TestRespondServiceValidation(t *testing.T) {
 			answer:          "Test answer",
 			selectedChoices: []string{},
 			setupFunc: func(t *testing.T, workspacePath string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			wantErr:     true,
 			errContains: "no pending question",
@@ -387,7 +274,8 @@ func TestRespondServiceValidation(t *testing.T) {
 			answer:          "",
 			selectedChoices: []string{},
 			setupFunc: func(t *testing.T, workspacePath string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			wantErr:     true,
 			errContains: "no pending question",
@@ -398,7 +286,8 @@ func TestRespondServiceValidation(t *testing.T) {
 			answer:          "",
 			selectedChoices: []string{"Option A", "Option B"},
 			setupFunc: func(t *testing.T, workspacePath string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			wantErr:     true,
 			errContains: "no pending question",
@@ -408,10 +297,10 @@ func TestRespondServiceValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
+			server := NewServer(rootDir, newTestServerPaths(), "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
-			require.NoError(t, os.MkdirAll(workspacePath, 0755))
+			require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 			tt.setupFunc(t, workspacePath)
 
 			result, err := server.respondService(workspacePath, tt.promptToken, tt.answer, tt.selectedChoices)
@@ -430,62 +319,19 @@ func TestRespondServiceValidation(t *testing.T) {
 	}
 }
 
-func TestStartSessionServiceRootWorkspace(t *testing.T) {
-	t.Skip("Integration test - requires real jj repository with multiple workspaces")
-	rootDir := t.TempDir()
-	server := NewServer(rootDir, serverPaths{}, "")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	server.shutdownCtx = ctx
-
-	rootPath := filepath.Join(rootDir, "root-workspace")
-	require.NoError(t, os.MkdirAll(rootPath, 0755))
-	require.NoError(t, os.MkdirAll(filepath.Join(rootPath, ".sgai"), 0755))
-	require.NoError(t, os.MkdirAll(filepath.Join(rootPath, ".jj", "repo"), 0755))
-
-	_, err := server.startSessionService(rootPath, false)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "root workspace cannot start agentic work")
-}
-
-func TestStartSessionServiceStandaloneWorkspace(t *testing.T) {
-	t.Skip("Integration test - requires MCP server and agent coordination")
-	rootDir := t.TempDir()
-	server := NewServer(rootDir, serverPaths{}, "")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	server.shutdownCtx = ctx
-
-	workspacePath := filepath.Join(rootDir, "standalone-workspace")
-	require.NoError(t, os.MkdirAll(workspacePath, 0755))
-	require.NoError(t, initializeWorkspace(workspacePath))
-
-	goalContent := "---\nflow: |\n  \"agent1\" -> \"agent2\"\n---\n# Test Goal"
-	goalPath := filepath.Join(workspacePath, "GOAL.md")
-	require.NoError(t, os.WriteFile(goalPath, []byte(goalContent), 0644))
-
-	result, err := server.startSessionService(workspacePath, false)
-	require.NoError(t, err)
-	assert.Equal(t, "running", result.Status)
-	assert.True(t, result.Running)
-
-	server.stopSessionService(workspacePath)
-	time.Sleep(100 * time.Millisecond)
-}
-
 func TestRespondViaCoordinatorServiceNoQuestion(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir, serverPaths{}, "")
+	server := NewServer(rootDir, newTestServerPaths(), "")
 
 	workspacePath := filepath.Join(rootDir, "test-workspace")
-	require.NoError(t, os.MkdirAll(workspacePath, 0755))
-	require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+	require.NoError(t, os.MkdirAll(workspacePath, 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 
 	coord := state.NewCoordinatorEmpty(statePath(workspacePath))
-	req := apiRespondRequest{
-		PromptToken: "test-question-1",
-		Answer:      "Test answer",
-	}
+	req := respondRequestWith(func(request *apiRespondRequest) {
+		request.PromptToken = "test-question-1"
+		request.Answer = "Test answer"
+	})
 
 	_, err := server.respondViaCoordinatorService(coord, req)
 	require.Error(t, err)
@@ -494,20 +340,20 @@ func TestRespondViaCoordinatorServiceNoQuestion(t *testing.T) {
 
 func TestRespondViaCoordinatorServiceEmptyResponse(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir, serverPaths{}, "")
+	server := NewServer(rootDir, newTestServerPaths(), "")
 
 	workspacePath := filepath.Join(rootDir, "test-workspace")
-	require.NoError(t, os.MkdirAll(workspacePath, 0755))
-	require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+	require.NoError(t, os.MkdirAll(workspacePath, 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 
 	coord := state.NewCoordinatorEmpty(statePath(workspacePath))
 	require.NoError(t, coord.UpdateState(func(wf *state.Workflow) {
 		wf.HumanMessage = "What should I do?"
 	}))
 
-	req := apiRespondRequest{
-		Answer: "",
-	}
+	req := respondRequestWith(func(request *apiRespondRequest) {
+		request.Answer = ""
+	})
 
 	_, err := server.respondViaCoordinatorService(coord, req)
 	require.Error(t, err)
@@ -516,25 +362,28 @@ func TestRespondViaCoordinatorServiceEmptyResponse(t *testing.T) {
 
 func TestRespondViaCoordinatorServiceWorkGateApproval(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir, serverPaths{}, "")
+	server := NewServer(rootDir, newTestServerPaths(), "")
 
 	workspacePath := filepath.Join(rootDir, "test-workspace")
-	require.NoError(t, os.MkdirAll(workspacePath, 0755))
-	require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+	require.NoError(t, os.MkdirAll(workspacePath, 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 
 	coord := state.NewCoordinatorEmpty(statePath(workspacePath))
 	require.NoError(t, coord.UpdateState(func(wf *state.Workflow) {
 		wf.InteractionMode = state.ModeBrainstorming
 	}))
-	errCh, cancel := startCoordinatorQuestion(t, coord, &state.MultiChoiceQuestion{
-		Questions:  []state.QuestionItem{{Question: "Approve this definition?", Choices: []string{workGateApprovalText, "Not ready"}}},
-		IsWorkGate: true,
-	}, "Approve this definition?")
+	errCh, cancel := startCoordinatorQuestion(t, coord, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+		question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
+			item.Question = "Approve this definition?"
+			item.Choices = []string{workGateApprovalText, "Not ready"}
+		})}
+		question.IsWorkGate = true
+	}), "Approve this definition?")
 	defer cancel()
 
-	req := apiRespondRequest{
-		SelectedChoices: []string{workGateApprovalText},
-	}
+	req := respondRequestWith(func(request *apiRespondRequest) {
+		request.SelectedChoices = []string{workGateApprovalText}
+	})
 
 	result, err := server.respondViaCoordinatorService(coord, req)
 	require.NoError(t, err)
@@ -547,37 +396,43 @@ func TestRespondViaCoordinatorServiceWorkGateApproval(t *testing.T) {
 
 func TestRespondViaCoordinatorServiceRejectsStalePromptToken(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir, serverPaths{}, "")
+	server := NewServer(rootDir, newTestServerPaths(), "")
 	workspacePath := filepath.Join(rootDir, "test-workspace")
 	require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 
 	coord := state.NewCoordinatorEmpty(statePath(workspacePath))
-	firstErrCh, cancelFirst := startCoordinatorQuestion(t, coord, &state.MultiChoiceQuestion{
-		Questions: []state.QuestionItem{{Question: "Pick one", Choices: []string{"A", "B"}}},
-	}, "Pick one")
+	firstErrCh, cancelFirst := startCoordinatorQuestion(t, coord, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+		question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
+			item.Question = "Pick one"
+			item.Choices = []string{"A", "B"}
+		})}
+	}), "Pick one")
 	firstToken := waitForSessionPromptToken(t, coord)
 	cancelFirst()
 	require.ErrorIs(t, <-firstErrCh, context.Canceled)
 
-	secondErrCh, cancelSecond := startCoordinatorQuestion(t, coord, &state.MultiChoiceQuestion{
-		Questions: []state.QuestionItem{{Question: "Pick one", Choices: []string{"A", "B"}}},
-	}, "Pick one")
+	secondErrCh, cancelSecond := startCoordinatorQuestion(t, coord, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+		question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
+			item.Question = "Pick one"
+			item.Choices = []string{"A", "B"}
+		})}
+	}), "Pick one")
 	defer cancelSecond()
 	secondToken := waitForSessionPromptToken(t, coord)
 	require.NotEqual(t, firstToken, secondToken)
 
-	_, err := server.respondViaCoordinatorService(coord, apiRespondRequest{
-		PromptToken: firstToken,
-		Answer:      "stale answer",
-	})
+	_, err := server.respondViaCoordinatorService(coord, respondRequestWith(func(request *apiRespondRequest) {
+		request.PromptToken = firstToken
+		request.Answer = "stale answer"
+	}))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "question not available")
 	assert.True(t, coord.State().NeedsHumanInput())
 
-	result, err := server.respondViaCoordinatorService(coord, apiRespondRequest{
-		PromptToken: secondToken,
-		Answer:      "current answer",
-	})
+	result, err := server.respondViaCoordinatorService(coord, respondRequestWith(func(request *apiRespondRequest) {
+		request.PromptToken = secondToken
+		request.Answer = "current answer"
+	}))
 	require.NoError(t, err)
 	assert.True(t, result.Success)
 	require.NoError(t, <-secondErrCh)
@@ -589,13 +444,13 @@ func TestHandleRespondViaCoordinatorNoQuestion(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
-	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-		Status: state.StatusComplete,
-	})
+	coord, errCoord := state.NewCoordinatorWith(statePath, workflowWith(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusComplete
+	}))
 	require.NoError(t, errCoord)
 
 	srv.mu.Lock()
-	srv.sessions[wsDir] = &session{coord: coord}
+	srv.sessions[wsDir] = newTestServeSession(coord, false)
 	srv.mu.Unlock()
 
 	body := `{"answer":"test"}`
@@ -609,18 +464,19 @@ func TestRespondViaCoordinatorEmptyResponse(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
-	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-		HumanMessage: "Pick an option",
-		MultiChoiceQuestion: &state.MultiChoiceQuestion{
-			Questions: []state.QuestionItem{
-				{Question: "Pick one", Choices: []string{"A", "B"}},
-			},
-		},
-	})
+	coord, errCoord := state.NewCoordinatorWith(statePath, workflowWith(func(workflow *state.Workflow) {
+		workflow.HumanMessage = "Pick an option"
+		workflow.MultiChoiceQuestion = multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+			question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
+				item.Question = "Pick one"
+				item.Choices = []string{"A", "B"}
+			})}
+		})
+	}))
 	require.NoError(t, errCoord)
 
 	srv.mu.Lock()
-	srv.sessions[wsDir] = &session{coord: coord}
+	srv.sessions[wsDir] = newTestServeSession(coord, false)
 	srv.mu.Unlock()
 
 	body := `{"answer":""}`
@@ -634,18 +490,21 @@ func TestRespondViaCoordinatorWorkGateApproval(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
-	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-		InteractionMode: state.ModeBrainstorming,
-	})
+	coord, errCoord := state.NewCoordinatorWith(statePath, workflowWith(func(workflow *state.Workflow) {
+		workflow.InteractionMode = state.ModeBrainstorming
+	}))
 	require.NoError(t, errCoord)
-	errCh, cancel := startCoordinatorQuestion(t, coord, &state.MultiChoiceQuestion{
-		Questions:  []state.QuestionItem{{Question: "Is ready?", Choices: []string{workGateApprovalText, "Not ready"}}},
-		IsWorkGate: true,
-	}, "Is this ready?")
+	errCh, cancel := startCoordinatorQuestion(t, coord, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+		question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
+			item.Question = "Is ready?"
+			item.Choices = []string{workGateApprovalText, "Not ready"}
+		})}
+		question.IsWorkGate = true
+	}), "Is this ready?")
 	defer cancel()
 
 	srv.mu.Lock()
-	srv.sessions[wsDir] = &session{coord: coord}
+	srv.sessions[wsDir] = newTestServeSession(coord, false)
 	srv.mu.Unlock()
 
 	body := `{"answer":"","selectedChoices":["` + workGateApprovalText + `"]}`
@@ -661,7 +520,7 @@ func TestStopSessionServiceRunningSession(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	server.mu.Lock()
-	server.sessions[wsDir] = &session{running: true}
+	server.sessions[wsDir] = newTestServeSession(nil, true)
 	server.mu.Unlock()
 	result := server.stopSessionService(wsDir)
 	assert.Equal(t, "session stopped", result.Message)
@@ -672,19 +531,19 @@ func TestRespondServiceNoSession(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
-	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{
-		HumanMessage: "What?",
-	})
+	_, errCoord := state.NewCoordinatorWith(sp, workflowWith(func(workflow *state.Workflow) {
+		workflow.HumanMessage = "What?"
+	}))
 	require.NoError(t, errCoord)
 	_, errRespond := server.respondService(wsDir, "wrong-id", "answer", nil)
-	assert.Error(t, errRespond)
+	require.Error(t, errRespond)
 }
 
 func TestSteerServiceSuccessful(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
-	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{})
+	_, errCoord := state.NewCoordinatorWith(sp, workflowWith(func(*state.Workflow) {}))
 	require.NoError(t, errCoord)
 	result, errSteer := server.steerService(wsDir, "do something different")
 	require.NoError(t, errSteer)
@@ -695,7 +554,7 @@ func TestSteerServiceEmptyMessageFails(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	_, errSteer := server.steerService(wsDir, "  ")
-	assert.Error(t, errSteer)
+	require.Error(t, errSteer)
 }
 
 func TestStopSessionServiceNotRunning(t *testing.T) {
@@ -709,5 +568,5 @@ func TestRespondServiceInvalidBody(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
 	_, err := server.respondService(wsDir, "test response", "", nil)
-	assert.Error(t, err)
+	require.Error(t, err)
 }

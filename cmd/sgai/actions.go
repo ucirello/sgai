@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"strings"
 	"text/template"
@@ -39,16 +40,15 @@ func loadActionConfigs(workspacePath string) ([]actionConfig, error) {
 	return config.Actions, nil
 }
 
-func convertActionForAPIWithIdentityError(config actionConfig, errIdentity error) apiActionEntry {
+func convertActionForAPIWithIdentityError(config *actionConfig, errIdentity error) apiActionEntry {
 	kind := actionKindFromConfig(config)
-	entry := apiActionEntry{
-		Name:        config.Name,
-		Model:       actionModelForKind(kind, config.Model),
-		Prompt:      config.Prompt,
-		Script:      config.Script,
-		Description: config.Description,
-		Kind:        string(kind),
-	}
+	var entry apiActionEntry
+	entry.Name = config.Name
+	entry.Model = actionModelForKind(kind, config.Model)
+	entry.Prompt = config.Prompt
+	entry.Script = config.Script
+	entry.Description = config.Description
+	entry.Kind = string(kind)
 	if errIdentity != nil {
 		entry.ValidationError = errIdentity.Error()
 		return entry
@@ -66,9 +66,9 @@ func convertActionForAPIWithIdentityError(config actionConfig, errIdentity error
 	return entry
 }
 
-func validateAndParseAction(config actionConfig) (parsedAction, error) {
+func validateAndParseAction(config *actionConfig) (parsedAction, error) {
 	if strings.TrimSpace(config.Name) == "" {
-		return parsedAction{}, fmt.Errorf("action name is required")
+		return parsedAction{}, errors.New("action name is required")
 	}
 
 	kind := actionKindFromConfig(config)
@@ -76,7 +76,8 @@ func validateAndParseAction(config actionConfig) (parsedAction, error) {
 		return parsedAction{}, fmt.Errorf("action %q must set exactly one of prompt or script", actionNameForError(config))
 	}
 
-	parsed := parsedAction{kind: kind}
+	var parsed parsedAction
+	parsed.kind = kind
 	if kind == actionKindPrompt {
 		parsed.model = strings.TrimSpace(config.Model)
 		if parsed.model == "" {
@@ -94,7 +95,7 @@ func validateAndParseAction(config actionConfig) (parsedAction, error) {
 
 	parsed.variables = variables
 	parsed.tmpl = tmpl
-	if errValidate := validateParsedActionCommand(config, parsed); errValidate != nil {
+	if errValidate := validateParsedActionCommand(config, &parsed); errValidate != nil {
 		return parsed, errValidate
 	}
 	return parsed, nil
@@ -114,7 +115,7 @@ func actionIdentityErrors(configs []actionConfig) []error {
 		name := strings.TrimSpace(config.Name)
 		switch {
 		case name == "":
-			errs[i] = fmt.Errorf("action name is required")
+			errs[i] = errors.New("action name is required")
 		case counts[name] > 1:
 			errs[i] = fmt.Errorf("action %q name must be unique", name)
 		}
@@ -122,7 +123,7 @@ func actionIdentityErrors(configs []actionConfig) []error {
 	return errs
 }
 
-func renderParsedAction(parsed parsedAction, values map[string]string) (string, error) {
+func renderParsedAction(parsed *parsedAction, values map[string]string) (string, error) {
 	if values == nil {
 		values = map[string]string{}
 	}
@@ -134,7 +135,7 @@ func renderParsedAction(parsed parsedAction, values map[string]string) (string, 
 	return buf.String(), nil
 }
 
-func parseActionTemplate(config actionConfig, source string) (*template.Template, []string, error) {
+func parseActionTemplate(config *actionConfig, source string) (*template.Template, []string, error) {
 	tmpl, errParse := template.New(actionNameForError(config)).Option("missingkey=error").Parse(source)
 	if errParse != nil {
 		return nil, nil, fmt.Errorf("action %q has invalid template syntax: %w", actionNameForError(config), errParse)
@@ -148,7 +149,7 @@ func parseActionTemplate(config actionConfig, source string) (*template.Template
 	return tmpl, variables, nil
 }
 
-func validateParsedActionCommand(config actionConfig, parsed parsedAction) error {
+func validateParsedActionCommand(config *actionConfig, parsed *parsedAction) error {
 	if parsed.kind != actionKindScript {
 		return nil
 	}
@@ -230,7 +231,7 @@ func extractActionVariableName(node *parse.ActionNode) (string, error) {
 	return field.Ident[0], nil
 }
 
-func actionKindFromConfig(config actionConfig) actionKind {
+func actionKindFromConfig(config *actionConfig) actionKind {
 	prompt := strings.TrimSpace(config.Prompt)
 	script := strings.TrimSpace(config.Script)
 	switch {
@@ -250,7 +251,7 @@ func actionModelForKind(kind actionKind, model string) string {
 	return strings.TrimSpace(model)
 }
 
-func actionNameForError(config actionConfig) string {
+func actionNameForError(config *actionConfig) string {
 	name := strings.TrimSpace(config.Name)
 	if name == "" {
 		return "unnamed action"

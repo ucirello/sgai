@@ -19,36 +19,45 @@ func TestConvertActionForAPIWithIdentityError(t *testing.T) {
 				Name:        "Summarize",
 				Model:       "openai/gpt-5.4",
 				Prompt:      "hello {{ .Name }}",
+				Script:      "",
 				Description: "Summarize something",
 			},
 			expected: apiActionEntry{
-				Name:        "Summarize",
-				Model:       "openai/gpt-5.4",
-				Prompt:      "hello {{ .Name }}",
-				Description: "Summarize something",
-				Kind:        "prompt",
-				Variables:   []string{"Name"},
+				Name:            "Summarize",
+				Model:           "openai/gpt-5.4",
+				Prompt:          "hello {{ .Name }}",
+				Script:          "",
+				Description:     "Summarize something",
+				Kind:            "prompt",
+				Variables:       []string{"Name"},
+				ValidationError: "",
 			},
 		},
 		{
 			name: "scriptIgnoresModel",
 			config: actionConfig{
-				Name:   "Print",
-				Model:  "ignored-model",
-				Script: `printf "%s" "{{ .Message }}"`,
+				Name:        "Print",
+				Model:       "ignored-model",
+				Prompt:      "",
+				Script:      `printf "%s" "{{ .Message }}"`,
+				Description: "",
 			},
 			expected: apiActionEntry{
-				Name:      "Print",
-				Script:    `printf "%s" "{{ .Message }}"`,
-				Kind:      "script",
-				Variables: []string{"Message"},
+				Name:            "Print",
+				Model:           "",
+				Prompt:          "",
+				Script:          `printf "%s" "{{ .Message }}"`,
+				Description:     "",
+				Kind:            "script",
+				Variables:       []string{"Message"},
+				ValidationError: "",
 			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.expected, convertActionForAPIWithIdentityError(tt.config, nil))
+			assert.Equal(t, tt.expected, convertActionForAPIWithIdentityError(&tt.config, nil))
 		})
 	}
 }
@@ -63,9 +72,11 @@ func TestConvertActionForAPIWithIdentityErrorValidationErrors(t *testing.T) {
 		{
 			name: "blankName",
 			config: actionConfig{
-				Name:   "   ",
-				Model:  "openai/gpt-5.4",
-				Prompt: "hello",
+				Name:        "   ",
+				Model:       "openai/gpt-5.4",
+				Prompt:      "hello",
+				Script:      "",
+				Description: "",
 			},
 			wantKind:    "prompt",
 			wantErrPart: "name is required",
@@ -73,18 +84,23 @@ func TestConvertActionForAPIWithIdentityErrorValidationErrors(t *testing.T) {
 		{
 			name: "promptAndScript",
 			config: actionConfig{
-				Name:   "Broken",
-				Model:  "openai/gpt-5.4",
-				Prompt: "hello",
-				Script: "printf test",
+				Name:        "Broken",
+				Model:       "openai/gpt-5.4",
+				Prompt:      "hello",
+				Script:      "printf test",
+				Description: "",
 			},
+			wantKind:    "",
 			wantErrPart: "exactly one of prompt or script",
 		},
 		{
 			name: "promptMissingModel",
 			config: actionConfig{
-				Name:   "Prompt",
-				Prompt: "hello",
+				Name:        "Prompt",
+				Model:       "",
+				Prompt:      "hello",
+				Script:      "",
+				Description: "",
 			},
 			wantKind:    "prompt",
 			wantErrPart: "model is required",
@@ -92,9 +108,11 @@ func TestConvertActionForAPIWithIdentityErrorValidationErrors(t *testing.T) {
 		{
 			name: "unsupportedTemplateStructure",
 			config: actionConfig{
-				Name:   "Complex",
-				Model:  "openai/gpt-5.4",
-				Prompt: `{{ if .Name }}hello{{ end }}`,
+				Name:        "Complex",
+				Model:       "openai/gpt-5.4",
+				Prompt:      `{{ if .Name }}hello{{ end }}`,
+				Script:      "",
+				Description: "",
 			},
 			wantKind:    "prompt",
 			wantErrPart: "unsupported template",
@@ -103,7 +121,7 @@ func TestConvertActionForAPIWithIdentityErrorValidationErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			entry := convertActionForAPIWithIdentityError(tt.config, nil)
+			entry := convertActionForAPIWithIdentityError(&tt.config, nil)
 			assert.Equal(t, tt.wantKind, entry.Kind)
 			assert.Contains(t, entry.ValidationError, tt.wantErrPart)
 		})
@@ -113,13 +131,18 @@ func TestConvertActionForAPIWithIdentityErrorValidationErrors(t *testing.T) {
 func TestConvertActionsForAPIDuplicateNames(t *testing.T) {
 	entries := convertActionsForAPI([]actionConfig{
 		{
-			Name:   "Repeat",
-			Model:  "openai/gpt-5.4",
-			Prompt: "hello",
+			Name:        "Repeat",
+			Model:       "openai/gpt-5.4",
+			Prompt:      "hello",
+			Script:      "",
+			Description: "",
 		},
 		{
-			Name:   " Repeat ",
-			Script: `printf "%s" "hello"`,
+			Name:        " Repeat ",
+			Model:       "",
+			Prompt:      "",
+			Script:      `printf "%s" "hello"`,
+			Description: "",
 		},
 	})
 
@@ -129,14 +152,17 @@ func TestConvertActionsForAPIDuplicateNames(t *testing.T) {
 }
 
 func TestValidateAndParseActionRenderRequiresVariables(t *testing.T) {
-	parsed, errValidate := validateAndParseAction(actionConfig{
-		Name:   "Summarize",
-		Model:  "openai/gpt-5.4",
-		Prompt: "hello {{ .Name }}",
-	})
+	config := actionConfig{
+		Name:        "Summarize",
+		Model:       "openai/gpt-5.4",
+		Prompt:      "hello {{ .Name }}",
+		Script:      "",
+		Description: "",
+	}
+	parsed, errValidate := validateAndParseAction(&config)
 	require.NoError(t, errValidate)
 
-	_, errRender := renderParsedAction(parsed, nil)
+	_, errRender := renderParsedAction(&parsed, nil)
 	require.Error(t, errRender)
 	assert.Contains(t, errRender.Error(), "Name")
 }
@@ -149,43 +175,51 @@ func TestSplitActionCommand(t *testing.T) {
 		wantErrPart string
 	}{
 		{
-			name:    "quotedArguments",
-			command: `printf "%s" "hello world"`,
-			want:    []string{"printf", "%s", "hello world"},
+			name:        "quotedArguments",
+			command:     `printf "%s" "hello world"`,
+			want:        []string{"printf", "%s", "hello world"},
+			wantErrPart: "",
 		},
 		{
-			name:    "mixedQuotesAndEscapes",
-			command: `cmd 'two words' three\ words`,
-			want:    []string{"cmd", "two words", "three words"},
+			name:        "mixedQuotesAndEscapes",
+			command:     `cmd 'two words' three\ words`,
+			want:        []string{"cmd", "two words", "three words"},
+			wantErrPart: "",
 		},
 		{
-			name:    "doubleQuotedBackslashesArePreserved",
-			command: `printf "%s" "C:\tmp\logs"`,
-			want:    []string{"printf", "%s", `C:\tmp\logs`},
+			name:        "doubleQuotedBackslashesArePreserved",
+			command:     `printf "%s" "C:\tmp\logs"`,
+			want:        []string{"printf", "%s", `C:\tmp\logs`},
+			wantErrPart: "",
 		},
 		{
 			name:        "emptyCommand",
 			command:     "   ",
+			want:        nil,
 			wantErrPart: "empty command",
 		},
 		{
 			name:        "pipeOperatorRejected",
 			command:     `printf "%s" hello | cat`,
+			want:        nil,
 			wantErrPart: `unsupported shell operator "|"`,
 		},
 		{
 			name:        "redirectionRejected",
 			command:     `printf "%s" hello > out.txt`,
+			want:        nil,
 			wantErrPart: `unsupported shell operator ">"`,
 		},
 		{
 			name:        "sequencingRejected",
 			command:     `printf "%s" hello ; cat`,
+			want:        nil,
 			wantErrPart: `unsupported shell operator ";"`,
 		},
 		{
 			name:        "unterminatedQuote",
 			command:     `printf "unterminated`,
+			want:        nil,
 			wantErrPart: "unterminated",
 		},
 	}

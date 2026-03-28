@@ -14,6 +14,26 @@ import (
 	"github.com/ucirello/sgai/pkg/state"
 )
 
+func testWorkflowRunner() *workflowRunner {
+	runner := new(workflowRunner)
+	runner.wfState = testWorkflowState()
+	return runner
+}
+
+func testWorkflowState() state.Workflow {
+	return state.NewWorkflow()
+}
+
+func testStateMessage() state.Message {
+	var message state.Message
+	return message
+}
+
+func testMultiModelConfig() multiModelConfig {
+	var cfg multiModelConfig
+	return cfg
+}
+
 func TestBuildAllAgents(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -52,14 +72,28 @@ func TestComputeLongestNameLen(t *testing.T) {
 	}
 }
 
+func TestFreshWorkflowState(t *testing.T) {
+	allAgents := []string{"coordinator", "builder", "reviewer"}
+	preservedMode := state.ModeBuilding
+
+	want := state.NewWorkflow()
+	want.Status = state.StatusWorking
+	want.VisitCounts = initVisitCounts(allAgents)
+	want.InteractionMode = preservedMode
+
+	assert.Equal(t, want, freshWorkflowState(allAgents, preservedMode))
+}
+
 func TestResolveCurrentAgent(t *testing.T) {
 	t.Run("emptyDefaultsToCoordinator", func(t *testing.T) {
-		r := &workflowRunner{wfState: state.Workflow{CurrentAgent: ""}}
+		r := testWorkflowRunner()
+		r.wfState.CurrentAgent = ""
 		assert.Equal(t, "coordinator", r.resolveCurrentAgent())
 	})
 
 	t.Run("returnsCurrentAgent", func(t *testing.T) {
-		r := &workflowRunner{wfState: state.Workflow{CurrentAgent: "builder"}}
+		r := testWorkflowRunner()
+		r.wfState.CurrentAgent = "builder"
 		assert.Equal(t, "builder", r.resolveCurrentAgent())
 	})
 }
@@ -82,35 +116,31 @@ func buildTestDag(edges map[string][]string, entryNodes []string) *dag {
 
 func TestResolveNextAgent(t *testing.T) {
 	t.Run("redirectsToPendingMessages", func(t *testing.T) {
-		r := &workflowRunner{
-			paddedsgai: "test",
-			flowDag:    buildTestDag(map[string][]string{"coordinator": {"reviewer"}}, []string{"coordinator"}),
-			wfState: state.Workflow{
-				Messages: []state.Message{
-					{ID: 1, FromAgent: "coordinator", ToAgent: "reviewer", Body: "review please", Read: false},
-				},
-			},
-		}
+		r := testWorkflowRunner()
+		r.paddedsgai = "test"
+		r.flowDag = buildTestDag(map[string][]string{"coordinator": {"reviewer"}}, []string{"coordinator"})
+		message := testStateMessage()
+		message.ID = 1
+		message.FromAgent = "coordinator"
+		message.ToAgent = "reviewer"
+		message.Body = "review please"
+		r.wfState.Messages = []state.Message{message}
 		got := r.resolveNextAgent("coordinator")
 		assert.Equal(t, "reviewer", got)
 	})
 
 	t.Run("terminalNodeReturnsCoordinator", func(t *testing.T) {
-		r := &workflowRunner{
-			paddedsgai: "test",
-			flowDag:    buildTestDag(map[string][]string{"coordinator": {"reviewer"}}, []string{"coordinator"}),
-			wfState:    state.Workflow{Messages: []state.Message{}},
-		}
+		r := testWorkflowRunner()
+		r.paddedsgai = "test"
+		r.flowDag = buildTestDag(map[string][]string{"coordinator": {"reviewer"}}, []string{"coordinator"})
 		got := r.resolveNextAgent("reviewer")
 		assert.Equal(t, "coordinator", got)
 	})
 
 	t.Run("coordinatorGoesToFirstEntry", func(t *testing.T) {
-		r := &workflowRunner{
-			paddedsgai: "test",
-			flowDag:    buildTestDag(map[string][]string{"coordinator": {"builder"}}, []string{"builder"}),
-			wfState:    state.Workflow{Messages: []state.Message{}},
-		}
+		r := testWorkflowRunner()
+		r.paddedsgai = "test"
+		r.flowDag = buildTestDag(map[string][]string{"coordinator": {"builder"}}, []string{"builder"})
 		got := r.resolveNextAgent("coordinator")
 		assert.Equal(t, "builder", got)
 	})
@@ -122,22 +152,16 @@ func TestPrepareAgent(t *testing.T) {
 	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 
 	statePath := filepath.Join(sgaiDir, "state.json")
-	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-		Status:      state.StatusWorking,
-		VisitCounts: map[string]int{},
-	})
+	workflowState := testWorkflowState()
+	workflowState.Status = state.StatusWorking
+	coord, errCoord := state.NewCoordinatorWith(statePath, workflowState)
 	require.NoError(t, errCoord)
 
-	r := &workflowRunner{
-		dir:           dir,
-		paddedsgai:    "test",
-		coord:         coord,
-		previousAgent: "",
-		wfState: state.Workflow{
-			Status:      state.StatusWorking,
-			VisitCounts: map[string]int{},
-		},
-	}
+	r := testWorkflowRunner()
+	r.dir = dir
+	r.paddedsgai = "test"
+	r.coord = coord
+	r.wfState.Status = state.StatusWorking
 
 	require.NoError(t, r.prepareAgent("coordinator"))
 	assert.Equal(t, "coordinator", r.previousAgent)
@@ -151,16 +175,38 @@ func TestPrepareAgent(t *testing.T) {
 	assert.Empty(t, r.wfState.Todos)
 }
 
+func TestPrepareAgentReturnsStateSaveError(t *testing.T) {
+	dir := t.TempDir()
+	sgaiDir := filepath.Join(dir, ".sgai")
+	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
+
+	statePath := filepath.Join(sgaiDir, "state.json")
+	coord, errCoord := state.NewCoordinatorWith(statePath, testWorkflowState())
+	require.NoError(t, errCoord)
+	require.NoError(t, os.Remove(statePath))
+	require.NoError(t, os.Mkdir(statePath, 0o755))
+
+	r := testWorkflowRunner()
+	r.dir = dir
+	r.paddedsgai = "test"
+	r.coord = coord
+
+	errPrepare := r.prepareAgent("coordinator")
+	require.Error(t, errPrepare)
+	require.ErrorContains(t, errPrepare, "directory")
+}
+
 func TestHandleTrigger(t *testing.T) {
 	t.Run("ignoresNonSteeringTrigger", func(t *testing.T) {
 		dir := t.TempDir()
 		sgaiDir := filepath.Join(dir, ".sgai")
 		require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 		statePath := filepath.Join(sgaiDir, "state.json")
-		coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{})
+		coord, errCoord := state.NewCoordinatorWith(statePath, testWorkflowState())
 		require.NoError(t, errCoord)
 
-		r := &workflowRunner{coord: coord}
+		r := testWorkflowRunner()
+		r.coord = coord
 		goalPath := filepath.Join(dir, "GOAL.md")
 		require.NoError(t, os.WriteFile(goalPath, []byte("# Goal"), 0o644))
 
@@ -172,10 +218,11 @@ func TestHandleTrigger(t *testing.T) {
 		sgaiDir := filepath.Join(dir, ".sgai")
 		require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 		statePath := filepath.Join(sgaiDir, "state.json")
-		coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{Messages: []state.Message{}})
+		coord, errCoord := state.NewCoordinatorWith(statePath, testWorkflowState())
 		require.NoError(t, errCoord)
 
-		r := &workflowRunner{coord: coord}
+		r := testWorkflowRunner()
+		r.coord = coord
 		goalPath := filepath.Join(dir, "GOAL.md")
 		require.NoError(t, os.WriteFile(goalPath, []byte("# Goal"), 0o644))
 
@@ -187,20 +234,18 @@ func TestHandleTrigger(t *testing.T) {
 		sgaiDir := filepath.Join(dir, ".sgai")
 		require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 		statePath := filepath.Join(sgaiDir, "state.json")
-		coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-			Messages: []state.Message{
-				{
-					ID:        1,
-					FromAgent: "Human Partner",
-					ToAgent:   "coordinator",
-					Body:      "Add logging",
-					Read:      false,
-				},
-			},
-		})
+		workflowState := testWorkflowState()
+		message := testStateMessage()
+		message.ID = 1
+		message.FromAgent = "Human Partner"
+		message.ToAgent = "coordinator"
+		message.Body = "Add logging"
+		workflowState.Messages = []state.Message{message}
+		coord, errCoord := state.NewCoordinatorWith(statePath, workflowState)
 		require.NoError(t, errCoord)
 
-		r := &workflowRunner{coord: coord}
+		r := testWorkflowRunner()
+		r.coord = coord
 		goalPath := filepath.Join(dir, "GOAL.md")
 		require.NoError(t, os.WriteFile(goalPath, []byte("# Goal\n\nOriginal content"), 0o644))
 
@@ -220,18 +265,14 @@ func TestPrepareAgentReappliesOverlayWithoutSkeletonUnpack(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".sgai", "agent", "coordinator.md"), []byte("runtime coordinator"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "sgai", "skills", "handoff-overlay", "SKILL.md"), []byte("handoff overlay"), 0o644))
 
-	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{VisitCounts: map[string]int{}})
+	coord, errCoord := state.NewCoordinatorWith(statePath, testWorkflowState())
 	require.NoError(t, errCoord)
 
-	r := &workflowRunner{
-		dir:           dir,
-		coord:         coord,
-		paddedsgai:    "test",
-		previousAgent: "coordinator",
-		wfState: state.Workflow{
-			VisitCounts: map[string]int{},
-		},
-	}
+	r := testWorkflowRunner()
+	r.dir = dir
+	r.coord = coord
+	r.paddedsgai = "test"
+	r.previousAgent = "coordinator"
 
 	err := r.prepareAgent("builder")
 	require.NoError(t, err)
@@ -253,18 +294,14 @@ func TestRunAgentInterruptsWhenOverlayRefreshFails(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sgai", "skills", "broken-overlay"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "sgai", "skills", "broken-overlay", "SKILL.md"), []byte("overlay"), 0o644))
 
-	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{VisitCounts: map[string]int{}})
+	coord, errCoord := state.NewCoordinatorWith(statePath, testWorkflowState())
 	require.NoError(t, errCoord)
 
-	r := &workflowRunner{
-		dir:           dir,
-		coord:         coord,
-		paddedsgai:    "test",
-		previousAgent: "coordinator",
-		wfState: state.Workflow{
-			VisitCounts: map[string]int{},
-		},
-	}
+	r := testWorkflowRunner()
+	r.dir = dir
+	r.coord = coord
+	r.paddedsgai = "test"
+	r.previousAgent = "coordinator"
 
 	result := r.runAgent(context.Background(), "builder")
 	assert.Equal(t, resultInterrupt, result)
@@ -273,17 +310,17 @@ func TestRunAgentInterruptsWhenOverlayRefreshFails(t *testing.T) {
 func TestResolveRetrospectiveDirResuming(t *testing.T) {
 	dir := t.TempDir()
 	retroDir := filepath.Join(dir, ".sgai", "retrospectives", "2026-03-06-12-00.abcd")
-	require.NoError(t, os.MkdirAll(retroDir, 0755))
+	require.NoError(t, os.MkdirAll(retroDir, 0o755))
 
 	pmPath := filepath.Join(dir, ".sgai", "PROJECT_MANAGEMENT.md")
 	retroDirRel, errRel := filepath.Rel(dir, retroDir)
 	require.NoError(t, errRel)
 	pmContent := "---\nRetrospective Session: " + retroDirRel + "\n---\n"
-	require.NoError(t, os.WriteFile(pmPath, []byte(pmContent), 0644))
+	require.NoError(t, os.WriteFile(pmPath, []byte(pmContent), 0o644))
 
 	stateJSONPath := filepath.Join(dir, ".sgai", "state.json")
 	goalPath := filepath.Join(dir, "GOAL.md")
-	require.NoError(t, os.WriteFile(goalPath, []byte("# Test Goal"), 0644))
+	require.NoError(t, os.WriteFile(goalPath, []byte("# Test Goal"), 0o644))
 
 	result, errResolve := resolveRetrospectiveDir(true, dir, filepath.Join(dir, ".sgai", "retrospectives"), pmPath, stateJSONPath, goalPath)
 	require.NoError(t, errResolve)
@@ -481,18 +518,20 @@ func TestResolveRetrospectiveDirNewSessionErrorsReturnInsteadOfFatal(t *testing.
 }
 
 func TestHandleWorkingLoop(t *testing.T) {
-	cfg := multiModelConfig{paddedsgai: "test", agent: "builder"}
+	cfg := testMultiModelConfig()
+	cfg.paddedsgai = "test"
+	cfg.agent = "builder"
 	sessionID := "session-123"
 
 	t.Run("incrementsCounter", func(t *testing.T) {
-		got := handleWorkingLoop(cfg, &sessionID, 0)
+		got := handleWorkingLoop(&cfg, &sessionID, 0)
 		assert.Equal(t, 1, got)
 		assert.Equal(t, "session-123", sessionID)
 	})
 
 	t.Run("resetsOnMaxIterations", func(t *testing.T) {
 		sid := "session-456"
-		got := handleWorkingLoop(cfg, &sid, maxConsecutiveWorkingIterations-1)
+		got := handleWorkingLoop(&cfg, &sid, maxConsecutiveWorkingIterations-1)
 		assert.Equal(t, 0, got)
 		assert.Empty(t, sid)
 	})
@@ -504,13 +543,13 @@ func TestUnlockInteractiveForRetrospective(t *testing.T) {
 		sgaiDir := filepath.Join(dir, ".sgai")
 		require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 		statePath := filepath.Join(sgaiDir, "state.json")
-		coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-			InteractionMode: state.ModeBuilding,
-		})
+		workflowState := testWorkflowState()
+		workflowState.InteractionMode = state.ModeBuilding
+		coord, errCoord := state.NewCoordinatorWith(statePath, workflowState)
 		require.NoError(t, errCoord)
 
 		wfState := coord.State()
-		unlockInteractiveForRetrospective(&wfState, "coordinator", coord, "test")
+		require.NoError(t, unlockInteractiveForRetrospective(&wfState, "coordinator", coord, "test"))
 		assert.Equal(t, state.ModeBuilding, wfState.InteractionMode)
 	})
 
@@ -519,13 +558,13 @@ func TestUnlockInteractiveForRetrospective(t *testing.T) {
 		sgaiDir := filepath.Join(dir, ".sgai")
 		require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 		statePath := filepath.Join(sgaiDir, "state.json")
-		coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-			InteractionMode: state.ModeRetrospective,
-		})
+		workflowState := testWorkflowState()
+		workflowState.InteractionMode = state.ModeRetrospective
+		coord, errCoord := state.NewCoordinatorWith(statePath, workflowState)
 		require.NoError(t, errCoord)
 
 		wfState := coord.State()
-		unlockInteractiveForRetrospective(&wfState, "retrospective", coord, "test")
+		require.NoError(t, unlockInteractiveForRetrospective(&wfState, "retrospective", coord, "test"))
 		assert.Equal(t, state.ModeRetrospective, wfState.InteractionMode)
 	})
 
@@ -534,27 +573,41 @@ func TestUnlockInteractiveForRetrospective(t *testing.T) {
 		sgaiDir := filepath.Join(dir, ".sgai")
 		require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 		statePath := filepath.Join(sgaiDir, "state.json")
-		coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-			InteractionMode: state.ModeBuilding,
-		})
+		workflowState := testWorkflowState()
+		workflowState.InteractionMode = state.ModeBuilding
+		coord, errCoord := state.NewCoordinatorWith(statePath, workflowState)
 		require.NoError(t, errCoord)
 
 		wfState := coord.State()
-		unlockInteractiveForRetrospective(&wfState, "retrospective", coord, "test")
+		require.NoError(t, unlockInteractiveForRetrospective(&wfState, "retrospective", coord, "test"))
+		assert.Equal(t, state.ModeRetrospective, wfState.InteractionMode)
+	})
+
+	t.Run("retrospectiveSaveFailureReturnsError", func(t *testing.T) {
+		dir := t.TempDir()
+		blockingPath := filepath.Join(dir, "blocking-file")
+		require.NoError(t, os.WriteFile(blockingPath, []byte("x"), 0o644))
+
+		coord := state.NewCoordinatorEmpty(filepath.Join(blockingPath, "state.json"))
+		wfState := testWorkflowState()
+		wfState.InteractionMode = state.ModeBuilding
+
+		errUnlock := unlockInteractiveForRetrospective(&wfState, "retrospective", coord, "test")
+		require.Error(t, errUnlock)
 		assert.Equal(t, state.ModeRetrospective, wfState.InteractionMode)
 	})
 }
 
 func TestCopyProjectManagementToRetrospective(t *testing.T) {
-	t.Run("emptyRetrospectiveDir", func(_ *testing.T) {
-		copyProjectManagementToRetrospective("/tmp", "")
+	t.Run("emptyRetrospectiveDir", func(t *testing.T) {
+		require.NoError(t, copyProjectManagementToRetrospective("/tmp", ""))
 	})
 
 	t.Run("noPMFile", func(t *testing.T) {
 		dir := t.TempDir()
 		retroDir := t.TempDir()
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0o755))
-		copyProjectManagementToRetrospective(dir, retroDir)
+		require.NoError(t, copyProjectManagementToRetrospective(dir, retroDir))
 		_, err := os.Stat(filepath.Join(retroDir, "PROJECT_MANAGEMENT.md"))
 		assert.True(t, os.IsNotExist(err))
 	})
@@ -566,10 +619,20 @@ func TestCopyProjectManagementToRetrospective(t *testing.T) {
 		require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "PROJECT_MANAGEMENT.md"), []byte("# PM\nSome content"), 0o644))
 
-		copyProjectManagementToRetrospective(dir, retroDir)
+		require.NoError(t, copyProjectManagementToRetrospective(dir, retroDir))
 
 		content, err := os.ReadFile(filepath.Join(retroDir, "PROJECT_MANAGEMENT.md"))
 		require.NoError(t, err)
 		assert.Contains(t, string(content), "Some content")
 	})
+}
+
+func TestBuildWorkflowRunnerMissingGoalReturnsError(t *testing.T) {
+	runner, cleanup, errBuild := buildWorkflowRunner(t.TempDir(), "", nil, nil)
+	if cleanup != nil {
+		cleanup()
+	}
+	assert.Nil(t, runner)
+	require.Error(t, errBuild)
+	assert.Contains(t, errBuild.Error(), "GOAL.md")
 }

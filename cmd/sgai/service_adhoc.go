@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -37,6 +38,14 @@ type adhocStartResult struct {
 	Error   error
 }
 
+func adhocStartError(err error) adhocStartResult {
+	return adhocStartResult{Running: false, Output: "", Message: "", Error: err}
+}
+
+func adhocStartRunning(output, message string) adhocStartResult {
+	return adhocStartResult{Running: true, Output: output, Message: message, Error: nil}
+}
+
 type commandStartSpec struct {
 	command               string
 	args                  []string
@@ -52,11 +61,11 @@ func (s *Server) adhocStartService(workspacePath, prompt, model string) adhocSta
 	prompt = strings.TrimSpace(prompt)
 	model = strings.TrimSpace(model)
 	if prompt == "" || model == "" {
-		return adhocStartResult{Error: fmt.Errorf("prompt and model are required")}
+		return adhocStartError(errors.New("prompt and model are required"))
 	}
 
 	args := buildAdhocArgs(model)
-	return s.startCommandService(workspacePath, commandStartSpec{
+	return s.startCommandService(workspacePath, &commandStartSpec{
 		command:               "opencode",
 		args:                  args,
 		stdin:                 prompt,
@@ -80,11 +89,13 @@ func (s *Server) runScriptAction(workspacePath, actionName string, argv []string
 		return s.scriptActionRunner(workspacePath, actionName, argv)
 	}
 	if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" {
-		return adhocStartResult{Error: fmt.Errorf("action %q rendered an empty command", actionName)}
+		return adhocStartError(fmt.Errorf("action %q rendered an empty command", actionName))
 	}
-	return s.startCommandService(workspacePath, commandStartSpec{
+	return s.startCommandService(workspacePath, &commandStartSpec{
 		command:               argv[0],
 		args:                  argv[1:],
+		stdin:                 "",
+		env:                   nil,
 		logLabel:              "action",
 		headerLines:           []string{"action: " + actionName, formatCommandForLog(argv)},
 		startedMessage:        "action started",
@@ -115,13 +126,13 @@ func formatCommandArgForLog(arg string) string {
 	return arg
 }
 
-func (s *Server) startCommandService(workspacePath string, spec commandStartSpec) adhocStartResult {
+func (s *Server) startCommandService(workspacePath string, spec *commandStartSpec) adhocStartResult {
 	st := s.getAdhocState(workspacePath)
 	st.mu.Lock()
 	if st.running {
 		output := st.output.String()
 		st.mu.Unlock()
-		return adhocStartResult{Running: true, Output: output, Message: spec.alreadyRunningMessage}
+		return adhocStartRunning(output, spec.alreadyRunningMessage)
 	}
 
 	st.running = true
@@ -135,7 +146,9 @@ func (s *Server) startCommandService(workspacePath string, spec commandStartSpec
 
 	cmd := exec.CommandContext(ctx, spec.command, spec.args...)
 	cmd.Dir = workspacePath
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	sysProcAttr := new(syscall.SysProcAttr)
+	sysProcAttr.Setpgid = true
+	cmd.SysProcAttr = sysProcAttr
 	if len(spec.env) > 0 {
 		cmd.Env = opencodeEnv(spec.env...)
 	}
@@ -156,7 +169,7 @@ func (s *Server) startCommandService(workspacePath string, spec commandStartSpec
 	if errStart := cmd.Start(); errStart != nil {
 		st.running = false
 		st.mu.Unlock()
-		return adhocStartResult{Error: fmt.Errorf("failed to start command: %w", errStart)}
+		return adhocStartError(fmt.Errorf("failed to start command: %w", errStart))
 	}
 
 	st.cmd = cmd
@@ -182,7 +195,7 @@ func (s *Server) startCommandService(workspacePath string, spec commandStartSpec
 
 	s.notifyStateChange()
 
-	return adhocStartResult{Running: true, Message: spec.startedMessage}
+	return adhocStartRunning("", spec.startedMessage)
 }
 
 type adhocStopResult struct {

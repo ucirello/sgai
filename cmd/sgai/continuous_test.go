@@ -24,11 +24,12 @@ func TestHasHumanPartnerMessage(t *testing.T) {
 			name:          "emptyMessages",
 			messages:      []state.Message{},
 			expectedFound: false,
+			expectedID:    0,
 		},
 		{
 			name: "humanPartnerMessage",
 			messages: []state.Message{
-				{ID: 1, FromAgent: "Human Partner", Read: false},
+				{ID: 1, FromAgent: "Human Partner", ToAgent: "", Body: "", Read: false, ReadAt: "", ReadBy: "", CreatedAt: ""},
 			},
 			expectedFound: true,
 			expectedID:    1,
@@ -36,23 +37,25 @@ func TestHasHumanPartnerMessage(t *testing.T) {
 		{
 			name: "humanPartnerMessageAlreadyRead",
 			messages: []state.Message{
-				{ID: 1, FromAgent: "Human Partner", Read: true},
+				{ID: 1, FromAgent: "Human Partner", ToAgent: "", Body: "", Read: true, ReadAt: "", ReadBy: "", CreatedAt: ""},
 			},
 			expectedFound: false,
+			expectedID:    0,
 		},
 		{
 			name: "otherAgentMessage",
 			messages: []state.Message{
-				{ID: 1, FromAgent: "agent1", Read: false},
+				{ID: 1, FromAgent: "agent1", ToAgent: "", Body: "", Read: false, ReadAt: "", ReadBy: "", CreatedAt: ""},
 			},
 			expectedFound: false,
+			expectedID:    0,
 		},
 		{
 			name: "mixedMessages",
 			messages: []state.Message{
-				{ID: 1, FromAgent: "agent1", Read: false},
-				{ID: 2, FromAgent: "Human Partner", Read: false},
-				{ID: 3, FromAgent: "agent2", Read: false},
+				{ID: 1, FromAgent: "agent1", ToAgent: "", Body: "", Read: false, ReadAt: "", ReadBy: "", CreatedAt: ""},
+				{ID: 2, FromAgent: "Human Partner", ToAgent: "", Body: "", Read: false, ReadAt: "", ReadBy: "", CreatedAt: ""},
+				{ID: 3, FromAgent: "agent2", ToAgent: "", Body: "", Read: false, ReadAt: "", ReadBy: "", CreatedAt: ""},
 			},
 			expectedFound: true,
 			expectedID:    2,
@@ -60,8 +63,8 @@ func TestHasHumanPartnerMessage(t *testing.T) {
 		{
 			name: "multipleHumanPartnerMessages",
 			messages: []state.Message{
-				{ID: 1, FromAgent: "Human Partner", Read: true},
-				{ID: 2, FromAgent: "Human Partner", Read: false},
+				{ID: 1, FromAgent: "Human Partner", ToAgent: "", Body: "", Read: true, ReadAt: "", ReadBy: "", CreatedAt: ""},
+				{ID: 2, FromAgent: "Human Partner", ToAgent: "", Body: "", Read: false, ReadAt: "", ReadBy: "", CreatedAt: ""},
 			},
 			expectedFound: true,
 			expectedID:    2,
@@ -124,7 +127,7 @@ continuousModePrompt: ""
 
 			if tt.goalContent != "" {
 				goalPath := filepath.Join(workspacePath, "GOAL.md")
-				require.NoError(t, os.WriteFile(goalPath, []byte(tt.goalContent), 0644))
+				require.NoError(t, os.WriteFile(goalPath, []byte(tt.goalContent), 0o644))
 			}
 
 			result := readContinuousModePrompt(workspacePath)
@@ -190,7 +193,7 @@ continuousModeAuto: "invalid"
 
 			if tt.goalContent != "" {
 				goalPath := filepath.Join(workspacePath, "GOAL.md")
-				require.NoError(t, os.WriteFile(goalPath, []byte(tt.goalContent), 0644))
+				require.NoError(t, os.WriteFile(goalPath, []byte(tt.goalContent), 0o644))
 			}
 
 			dur, prompt := readContinuousModeAutoCron(workspacePath)
@@ -203,10 +206,10 @@ continuousModeAuto: "invalid"
 func TestUpdateContinuousModeState(t *testing.T) {
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "state.json")
-	coord, err := state.NewCoordinatorWith(statePath, state.Workflow{
-		Status:   state.StatusWorking,
-		Progress: []state.ProgressEntry{},
-	})
+	wf := testWorkflow()
+	wf.Status = state.StatusWorking
+	wf.Progress = []state.ProgressEntry{}
+	coord, err := state.NewCoordinatorWith(statePath, wf)
 	require.NoError(t, err)
 
 	updateContinuousModeState(coord, "running tests", "test-agent", "started test execution")
@@ -222,12 +225,13 @@ func TestUpdateContinuousModeState(t *testing.T) {
 func TestUpdateContinuousModeProgress(t *testing.T) {
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "state.json")
-	coord, err := state.NewCoordinatorWith(statePath, state.Workflow{
-		Status: state.StatusWorking,
-		Progress: []state.ProgressEntry{
-			{Agent: "initial", Description: "first entry"},
-		},
-	})
+	wf := testWorkflow()
+	wf.Status = state.StatusWorking
+	progress := testProgressEntry()
+	progress.Agent = "initial"
+	progress.Description = "first entry"
+	wf.Progress = []state.ProgressEntry{progress}
+	coord, err := state.NewCoordinatorWith(statePath, wf)
 	require.NoError(t, err)
 
 	updateContinuousModeProgress(coord, "completed phase 2")
@@ -241,13 +245,13 @@ func TestUpdateContinuousModeProgress(t *testing.T) {
 func TestMarkMessageAsRead(t *testing.T) {
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "state.json")
-	coord, err := state.NewCoordinatorWith(statePath, state.Workflow{
-		Status: state.StatusWorking,
-		Messages: []state.Message{
-			{ID: 1, FromAgent: "Human Partner", ToAgent: "coordinator", Body: "run the tests", Read: false},
-			{ID: 2, FromAgent: "agent1", ToAgent: "agent2", Body: "other msg", Read: false},
-		},
-	})
+	wf := testWorkflow()
+	wf.Status = state.StatusWorking
+	wf.Messages = []state.Message{
+		{ID: 1, FromAgent: "Human Partner", ToAgent: "coordinator", Body: "run the tests", Read: false, ReadAt: "", ReadBy: "", CreatedAt: ""},
+		{ID: 2, FromAgent: "agent1", ToAgent: "agent2", Body: "other msg", Read: false, ReadAt: "", ReadBy: "", CreatedAt: ""},
+	}
+	coord, err := state.NewCoordinatorWith(statePath, wf)
 	require.NoError(t, err)
 
 	markMessageAsRead(coord, 1)
@@ -262,12 +266,10 @@ func TestMarkMessageAsRead(t *testing.T) {
 func TestMarkMessageAsReadNonExistent(t *testing.T) {
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "state.json")
-	coord, err := state.NewCoordinatorWith(statePath, state.Workflow{
-		Status: state.StatusWorking,
-		Messages: []state.Message{
-			{ID: 1, FromAgent: "agent1", ToAgent: "agent2", Body: "msg", Read: false},
-		},
-	})
+	wf := testWorkflow()
+	wf.Status = state.StatusWorking
+	wf.Messages = []state.Message{{ID: 1, FromAgent: "agent1", ToAgent: "agent2", Body: "msg", Read: false, ReadAt: "", ReadBy: "", CreatedAt: ""}}
+	coord, err := state.NewCoordinatorWith(statePath, wf)
 	require.NoError(t, err)
 
 	markMessageAsRead(coord, 999)
@@ -279,11 +281,11 @@ func TestMarkMessageAsReadNonExistent(t *testing.T) {
 func TestResetWorkflowForNextCycle(t *testing.T) {
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "state.json")
-	coord, err := state.NewCoordinatorWith(statePath, state.Workflow{
-		Status:          state.StatusComplete,
-		InteractionMode: state.ModeSelfDrive,
-		CurrentAgent:    "backend-developer",
-	})
+	wf := testWorkflow()
+	wf.Status = state.StatusComplete
+	wf.InteractionMode = state.ModeSelfDrive
+	wf.CurrentAgent = "backend-developer"
+	coord, err := state.NewCoordinatorWith(statePath, wf)
 	require.NoError(t, err)
 
 	resetWorkflowForNextCycle(coord)
@@ -307,6 +309,7 @@ func TestPrependSteeringMessage(t *testing.T) {
 			existingGoal: "# My Goal\n\nSome content",
 			message:      "Steering message",
 			expected:     "Steering message\n\n# My Goal\n\nSome content",
+			skipCreate:   false,
 		},
 		{
 			name: "withFrontmatter",
@@ -328,14 +331,16 @@ Steering message
 # My Goal
 
 Some content`,
+			skipCreate: false,
 		},
 		{
 			name: "emptyGoal",
 			existingGoal: `---
 ---
 `,
-			message:  "Steering message",
-			expected: "---\n---\n\nSteering message\n\n",
+			message:    "Steering message",
+			expected:   "---\n---\n\nSteering message\n\n",
+			skipCreate: false,
 		},
 		{
 			name:         "emptyContent",
@@ -350,8 +355,9 @@ Some content`,
 flow: |
   "a" -> "b"
 # My Goal`,
-			message:  "Steering message",
-			expected: "Steering message\n\n---\nflow: |\n  \"a\" -> \"b\"\n# My Goal",
+			message:    "Steering message",
+			expected:   "Steering message\n\n---\nflow: |\n  \"a\" -> \"b\"\n# My Goal",
+			skipCreate: false,
 		},
 	}
 
@@ -360,12 +366,12 @@ flow: |
 			tmpDir := t.TempDir()
 			goalPath := filepath.Join(tmpDir, "GOAL.md")
 			if tt.existingGoal != "" && !tt.skipCreate {
-				require.NoError(t, os.WriteFile(goalPath, []byte(tt.existingGoal), 0644))
+				require.NoError(t, os.WriteFile(goalPath, []byte(tt.existingGoal), 0o644))
 			}
 
 			err := prependSteeringMessage(goalPath, tt.message)
 			if tt.skipCreate {
-				assert.Error(t, err)
+				require.Error(t, err)
 				return
 			}
 			require.NoError(t, err)
@@ -382,7 +388,7 @@ func TestPrependSteeringMessageNoFile(t *testing.T) {
 	goalPath := filepath.Join(tmpDir, "GOAL.md")
 
 	err := prependSteeringMessage(goalPath, "test message")
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestWatchForTriggerCancelledContext(t *testing.T) {
@@ -391,11 +397,11 @@ func TestWatchForTriggerCancelledContext(t *testing.T) {
 
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
-	require.NoError(t, os.MkdirAll(sgaiDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("# Goal"), 0644))
+	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("# Goal"), 0o644))
 
 	statePath := filepath.Join(sgaiDir, "state.json")
-	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{})
+	coord, errCoord := state.NewCoordinatorWith(statePath, testWorkflow())
 	require.NoError(t, errCoord)
 
 	result := watchForTrigger(ctx, dir, coord, 0, "")
@@ -408,12 +414,12 @@ func TestWatchForTriggerIgnoresGoalChanges(t *testing.T) {
 
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
-	require.NoError(t, os.MkdirAll(sgaiDir, 0755))
+	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 	goalPath := filepath.Join(dir, "GOAL.md")
-	require.NoError(t, os.WriteFile(goalPath, []byte("# Goal version 1"), 0644))
+	require.NoError(t, os.WriteFile(goalPath, []byte("# Goal version 1"), 0o644))
 
 	statePath := filepath.Join(sgaiDir, "state.json")
-	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{})
+	coord, errCoord := state.NewCoordinatorWith(statePath, testWorkflow())
 	require.NoError(t, errCoord)
 
 	pollStarted := make(chan struct{})
@@ -435,7 +441,7 @@ func TestWatchForTriggerIgnoresGoalChanges(t *testing.T) {
 		t.Fatal("watchForTrigger() did not enter its wait loop")
 	}
 
-	require.NoError(t, os.WriteFile(goalPath, []byte("# Goal version 2"), 0644))
+	require.NoError(t, os.WriteFile(goalPath, []byte("# Goal version 2"), 0o644))
 
 	goalChangeObservationWindow := continuousModePollInterval + time.Second
 	select {
@@ -460,15 +466,18 @@ func TestWatchForTriggerSteeringMessage(t *testing.T) {
 
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
-	require.NoError(t, os.MkdirAll(sgaiDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("# Goal"), 0644))
+	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("# Goal"), 0o644))
 
 	statePath := filepath.Join(sgaiDir, "state.json")
-	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-		Messages: []state.Message{
-			{ID: 1, FromAgent: "Human Partner", ToAgent: "coordinator", Body: "please fix", Read: false},
-		},
-	})
+	msg := testMessage()
+	msg.ID = 1
+	msg.FromAgent = "Human Partner"
+	msg.ToAgent = "coordinator"
+	msg.Body = "please fix"
+	wf := testWorkflow()
+	wf.Messages = []state.Message{msg}
+	coord, errCoord := state.NewCoordinatorWith(statePath, wf)
 	require.NoError(t, errCoord)
 
 	result := watchForTrigger(ctx, dir, coord, 0, "")
@@ -481,11 +490,11 @@ func TestWatchForTriggerAutoTimer(t *testing.T) {
 
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
-	require.NoError(t, os.MkdirAll(sgaiDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("# Goal"), 0644))
+	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("# Goal"), 0o644))
 
 	statePath := filepath.Join(sgaiDir, "state.json")
-	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{})
+	coord, errCoord := state.NewCoordinatorWith(statePath, testWorkflow())
 	require.NoError(t, errCoord)
 
 	result := watchForTrigger(ctx, dir, coord, 1*time.Millisecond, "")
@@ -498,11 +507,11 @@ func TestWatchForTriggerCronWithAutoFallback(t *testing.T) {
 
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
-	require.NoError(t, os.MkdirAll(sgaiDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("# Goal"), 0644))
+	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("# Goal"), 0o644))
 
 	statePath := filepath.Join(sgaiDir, "state.json")
-	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{})
+	coord, errCoord := state.NewCoordinatorWith(statePath, testWorkflow())
 	require.NoError(t, errCoord)
 
 	result := watchForTrigger(ctx, dir, coord, 1*time.Millisecond, "* * * * *")
@@ -515,11 +524,11 @@ func TestWatchForTriggerInvalidCronExpression(t *testing.T) {
 
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
-	require.NoError(t, os.MkdirAll(sgaiDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("# Goal"), 0644))
+	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("# Goal"), 0o644))
 
 	statePath := filepath.Join(sgaiDir, "state.json")
-	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{})
+	coord, errCoord := state.NewCoordinatorWith(statePath, testWorkflow())
 	require.NoError(t, errCoord)
 
 	result := watchForTrigger(ctx, dir, coord, 1*time.Millisecond, "invalid cron")
@@ -527,8 +536,8 @@ func TestWatchForTriggerInvalidCronExpression(t *testing.T) {
 }
 
 func TestTriggerKindConstants(t *testing.T) {
-	assert.Equal(t, triggerKind(""), triggerNone)
-	assert.Equal(t, triggerKind("steering-message"), triggerSteering)
-	assert.Equal(t, triggerKind("auto-timer"), triggerAuto)
-	assert.Equal(t, triggerKind("cron-schedule"), triggerCron)
+	assert.Equal(t, triggerNone, triggerKind(""))
+	assert.Equal(t, triggerSteering, triggerKind("steering-message"))
+	assert.Equal(t, triggerAuto, triggerKind("auto-timer"))
+	assert.Equal(t, triggerCron, triggerKind("cron-schedule"))
 }

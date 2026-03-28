@@ -37,39 +37,44 @@ func TestHandleAPIStateIncludesRepositoryActionPolicy(t *testing.T) {
 	workspaces := decodeWorkspaceStateByName(t, response.Body.Bytes())
 
 	standalone := workspaces[filepath.Base(standaloneDir)]
-	assert.Equal(t, true, standalone.IsExternal)
-	assert.Equal(t, true, standalone.External)
-	assertRepositoryAction(t, standalone, repositoryActionExpectation{
+	assert.True(t, standalone.IsExternal)
+	assert.True(t, standalone.External)
+	assertRepositoryAction(t, &standalone.RepositoryAction, &repositoryActionExpectation{
 		mode:              "standalone",
 		entryPoint:        "confirm",
 		defaultOperation:  "detach",
 		allowedOperations: []string{"detach"},
+		disabledReason:    "",
 		attachedForkCount: 0,
 	})
 
 	zeroChildRoot := workspaces[filepath.Base(zeroChildRootDir)]
-	assertRepositoryAction(t, zeroChildRoot, repositoryActionExpectation{
+	assertRepositoryAction(t, &zeroChildRoot.RepositoryAction, &repositoryActionExpectation{
 		mode:              "standalone",
 		entryPoint:        "confirm",
 		defaultOperation:  "detach",
 		allowedOperations: []string{"detach"},
+		disabledReason:    "",
 		attachedForkCount: 0,
 	})
 
 	root := workspaces[filepath.Base(rootDir)]
-	assertRepositoryAction(t, root, repositoryActionExpectation{
+	assertRepositoryAction(t, &root.RepositoryAction, &repositoryActionExpectation{
 		mode:              "root",
 		entryPoint:        "hidden",
+		defaultOperation:  "",
 		disabledReason:    "forks-attached",
 		allowedOperations: nil,
 		attachedForkCount: 1,
 	})
 
 	fork := workspaces[filepath.Base(forkDir)]
-	assertRepositoryAction(t, fork, repositoryActionExpectation{
+	assertRepositoryAction(t, &fork.RepositoryAction, &repositoryActionExpectation{
 		mode:              "fork",
 		entryPoint:        "choose",
+		defaultOperation:  "",
 		allowedOperations: []string{"detach", "delete"},
+		disabledReason:    "",
 		attachedForkCount: 0,
 	})
 }
@@ -143,11 +148,12 @@ func TestHandleAPIStateClassifiesZeroChildRootFromJJMetadata(t *testing.T) {
 	root := workspaces[filepath.Base(rootDir)]
 	assert.False(t, root.IsRoot)
 	assert.Empty(t, root.Forks)
-	assertRepositoryAction(t, root, repositoryActionExpectation{
+	assertRepositoryAction(t, &root.RepositoryAction, &repositoryActionExpectation{
 		mode:              "standalone",
 		entryPoint:        "confirm",
 		defaultOperation:  "detach",
 		allowedOperations: []string{"detach"},
+		disabledReason:    "",
 		attachedForkCount: 0,
 	})
 }
@@ -167,9 +173,10 @@ func TestHandleAPIStateHidesRootActionWhenWorkspaceTopologyUnavailable(t *testin
 	workspaces := decodeWorkspaceStateByName(t, response.Body.Bytes())
 	root := workspaces[filepath.Base(rootDir)]
 	assert.True(t, root.IsRoot)
-	assertRepositoryAction(t, root, repositoryActionExpectation{
+	assertRepositoryAction(t, &root.RepositoryAction, &repositoryActionExpectation{
 		mode:              "root",
 		entryPoint:        "hidden",
+		defaultOperation:  "",
 		disabledReason:    "topology-unavailable",
 		allowedOperations: nil,
 		attachedForkCount: 0,
@@ -267,7 +274,9 @@ func TestHandleAPIDeleteWorkspaceRejectsRunningRepository(t *testing.T) {
 	attachWorkspaceFixture(t, server, workspaceDir, workspaceStandalone)
 
 	server.mu.Lock()
-	server.sessions[resolveSymlinks(workspaceDir)] = &session{running: true}
+	var runningSession session
+	runningSession.running = true
+	server.sessions[resolveSymlinks(workspaceDir)] = &runningSession
 	server.mu.Unlock()
 
 	response := serveHTTP(server, http.MethodPost, "/api/v1/workspaces/running-ws/delete", `{"confirm":true}`)
@@ -299,14 +308,12 @@ func TestHandleAPIDeleteWorkspaceRejectsAmbiguousDuplicateNameWithoutWorkspaceDi
 	assert.True(t, secondStillAttached)
 }
 
-func TestHandleAPIDeleteWorkspaceRejectsRelativeWorkspaceDir(t *testing.T) {
+func TestHandleAPIDeleteWorkspaceRejectsRoutedDuplicateNameWorkspace(t *testing.T) {
 	server, _ := setupTestServer(t)
 	firstDir, secondDir := setupAttachedDuplicateNameWorkspaces(t, server, workspaceStandalone)
 
-	requestBody := fmt.Sprintf(`{"confirm":true,"workspaceDir":%q}`, filepath.Join("second", "shared-ws"))
-	response := serveHTTP(server, http.MethodPost, "/api/v1/workspaces/shared-ws/delete", requestBody)
-	require.Equal(t, http.StatusBadRequest, response.Code)
-	assert.Contains(t, response.Body.String(), "absolute path")
+	response := serveHTTP(server, http.MethodPost, "/api/v1/workspaces/second/shared-ws/delete", `{"confirm":true}`)
+	require.Equal(t, http.StatusNotFound, response.Code)
 	assert.DirExists(t, firstDir)
 	assert.DirExists(t, secondDir)
 
@@ -318,75 +325,23 @@ func TestHandleAPIDeleteWorkspaceRejectsRelativeWorkspaceDir(t *testing.T) {
 	assert.True(t, secondStillAttached)
 }
 
-func TestHandleAPIDeleteWorkspaceDetachesRequestedDuplicateNameWorkspaceDir(t *testing.T) {
-	server, _ := setupTestServer(t)
-	firstDir, secondDir := setupAttachedDuplicateNameWorkspaces(t, server, workspaceStandalone)
-
-	requestBody := fmt.Sprintf(`{"confirm":true,"workspaceDir":%q}`, secondDir)
-	response := serveHTTP(server, http.MethodPost, "/api/v1/workspaces/shared-ws/delete", requestBody)
-	require.Equal(t, http.StatusOK, response.Code)
-
-	var result apiDeleteWorkspaceResponse
-	require.NoError(t, json.NewDecoder(response.Body).Decode(&result))
-	assert.False(t, result.Deleted)
-	assert.True(t, result.Detached)
-	assert.DirExists(t, firstDir)
-	assert.DirExists(t, secondDir)
-
-	server.mu.Lock()
-	firstStillAttached := directorySetContains(server.externalDirs, firstDir)
-	secondStillAttached := directorySetContains(server.externalDirs, secondDir)
-	server.mu.Unlock()
-	assert.True(t, firstStillAttached)
-	assert.False(t, secondStillAttached)
-}
-
-func TestHandleAPIDeleteWorkspaceDeletesRequestedDuplicateNamedFork(t *testing.T) {
+func TestHandleAPIDeleteWorkspaceRejectsRoutedDuplicateNamedFork(t *testing.T) {
 	server, _ := setupTestServer(t)
 	_, firstForkDir := setupNamedAttachedJJRootAndFork(t, server, "root-one", "shared-fork")
 	_, secondForkDir := setupNamedAttachedJJRootAndFork(t, server, "root-two", "shared-fork")
 
-	requestBody := fmt.Sprintf(`{"confirm":true,"operation":"delete","workspaceDir":%q}`, secondForkDir)
-	response := serveHTTP(server, http.MethodPost, "/api/v1/workspaces/shared-fork/delete", requestBody)
-	require.Equal(t, http.StatusOK, response.Code)
-
-	var result apiDeleteWorkspaceResponse
-	require.NoError(t, json.NewDecoder(response.Body).Decode(&result))
-	assert.True(t, result.Deleted)
-	assert.False(t, result.Detached)
+	response := serveHTTP(server, http.MethodPost, "/api/v1/workspaces/root-two/shared-fork/delete", `{"confirm":true,"operation":"delete"}`)
+	require.Equal(t, http.StatusNotFound, response.Code)
 	assert.DirExists(t, filepath.Dir(firstForkDir))
 	assert.DirExists(t, firstForkDir)
-	assert.NoDirExists(t, secondForkDir)
+	assert.DirExists(t, secondForkDir)
 
 	server.mu.Lock()
 	firstStillAttached := directorySetContains(server.externalDirs, firstForkDir)
 	secondStillAttached := directorySetContains(server.externalDirs, secondForkDir)
 	server.mu.Unlock()
 	assert.True(t, firstStillAttached)
-	assert.False(t, secondStillAttached)
-}
-
-func TestHandleAPIDeleteWorkspaceRejectsWorkspaceDirNameMismatch(t *testing.T) {
-	server, _ := setupTestServer(t)
-	baseDir := t.TempDir()
-	requestedDir := filepath.Join(baseDir, "requested-ws")
-	mismatchedDir := filepath.Join(baseDir, "mismatched-ws")
-	attachWorkspaceFixture(t, server, requestedDir, workspaceStandalone)
-	attachWorkspaceFixture(t, server, mismatchedDir, workspaceStandalone)
-
-	requestBody := fmt.Sprintf(`{"confirm":true,"workspaceDir":%q}`, mismatchedDir)
-	response := serveHTTP(server, http.MethodPost, "/api/v1/workspaces/requested-ws/delete", requestBody)
-	require.Equal(t, http.StatusBadRequest, response.Code)
-	assert.Contains(t, response.Body.String(), "does not match workspace name")
-	assert.DirExists(t, requestedDir)
-	assert.DirExists(t, mismatchedDir)
-
-	server.mu.Lock()
-	requestedStillAttached := directorySetContains(server.externalDirs, requestedDir)
-	mismatchedStillAttached := directorySetContains(server.externalDirs, mismatchedDir)
-	server.mu.Unlock()
-	assert.True(t, requestedStillAttached)
-	assert.True(t, mismatchedStillAttached)
+	assert.True(t, secondStillAttached)
 }
 
 func TestHandleAPIDeleteForkKeepsFactoryStateHealthy(t *testing.T) {
@@ -420,11 +375,12 @@ func TestHandleAPIDeleteForkKeepsFactoryStateHealthy(t *testing.T) {
 	require.NotNil(t, root)
 	_, forkPresent := workspaces[filepath.Base(forkDir)]
 	assert.False(t, forkPresent)
-	assertRepositoryAction(t, root, repositoryActionExpectation{
+	assertRepositoryAction(t, &root.RepositoryAction, &repositoryActionExpectation{
 		mode:              "standalone",
 		entryPoint:        "confirm",
 		defaultOperation:  "detach",
 		allowedOperations: []string{"detach"},
+		disabledReason:    "",
 		attachedForkCount: 0,
 	})
 
@@ -604,10 +560,12 @@ func TestBuildFullFactoryStateDoesNotEmitPhantomRootAfterPruningMissingAttachedR
 	assert.Equal(t, forkCanonical, state.Workspaces[0].Dir)
 	assert.False(t, state.Workspaces[0].IsRoot)
 	assert.True(t, state.Workspaces[0].IsFork)
-	assertRepositoryAction(t, state.Workspaces[0], repositoryActionExpectation{
+	assertRepositoryAction(t, &state.Workspaces[0].RepositoryAction, &repositoryActionExpectation{
 		mode:              "fork",
 		entryPoint:        "choose",
+		defaultOperation:  "",
 		allowedOperations: []string{"detach", "delete"},
+		disabledReason:    "",
 		attachedForkCount: 0,
 	})
 
@@ -717,10 +675,12 @@ func TestBuildFullFactoryStateDoesNotEmitUnreadableAttachedRoot(t *testing.T) {
 	assert.Equal(t, forkCanonical, state.Workspaces[0].Dir)
 	assert.False(t, state.Workspaces[0].IsRoot)
 	assert.True(t, state.Workspaces[0].IsFork)
-	assertRepositoryAction(t, state.Workspaces[0], repositoryActionExpectation{
+	assertRepositoryAction(t, &state.Workspaces[0].RepositoryAction, &repositoryActionExpectation{
 		mode:              "fork",
 		entryPoint:        "choose",
+		defaultOperation:  "",
 		allowedOperations: []string{"detach", "delete"},
+		disabledReason:    "",
 		attachedForkCount: 0,
 	})
 
@@ -740,10 +700,9 @@ type repositoryActionExpectation struct {
 	attachedForkCount int
 }
 
-func assertRepositoryAction(t *testing.T, workspace apiWorkspaceFullState, want repositoryActionExpectation) {
+func assertRepositoryAction(t *testing.T, repositoryAction *apiRepositoryAction, want *repositoryActionExpectation) {
 	t.Helper()
 
-	repositoryAction := workspace.RepositoryAction
 	assert.Equal(t, want.mode, repositoryAction.RepositoryMode)
 	assert.Equal(t, want.entryPoint, repositoryAction.EntryPoint)
 	assert.Equal(t, want.attachedForkCount, repositoryAction.AttachedForks)
@@ -770,7 +729,8 @@ func decodeWorkspaceStateByName(t *testing.T, data []byte) map[string]apiWorkspa
 	require.NoError(t, json.Unmarshal(data, &response))
 
 	result := make(map[string]apiWorkspaceFullState, len(response.Workspaces))
-	for _, workspace := range response.Workspaces {
+	for i := range response.Workspaces {
+		workspace := response.Workspaces[i]
 		result[workspace.Name] = workspace
 	}
 	return result
@@ -798,7 +758,7 @@ func pathListContains(paths []string, workspacePath string) bool {
 	return directorySetContains(set, workspacePath)
 }
 
-func setupAttachedDuplicateNameWorkspaces(t *testing.T, server *Server, kind workspaceKind) (string, string) {
+func setupAttachedDuplicateNameWorkspaces(t *testing.T, server *Server, kind workspaceKind) (firstCanonical, secondCanonical string) {
 	t.Helper()
 
 	baseDir := t.TempDir()
@@ -815,19 +775,22 @@ func setupAttachedDuplicateNameWorkspaces(t *testing.T, server *Server, kind wor
 	server.classifyCache.set(secondDir, kind)
 	server.classifyCache.set(resolveSymlinks(secondDir), kind)
 	server.invalidateWorkspaceScanCache()
-	return resolveSymlinks(firstDir), resolveSymlinks(secondDir)
+	firstCanonical = resolveSymlinks(firstDir)
+	secondCanonical = resolveSymlinks(secondDir)
+	return firstCanonical, secondCanonical
 }
 
-func setupAttachedJJRootAndFork(t *testing.T, server *Server) (string, string) {
+func setupAttachedJJRootAndFork(t *testing.T, server *Server) (rootDir, forkDir string) {
+	t.Helper()
 	return setupNamedAttachedJJRootAndFork(t, server, "root-ws", "fork-ws")
 }
 
-func setupNamedAttachedJJRootAndFork(t *testing.T, server *Server, rootName, forkName string) (string, string) {
+func setupNamedAttachedJJRootAndFork(t *testing.T, server *Server, rootName, forkName string) (rootDir, forkDir string) {
 	t.Helper()
 
 	baseDir := t.TempDir()
-	rootDir := filepath.Join(baseDir, rootName)
-	forkDir := filepath.Join(baseDir, forkName)
+	rootDir = filepath.Join(baseDir, rootName)
+	forkDir = filepath.Join(baseDir, forkName)
 	require.NoError(t, os.MkdirAll(rootDir, 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(rootDir, ".sgai"), 0o755))
 
@@ -854,7 +817,9 @@ func setupNamedAttachedJJRootAndFork(t *testing.T, server *Server, rootName, for
 	server.mu.Unlock()
 	server.invalidateWorkspaceScanCache()
 
-	return rootCanonical, forkCanonical
+	rootDir = rootCanonical
+	forkDir = forkCanonical
+	return rootDir, forkDir
 }
 
 func runJJForTest(t *testing.T, dir string, args ...string) string {

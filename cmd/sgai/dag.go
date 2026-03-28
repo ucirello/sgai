@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -79,12 +80,14 @@ func (d *dag) ensureNode(name string) *dagNode {
 	if exists {
 		return node
 	}
-	node = &dagNode{Name: name}
+	var newNode dagNode
+	newNode.Name = name
+	node = &newNode
 	d.Nodes[name] = node
 	return node
 }
 
-func parseFlow(flowSpec string, dir string) (*dag, error) {
+func parseFlow(flowSpec, dir string) (*dag, error) {
 	var dotContent string
 
 	switch {
@@ -112,9 +115,8 @@ func parseFlow(flowSpec string, dir string) (*dag, error) {
 		return nil, fmt.Errorf("failed to analyze DOT: %w", err)
 	}
 
-	d := &dag{
-		Nodes: make(map[string]*dagNode),
-	}
+	var d dag
+	d.Nodes = make(map[string]*dagNode)
 
 	for _, node := range graph.Nodes.Sorted() {
 		name := strings.Trim(node.Name, "\"")
@@ -140,7 +142,7 @@ func parseFlow(flowSpec string, dir string) (*dag, error) {
 	slices.Sort(d.EntryNodes)
 
 	if len(d.EntryNodes) == 0 {
-		return nil, fmt.Errorf("no entry nodes found in DAG (all nodes have predecessors, which implies a cycle)")
+		return nil, errors.New("no entry nodes found in DAG (all nodes have predecessors, which implies a cycle)")
 	}
 
 	d.injectCoordinatorEdges()
@@ -150,7 +152,7 @@ func parseFlow(flowSpec string, dir string) (*dag, error) {
 		return nil, err
 	}
 
-	return d, nil
+	return &d, nil
 }
 
 // injectCoordinatorEdges ensures coordinator is the entry point for all chains.
@@ -277,18 +279,21 @@ func determineNextAgent(d *dag, currentAgent string) string {
 }
 
 func (d *dag) toDOT() string {
-	var lines []string
 	agents := d.allAgents()
-	lines = append(lines, "strict digraph G {")
-	lines = append(lines, "    rankdir=LR;")
+	edgeCount := 0
+	for _, node := range agents {
+		edgeCount += len(d.Nodes[node].Successors)
+	}
+	lines := make([]string, 0, len(agents)+edgeCount+3)
+	lines = append(lines, "strict digraph G {", "    rankdir=LR;")
 
 	for _, node := range agents {
-		lines = append(lines, fmt.Sprintf(`    "%s"`, node))
+		lines = append(lines, fmt.Sprintf("    %q", node))
 	}
 
 	for _, node := range agents {
 		for _, succ := range d.Nodes[node].Successors {
-			lines = append(lines, fmt.Sprintf(`    "%s" -> "%s"`, node, succ))
+			lines = append(lines, fmt.Sprintf("    %q -> %q", node, succ))
 		}
 	}
 
@@ -346,15 +351,15 @@ func buildFlowMessage(d *dag, currentAgent string, visitCounts map[string]int, d
 		successorsStr = "(none - terminal node)"
 	}
 
-	var visitLines []string
 	agents := d.allAgents()
+	visitLines := make([]string, 0, len(agents))
 	for _, agent := range agents {
 		count := visitCounts[agent]
 		visitLines = append(visitLines, fmt.Sprintf("  %s: %d visits", agent, count))
 	}
 	visitCountsStr := strings.Join(visitLines, "\n")
 
-	var agentLines []string
+	agentLines := make([]string, 0, len(agents))
 	for _, agent := range agents {
 		baseAgent := resolveBaseAgent(alias, agent)
 		agentPath := dir + "/.sgai/agent/" + baseAgent + ".md"

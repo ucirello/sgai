@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,6 +135,29 @@ func TestRepairGoalTitleSanitizesSynthesizedTitle(t *testing.T) {
 	assert.Contains(t, string(data), "title: Repaired Title Here")
 }
 
+func TestRepairGoalTitleIgnoresWrappedNotExistOnInitialRead(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, server, rootDir, "repair-ws")
+	goalPath := filepath.Join(wsDir, "GOAL.md")
+
+	originalReadFile := server.goalTitleReadFile
+	t.Cleanup(func() {
+		server.goalTitleReadFile = originalReadFile
+	})
+
+	server.goalTitleReadFile = func(path string) ([]byte, error) {
+		if path != goalPath {
+			return originalReadFile(path)
+		}
+		return nil, fmt.Errorf("wrapped read: %w", &os.PathError{Op: "open", Path: path, Err: os.ErrNotExist})
+	}
+
+	require.NoError(t, server.repairGoalTitle(wsDir))
+
+	_, errStat := os.Stat(goalPath)
+	assert.True(t, os.IsNotExist(errStat))
+}
+
 func TestRepairGoalTitlePreservesFreshlyAddedTitle(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "repair-ws")
@@ -218,7 +242,44 @@ func TestRepairGoalTitleRecomputesTitleFromLatestGoalContent(t *testing.T) {
 	assert.NotContains(t, string(data), "title: First Goal")
 }
 
-func TestRepairGoalTitleDoesNotRecreateGoalAfterConcurrentDeletion(t *testing.T) {
+func TestRepairGoalTitleIgnoresWrappedNotExistOnReRead(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, server, rootDir, "repair-ws")
+	goalPath := filepath.Join(wsDir, "GOAL.md")
+	original := []byte("---\nflow: test\n---\n# Goal")
+	require.NoError(t, os.WriteFile(goalPath, original, 0o644))
+
+	originalReadFile := server.goalTitleReadFile
+	t.Cleanup(func() {
+		server.goalTitleReadFile = originalReadFile
+	})
+
+	var readCount int
+	composerCalled := false
+	server.goalTitleReadFile = func(path string) ([]byte, error) {
+		if path != goalPath {
+			return originalReadFile(path)
+		}
+		readCount++
+		if readCount == 1 {
+			return original, nil
+		}
+		require.NoError(t, os.Remove(goalPath))
+		return nil, fmt.Errorf("wrapped re-read: %w", &os.PathError{Op: "open", Path: path, Err: os.ErrNotExist})
+	}
+	server.goalTitleComposer = func(_ string, _ []byte) (string, error) {
+		composerCalled = true
+		return "Repaired Goal Title", nil
+	}
+
+	require.NoError(t, server.repairGoalTitle(wsDir))
+	assert.False(t, composerCalled)
+
+	_, errStat := os.Stat(goalPath)
+	assert.True(t, os.IsNotExist(errStat))
+}
+
+func TestRepairGoalTitleIgnoresWrappedNotExistOnWriteAfterConcurrentDeletion(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "repair-ws")
 	goalPath := filepath.Join(wsDir, "GOAL.md")

@@ -54,7 +54,7 @@ func runInternalMCP(ctx context.Context, args []string, stdin io.ReadCloser, std
 	}, nil)
 }
 
-func runInternalMCPBridge(ctx context.Context, mcpURL string, agentIdentity string, localTransport mcp.Transport, httpClient *http.Client) error {
+func runInternalMCPBridge(ctx context.Context, mcpURL, agentIdentity string, localTransport mcp.Transport, httpClient *http.Client) error {
 	localConn, errLocal := localTransport.Connect(ctx)
 	if errLocal != nil {
 		return fmt.Errorf("connecting stdio MCP transport: %w", errLocal)
@@ -65,8 +65,11 @@ func runInternalMCPBridge(ctx context.Context, mcpURL string, agentIdentity stri
 	}
 
 	remoteTransport := &mcp.StreamableClientTransport{
-		Endpoint:   mcpURL,
-		HTTPClient: httpClient,
+		Endpoint:             mcpURL,
+		HTTPClient:           httpClient,
+		MaxRetries:           5,
+		DisableStandaloneSSE: false,
+		OAuthHandler:         nil,
 	}
 	remoteConn, errRemote := remoteTransport.Connect(ctx)
 	if errRemote != nil {
@@ -77,7 +80,7 @@ func runInternalMCPBridge(ctx context.Context, mcpURL string, agentIdentity stri
 	return bridgeMCPConnections(ctx, localConn, remoteConn)
 }
 
-func bridgeMCPConnections(ctx context.Context, left mcp.Connection, right mcp.Connection) error {
+func bridgeMCPConnections(ctx context.Context, left, right mcp.Connection) error {
 	bridgeCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -110,14 +113,14 @@ func bridgeMCPConnections(ctx context.Context, left mcp.Connection, right mcp.Co
 	return nil
 }
 
-func copyMCPMessages(ctx context.Context, src mcp.Connection, dst mcp.Connection) error {
+func copyMCPMessages(ctx context.Context, src, dst mcp.Connection) error {
 	for {
 		msg, errRead := src.Read(ctx)
 		if errRead != nil {
-			return errRead
+			return fmt.Errorf("reading MCP message: %w", errRead)
 		}
 		if errWrite := dst.Write(ctx, msg); errWrite != nil {
-			return errWrite
+			return fmt.Errorf("writing MCP message: %w", errWrite)
 		}
 	}
 }
@@ -141,7 +144,15 @@ func isExpectedBridgeShutdown(err error) bool {
 }
 
 func newInternalMCPHTTPClient(agentIdentity string) *http.Client {
-	return &http.Client{Transport: internalMCPHeaderRoundTripper{agentIdentity: agentIdentity}}
+	return &http.Client{
+		Transport: internalMCPHeaderRoundTripper{
+			baseTransport: nil,
+			agentIdentity: agentIdentity,
+		},
+		CheckRedirect: nil,
+		Jar:           nil,
+		Timeout:       0,
+	}
 }
 
 type internalMCPHeaderRoundTripper struct {
@@ -153,7 +164,11 @@ func (t internalMCPHeaderRoundTripper) RoundTrip(r *http.Request) (*http.Respons
 	request := r.Clone(r.Context())
 	request.Header = r.Header.Clone()
 	request.Header.Set(agentIdentityHeader, t.agentIdentity)
-	return t.transport().RoundTrip(request)
+	response, errRoundTrip := t.transport().RoundTrip(request)
+	if errRoundTrip != nil {
+		return nil, fmt.Errorf("sending MCP request: %w", errRoundTrip)
+	}
+	return response, nil
 }
 
 func (t internalMCPHeaderRoundTripper) transport() http.RoundTripper {

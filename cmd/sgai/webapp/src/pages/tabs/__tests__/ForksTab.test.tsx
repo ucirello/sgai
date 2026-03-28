@@ -320,7 +320,7 @@ describe("ForksTab", () => {
 
     await user.click(screen.getByRole("button", { name: "Create Fork" }));
 
-    expect(mockNavigate).toHaveBeenCalledWith("/workspaces/workspace-1/progress?workspaceDir=%2Fpath%2Fto%2Fworkspace-1");
+    expect(mockNavigate).toHaveBeenCalledWith("/workspaces/workspace-1/progress");
   });
 
   it("stays stable when loading transitions to a resolved workspace", async () => {
@@ -353,7 +353,7 @@ describe("ForksTab", () => {
 
     await user.click(screen.getByRole("button", { name: "Create Fork" }));
 
-    expect(mockNavigate).toHaveBeenCalledWith("/workspaces/workspace-1/progress?workspaceDir=%2Fpath%2Fto%2Fworkspace-1");
+    expect(mockNavigate).toHaveBeenCalledWith("/workspaces/workspace-1/progress");
   });
 
   it("stays healthy after deleting the last fork without a hard refresh", async () => {
@@ -418,7 +418,7 @@ describe("ForksTab", () => {
     await user.click(await screen.findByRole("button", { name: /^Delete$/ }));
 
     await waitFor(() => {
-      expect(mockDeleteWorkspace).toHaveBeenCalledWith("workspace-1-fork-1", "delete", "/path/to/workspace-1-fork-1");
+      expect(mockDeleteWorkspace).toHaveBeenCalledWith("workspace-1-fork-1", "delete");
     });
 
     view.rerender(forksTabTestView());
@@ -565,6 +565,6 @@ describe("ForksTab", () => {
     await user.click(screen.getByRole("button", { name: "Choose action for fork workspace-1-fork-1" }));
     await user.click(screen.getByRole("button", { name: /^Detach$/ }));
 
-    expect(mockDeleteWorkspace).toHaveBeenCalledWith("workspace-1-fork-1", "detach", "/path/to/workspace-1-fork-1");
+    expect(mockDeleteWorkspace).toHaveBeenCalledWith("workspace-1-fork-1", "detach");
   });
 });

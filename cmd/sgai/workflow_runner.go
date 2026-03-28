@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -77,13 +78,16 @@ func (r *workflowRunner) runAgent(ctx context.Context, currentAgent string) runR
 	}
 
 	var errReload error
-	r.metadata, errReload = tryReloadGoalMetadata(r.goalPath, r.metadata, r.flowDag)
+	r.metadata, errReload = tryReloadGoalMetadata(r.goalPath, &r.metadata, r.flowDag)
 	if errReload != nil {
 		log.Println("failed to reload GOAL.md frontmatter:", errReload)
 		return resultInterrupt
 	}
 
-	unlockInteractiveForRetrospective(&r.wfState, currentAgent, r.coord, r.paddedsgai)
+	if errUnlock := unlockInteractiveForRetrospective(&r.wfState, currentAgent, r.coord, r.paddedsgai); errUnlock != nil {
+		log.Println("failed to unlock retrospective interaction mode:", errUnlock)
+		return resultInterrupt
+	}
 	r.wfState = r.executeAgent(ctx, currentAgent)
 
 	if ctx.Err() != nil {
@@ -91,7 +95,12 @@ func (r *workflowRunner) runAgent(ctx context.Context, currentAgent string) runR
 	}
 
 	if r.wfState.Status == state.StatusComplete {
-		if redirectToPendingMessageAgent(&r.wfState, r.coord, r.paddedsgai) {
+		redirected, errRedirect := redirectToPendingMessageAgent(&r.wfState, r.coord, r.paddedsgai)
+		if errRedirect != nil {
+			log.Println("failed to redirect to pending message agent:", errRedirect)
+			return resultInterrupt
+		}
+		if redirected {
 			return resultContinue
 		}
 		fmt.Println("["+r.paddedsgai+"]", "complete:", r.wfState.Task)
@@ -104,7 +113,7 @@ func (r *workflowRunner) runAgent(ctx context.Context, currentAgent string) runR
 }
 
 func (r *workflowRunner) resolveNextAgent(currentAgent string) string {
-	pendingAgent := findFirstPendingMessageAgent(r.wfState)
+	pendingAgent := findFirstPendingMessageAgent(r.wfState.Messages)
 	if pendingAgent != "" {
 		fmt.Println("["+r.paddedsgai+"]", "pending messages for", pendingAgent, "- redirecting")
 		return pendingAgent
@@ -141,7 +150,7 @@ func (r *workflowRunner) prepareAgent(currentAgent string) error {
 	if errUpdate := r.coord.UpdateState(func(wf *state.Workflow) {
 		*wf = snapshot
 	}); errUpdate != nil {
-		log.Println("failed to save state:", errUpdate)
+		return fmt.Errorf("save state: %w", errUpdate)
 	}
 
 	return nil
@@ -163,7 +172,7 @@ func (r *workflowRunner) executeAgent(ctx context.Context, currentAgent string) 
 		stdoutLog:        r.retroLogs.stdout,
 		stderrLog:        r.retroLogs.stderr,
 	}
-	return runMultiModelAgent(ctx, cfg, r.wfState, r.metadata, &r.iterationCounter)
+	return runMultiModelAgent(ctx, &cfg, &r.wfState, &r.metadata, &r.iterationCounter)
 }
 
 func (r *workflowRunner) runContinuous(ctx context.Context, continuousPrompt string) {
@@ -225,46 +234,46 @@ func (r *workflowRunner) handleTrigger(trigger triggerKind, goalPath string) {
 	markMessageAsRead(r.coord, msg.ID)
 }
 
-func buildWorkflowRunner(dir string, mcpURL string, logWriter io.Writer, sessionCoord *state.Coordinator) (*workflowRunner, func(), bool) {
+func buildWorkflowRunner(dir, mcpURL string, logWriter io.Writer, sessionCoord *state.Coordinator) (*workflowRunner, func(), error) {
 	goalPath := filepath.Join(dir, "GOAL.md")
 	goalContent, errRead := os.ReadFile(goalPath)
 	if errRead != nil {
 		if os.IsNotExist(errRead) {
-			log.Fatalln("GOAL.md not found in", dir)
+			return nil, nil, fmt.Errorf("GOAL.md not found in %s", dir)
 		}
-		log.Fatalln(errRead)
+		return nil, nil, fmt.Errorf("reading GOAL.md: %w", errRead)
 	}
 
 	metadata, errParse := parseYAMLFrontmatter(goalContent)
 	if errParse != nil {
-		log.Fatalln("failed to parse GOAL.md frontmatter:", errParse)
+		return nil, nil, fmt.Errorf("parse GOAL.md frontmatter: %w", errParse)
 	}
 
 	projectConfig, errConfig := loadProjectConfig(dir)
 	if errConfig != nil {
-		log.Fatalln("failed to load sgai.json:", errConfig)
+		return nil, nil, fmt.Errorf("load sgai.json: %w", errConfig)
 	}
 
 	if errValidate := validateProjectConfig(projectConfig); errValidate != nil {
-		log.Fatalln(errValidate)
+		return nil, nil, errValidate
 	}
 
 	applyConfigDefaults(projectConfig, &metadata)
 
 	if errInit := initializeWorkspaceDir(dir); errInit != nil {
-		log.Fatalln("failed to initialize workspace directory:", errInit)
+		return nil, nil, fmt.Errorf("initialize workspace directory: %w", errInit)
 	}
 
 	if errMCP := applyCustomMCPs(dir, projectConfig); errMCP != nil {
-		log.Fatalln("failed to apply custom MCPs:", errMCP)
+		return nil, nil, fmt.Errorf("apply custom MCPs: %w", errMCP)
 	}
 
 	flowDag, errFlow := parseFlow(metadata.Flow, dir)
 	if errFlow != nil {
-		log.Fatalln("failed to parse flow:", errFlow)
+		return nil, nil, fmt.Errorf("parse flow: %w", errFlow)
 	}
 
-	if retrospectiveEnabled(metadata) {
+	if retrospectiveEnabled(metadata.Retrospective) {
 		flowDag.injectRetrospectiveEdge()
 	}
 
@@ -272,7 +281,7 @@ func buildWorkflowRunner(dir string, mcpURL string, logWriter io.Writer, session
 	ensureImplicitAgentModel(flowDag, &metadata, "retrospective")
 
 	if errModels := validateModels(metadata.Models); errModels != nil {
-		log.Fatalln(errModels)
+		return nil, nil, errModels
 	}
 
 	stateJSONPath := filepath.Join(dir, ".sgai", "state.json")
@@ -281,7 +290,7 @@ func buildWorkflowRunner(dir string, mcpURL string, logWriter io.Writer, session
 		var errCoord error
 		coord, errCoord = state.NewCoordinator(stateJSONPath)
 		if errCoord != nil && !os.IsNotExist(errCoord) {
-			log.Fatalln("failed to read state.json:", errCoord)
+			return nil, nil, fmt.Errorf("read state.json: %w", errCoord)
 		}
 		if errCoord != nil {
 			coord = state.NewCoordinatorEmpty(stateJSONPath)
@@ -300,16 +309,16 @@ func buildWorkflowRunner(dir string, mcpURL string, logWriter io.Writer, session
 	pmPath := filepath.Join(dir, ".sgai", "PROJECT_MANAGEMENT.md")
 	retrospectivesBaseDir := filepath.Join(dir, ".sgai", "retrospectives")
 
-	resuming := canResumeWorkflow(wfState)
+	resuming := canResumeWorkflow(&wfState)
 
 	retroDir, resuming := prepareRetrospectiveDir(resuming, dir, retrospectivesBaseDir, pmPath, stateJSONPath, goalPath)
 	if retroDir == "" {
-		return nil, func() {}, false
+		return nil, func() {}, errors.New("prepare retrospective directory")
 	}
 
 	retroStdoutLog, retroStderrLog, errRetroLogs := openRetrospectiveLogs(retroDir)
 	if errRetroLogs != nil {
-		log.Fatalln("failed to open retrospective logs:", errRetroLogs)
+		return nil, nil, fmt.Errorf("open retrospective logs: %w", errRetroLogs)
 	}
 
 	cleanup := func() {
@@ -328,38 +337,43 @@ func buildWorkflowRunner(dir string, mcpURL string, logWriter io.Writer, session
 
 	if !resuming {
 		preservedMode := wfState.InteractionMode
-		freshState := state.Workflow{
-			Status:          state.StatusWorking,
-			Messages:        []state.Message{},
-			VisitCounts:     initVisitCounts(allAgents),
-			InteractionMode: preservedMode,
-		}
+		freshState := freshWorkflowState(allAgents, preservedMode)
 		if errUpdate := coord.UpdateState(func(wf *state.Workflow) {
 			*wf = freshState
 		}); errUpdate != nil {
 			log.Println("failed to initialize state.json:", errUpdate)
 			cleanup()
-			return nil, func() {}, false
+			return nil, func() {}, fmt.Errorf("initialize state.json: %w", errUpdate)
 		}
 		wfState = coord.State()
 	}
 
 	retroLogs := retroLogWriters{stdout: retroStdoutLog, stderr: retroStderrLog}
 	runner := &workflowRunner{
-		dir:            dir,
-		goalPath:       goalPath,
-		coord:          coord,
-		metadata:       metadata,
-		flowDag:        flowDag,
-		wfState:        wfState,
-		retroDir:       retroDir,
-		paddedsgai:     paddedsgai,
-		longestNameLen: longestNameLen,
-		mcpURL:         mcpURL,
-		logWriter:      logWriter,
-		retroLogs:      retroLogs,
+		dir:              dir,
+		goalPath:         goalPath,
+		coord:            coord,
+		metadata:         metadata,
+		flowDag:          flowDag,
+		wfState:          wfState,
+		retroDir:         retroDir,
+		paddedsgai:       paddedsgai,
+		longestNameLen:   longestNameLen,
+		mcpURL:           mcpURL,
+		logWriter:        logWriter,
+		retroLogs:        retroLogs,
+		iterationCounter: 0,
+		previousAgent:    "",
 	}
-	return runner, cleanup, true
+	return runner, cleanup, nil
+}
+
+func freshWorkflowState(allAgents []string, preservedMode string) state.Workflow {
+	wf := state.NewWorkflow()
+	wf.Status = state.StatusWorking
+	wf.VisitCounts = initVisitCounts(allAgents)
+	wf.InteractionMode = preservedMode
+	return wf
 }
 
 func buildAllAgents(dagAgents []string) []string {
@@ -418,8 +432,12 @@ func resolveRetrospectiveDir(resuming bool, dir, retrospectivesBaseDir, pmPath, 
 		return retroDir, nil
 	}
 
-	retroDir := filepath.Join(retrospectivesBaseDir, generateRetrospectiveDirName())
-	if errMkdir := os.MkdirAll(retroDir, 0755); errMkdir != nil {
+	retroName, errName := generateRetrospectiveDirName()
+	if errName != nil {
+		return "", fmt.Errorf("generate retrospective directory name: %w", errName)
+	}
+	retroDir := filepath.Join(retrospectivesBaseDir, retroName)
+	if errMkdir := os.MkdirAll(retroDir, 0o755); errMkdir != nil {
 		return "", fmt.Errorf("failed to create retrospective directory: %w", errMkdir)
 	}
 
