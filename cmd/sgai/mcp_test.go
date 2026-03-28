@@ -562,7 +562,7 @@ func TestParseAgentIdentityHeader(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r, _ := http.NewRequest(http.MethodGet, "/test", nil)
 			if tt.header != "" {
-				r.Header.Set("X-Sgai-Agent-Identity", tt.header)
+				r.Header.Set(agentIdentityHeader, tt.header)
 			}
 			result := parseAgentIdentityHeader(r)
 			assert.Equal(t, tt.expected, result)
@@ -1566,7 +1566,7 @@ func TestBuildMCPServerExposesCoordinatorOnlyToolsForCoordinator(t *testing.T) {
 	coord, errCoord := state.NewCoordinatorWith(stateFile, state.Workflow{})
 	require.NoError(t, errCoord)
 	r, _ := http.NewRequest("GET", "/", nil)
-	r.Header.Set("X-Sgai-Agent-Identity", "coordinator|")
+	r.Header.Set(agentIdentityHeader, "coordinator|")
 	cs := connectInternalMCPClient(t, r, coord, []string{"builder", "coordinator"})
 	result, errList := cs.ListTools(context.Background(), &mcp.ListToolsParams{})
 	require.NoError(t, errList)
