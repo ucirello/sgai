@@ -310,7 +310,7 @@ func startMCPHTTPServer(workingDir string, coord *state.Coordinator, dagAgents [
 }
 
 func parseAgentIdentityHeader(r *http.Request) string {
-	identity := r.Header.Get("X-Sgai-Agent-Identity")
+	identity := r.Header.Get(agentIdentityHeader)
 	if identity == "" {
 		return ""
 	}

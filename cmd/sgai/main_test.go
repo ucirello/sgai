@@ -2710,23 +2710,40 @@ func TestBuildAgentEnv(t *testing.T) {
 		mcpURL: "http://127.0.0.1:9999/mcp",
 	}
 
-	env := buildAgentEnv(cfg, "")
-	envMap := make(map[string]string)
-	for _, e := range env {
-		if len(e) > 0 {
-			for i := 0; i < len(e); i++ {
-				if e[i] == '=' {
-					envMap[e[:i]] = e[i+1:]
-					break
-				}
-			}
-		}
-	}
+	env, errBuildAgentEnv := buildAgentEnv(cfg, "")
+	require.NoError(t, errBuildAgentEnv)
+	envMap := envEntriesToMap(env)
 
 	assert.Equal(t, filepath.Join("/tmp/test-workspace", ".sgai"), envMap["OPENCODE_CONFIG_DIR"])
+	assert.NotEmpty(t, envMap["SGAI_BIN_PATH"])
 	assert.Equal(t, "http://127.0.0.1:9999/mcp", envMap["SGAI_MCP_URL"])
 	assert.NotContains(t, envMap, "SGAI_SHOULD_BE_FILTERED")
 	assert.Equal(t, "test-agent", envMap["SGAI_AGENT_IDENTITY"])
+}
+
+func TestBuildAgentEnvUsesCurrentExecutableForSGAIBinPath(t *testing.T) {
+	fakeBinDir := t.TempDir()
+	fakeSGAIPath := filepath.Join(fakeBinDir, "sgai")
+	require.NoError(t, os.WriteFile(fakeSGAIPath, []byte("#!/bin/sh\nexit 0\n"), 0755))
+
+	t.Setenv("PATH", fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("SGAI_BIN_PATH", "/tmp/should-not-leak")
+
+	executablePath, errExecutable := os.Executable()
+	require.NoError(t, errExecutable)
+
+	cfg := multiModelConfig{
+		agent:  "test-agent",
+		dir:    "/tmp/test-workspace",
+		mcpURL: "http://127.0.0.1:9999/mcp",
+	}
+
+	env, errBuildAgentEnv := buildAgentEnv(cfg, "")
+	require.NoError(t, errBuildAgentEnv)
+	envMap := envEntriesToMap(env)
+
+	assert.Equal(t, executablePath, envMap["SGAI_BIN_PATH"])
+	assert.NotEqual(t, fakeSGAIPath, envMap["SGAI_BIN_PATH"])
 }
 
 func TestBuildAgentEnvWithModel(t *testing.T) {
@@ -2735,19 +2752,23 @@ func TestBuildAgentEnvWithModel(t *testing.T) {
 		dir:   "/tmp/test-workspace",
 	}
 
-	env := buildAgentEnv(cfg, "anthropic/claude-opus-4-6 (max)")
-
-	identityValues := make(map[string]string)
-	for _, e := range env {
-		for i := 0; i < len(e); i++ {
-			if e[i] == '=' {
-				identityValues[e[:i]] = e[i+1:]
-				break
-			}
-		}
-	}
+	env, errBuildAgentEnv := buildAgentEnv(cfg, "anthropic/claude-opus-4-6 (max)")
+	require.NoError(t, errBuildAgentEnv)
+	identityValues := envEntriesToMap(env)
 
 	assert.Equal(t, "test-agent|anthropic/claude-opus-4-6|max", identityValues["SGAI_AGENT_IDENTITY"])
+}
+
+func envEntriesToMap(env []string) map[string]string {
+	values := make(map[string]string, len(env))
+	for _, entry := range env {
+		key, value, found := strings.Cut(entry, "=")
+		if !found {
+			continue
+		}
+		values[key] = value
+	}
+	return values
 }
 
 func TestExecuteAgentProcessPreservesVariantInAgentIdentity(t *testing.T) {

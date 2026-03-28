@@ -5150,13 +5150,13 @@ func TestParseAgentIdentityHeaderNewBatch(t *testing.T) {
 	})
 	t.Run("agentWithPipe", func(t *testing.T) {
 		r := httptest.NewRequest("GET", "/", nil)
-		r.Header.Set("X-Sgai-Agent-Identity", "builder|extra")
+		r.Header.Set(agentIdentityHeader, "builder|extra")
 		result := parseAgentIdentityHeader(r)
 		assert.Equal(t, "builder", result)
 	})
 	t.Run("emptyBeforePipe", func(t *testing.T) {
 		r := httptest.NewRequest("GET", "/", nil)
-		r.Header.Set("X-Sgai-Agent-Identity", "|extra")
+		r.Header.Set(agentIdentityHeader, "|extra")
 		result := parseAgentIdentityHeader(r)
 		assert.Empty(t, result)
 	})

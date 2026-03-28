@@ -49,9 +49,10 @@ func main() {
 		subcommand = os.Args[1]
 	}
 
-	if subcommand != "help" && subcommand != "-h" && subcommand != "--help" {
+	if requiresOpencode(subcommand) {
 		if _, err := exec.LookPath("opencode"); err != nil {
-			log.Fatalln("opencode is required but not found in PATH")
+			log.Println("opencode is required but not found in PATH")
+			os.Exit(1)
 		}
 	}
 
@@ -62,9 +63,24 @@ func main() {
 	case "serve":
 		cmdServe(os.Args[2:])
 		return
+	case "internal-mcp":
+		if errRun := runInternalMCP(context.Background(), os.Args[2:], os.Stdin, os.Stdout); errRun != nil {
+			log.Println(errRun)
+			os.Exit(1)
+		}
+		return
 	default:
 		cmdServe(os.Args[1:])
 		return
+	}
+}
+
+func requiresOpencode(subcommand string) bool {
+	switch subcommand {
+	case "help", "-h", "--help", "internal-mcp":
+		return false
+	default:
+		return true
 	}
 }
 
@@ -540,17 +556,23 @@ func opencodeEnv(overrides ...string) []string {
 	return append(env, overrides...)
 }
 
-func buildAgentEnv(cfg multiModelConfig, modelSpec string) []string {
+func buildAgentEnv(cfg multiModelConfig, modelSpec string) ([]string, error) {
 	agentIdentity := cfg.agent
 	if modelSpec != "" {
 		model, variant := parseModelAndVariant(modelSpec)
 		agentIdentity = cfg.agent + "|" + model + "|" + variant
 	}
 
+	executablePath, errExecutable := os.Executable()
+	if errExecutable != nil {
+		return nil, fmt.Errorf("find current executable: %w", errExecutable)
+	}
+
 	return opencodeEnv(
 		"OPENCODE_CONFIG_DIR="+filepath.Join(cfg.dir, ".sgai"),
+		"SGAI_BIN_PATH="+executablePath,
 		"SGAI_MCP_URL="+cfg.mcpURL,
-		"SGAI_AGENT_IDENTITY="+agentIdentity)
+		"SGAI_AGENT_IDENTITY="+agentIdentity), nil
 }
 
 func executeAgentProcess(ctx context.Context, cfg multiModelConfig, agentArgs []string, agentMsg, prefix string, outputCapture *ringWriter, wfState state.Workflow) (state.Workflow, string, *state.Workflow) {
@@ -560,13 +582,26 @@ func executeAgentProcess(ctx context.Context, cfg multiModelConfig, agentArgs []
 	jsonWriter := &jsonPrettyWriter{prefix: prefix + " ", w: stdoutOut, coord: cfg.coord, currentAgent: cfg.agent, startTime: time.Now()}
 
 	cfg.coord.ResetAgentDoneWatchdog()
+	agentEnv, errBuildAgentEnv := buildAgentEnv(cfg, extractModelFromArgs(agentArgs))
+	if errBuildAgentEnv != nil {
+		fmt.Fprintln(os.Stderr, "failed to prepare agent environment:", errBuildAgentEnv)
+		if errUpdate := cfg.coord.UpdateState(func(wf *state.Workflow) {
+			wf.Status = state.StatusAgentDone
+		}); errUpdate != nil {
+			log.Fatalln("failed to save state:", errUpdate)
+		}
+		fmt.Fprintln(os.Stderr, "agent", cfg.agent, "marked as agent-done due to setup failure")
+		result := cfg.coord.State()
+		return state.Workflow{}, "", &result
+	}
+
 	agentCtx, agentCancel := context.WithCancel(ctx)
 	cfg.coord.SetAgentCancel(agentCancel)
 
 	cmd := exec.CommandContext(agentCtx, "opencode", agentArgs...)
 	cmd.Dir = cfg.dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = buildAgentEnv(cfg, extractModelFromArgs(agentArgs))
+	cmd.Env = agentEnv
 	cmd.Stdin = strings.NewReader(agentMsg)
 	cmd.Stderr = io.MultiWriter(stderrWriter, outputCapture)
 	cmd.Stdout = io.MultiWriter(jsonWriter, outputCapture)
