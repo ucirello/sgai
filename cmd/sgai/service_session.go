@@ -18,7 +18,7 @@ var (
 	errSessionResetWhileRunning = errors.New("cannot reset while session is running")
 )
 
-type startSessionResult2 struct {
+type sessionStartResult struct {
 	Name           string
 	Status         string
 	Running        bool
@@ -26,15 +26,15 @@ type startSessionResult2 struct {
 	AlreadyRunning bool
 }
 
-func (s *Server) startSessionService(workspacePath string, auto bool) (startSessionResult2, error) {
+func (s *Server) startSessionService(workspacePath string, auto bool) (sessionStartResult, error) {
 	if s.classifyWorkspaceCached(workspacePath) == workspaceRoot {
-		return startSessionResult2{}, errRootWorkspaceCannotStart
+		return sessionStartResult{}, errRootWorkspaceCannotStart
 	}
 
 	name := filepath.Base(workspacePath)
 
 	if s.sessionRunning(workspacePath) {
-		return startSessionResult2{
+		return sessionStartResult{
 			Name:           name,
 			Status:         "running",
 			Running:        true,
@@ -44,7 +44,7 @@ func (s *Server) startSessionService(workspacePath string, auto bool) (startSess
 	}
 
 	if errValidateStart := validateStartSessionWorkspace(workspacePath); errValidateStart != nil {
-		return startSessionResult2{}, errValidateStart
+		return sessionStartResult{}, errValidateStart
 	}
 
 	coord := s.workspaceCoordinator(workspacePath)
@@ -63,13 +63,13 @@ func (s *Server) startSessionService(workspacePath string, auto bool) (startSess
 	if errUpdate := coord.UpdateState(func(wf *state.Workflow) {
 		wf.InteractionMode = interactionMode
 	}); errUpdate != nil {
-		return startSessionResult2{}, fmt.Errorf("failed to save workflow state: %w", errUpdate)
+		return sessionStartResult{}, fmt.Errorf("failed to save workflow state: %w", errUpdate)
 	}
 
 	result := s.startSession(workspacePath)
 
 	if result.alreadyRunning {
-		return startSessionResult2{
+		return sessionStartResult{
 			Name:           name,
 			Status:         "running",
 			Running:        true,
@@ -79,16 +79,17 @@ func (s *Server) startSessionService(workspacePath string, auto bool) (startSess
 	}
 
 	if result.startError != nil {
-		return startSessionResult2{}, result.startError
+		return sessionStartResult{}, result.startError
 	}
 
 	s.notifyStateChange()
 
-	return startSessionResult2{
-		Name:    name,
-		Status:  "running",
-		Running: true,
-		Message: "session started",
+	return sessionStartResult{
+		Name:           name,
+		Status:         "running",
+		Running:        true,
+		Message:        "session started",
+		AlreadyRunning: false,
 	}, nil
 }
 
@@ -112,7 +113,7 @@ func validateStartSessionWorkspace(workspacePath string) error {
 		if os.IsNotExist(errRead) {
 			return fmt.Errorf("GOAL.md not found in %s", workspacePath)
 		}
-		return errRead
+		return fmt.Errorf("reading GOAL.md: %w", errRead)
 	}
 
 	metadata, errParse := parseYAMLFrontmatter(goalContent)
@@ -140,7 +141,7 @@ func validateStartSessionWorkspace(workspacePath string) error {
 		return fmt.Errorf("failed to parse flow: %w", errFlow)
 	}
 
-	if retrospectiveEnabled(metadata) {
+	if retrospectiveEnabled(metadata.Retrospective) {
 		flowDag.injectRetrospectiveEdge()
 	}
 
@@ -231,7 +232,7 @@ type respondResult struct {
 	Message string
 }
 
-func (s *Server) respondService(workspacePath, promptToken string, answer string, selectedChoices []string) (respondResult, error) {
+func (s *Server) respondService(workspacePath, promptToken, answer string, selectedChoices []string) (respondResult, error) {
 	req := apiRespondRequest{
 		PromptToken:     promptToken,
 		Answer:          answer,
@@ -246,7 +247,7 @@ func (s *Server) respondService(workspacePath, promptToken string, answer string
 	}
 
 	log.Println("respond-service:", wsName, "rejected, no session coordinator found")
-	return respondResult{}, fmt.Errorf("no pending question")
+	return respondResult{}, errors.New("no pending question")
 }
 
 func (s *Server) respondViaCoordinatorService(coord *state.Coordinator, req apiRespondRequest) (respondResult, error) {
@@ -254,16 +255,16 @@ func (s *Server) respondViaCoordinatorService(coord *state.Coordinator, req apiR
 
 	if !wfState.NeedsHumanInput() {
 		log.Println("respond-service: coordinator path rejected, no pending question, status:", wfState.Status)
-		return respondResult{}, fmt.Errorf("no pending question")
+		return respondResult{}, errors.New("no pending question")
 	}
 
 	responseText := buildAPIResponseText(req)
 	if responseText == "" {
-		return respondResult{}, fmt.Errorf("response cannot be empty")
+		return respondResult{}, errors.New("response cannot be empty")
 	}
 
 	if !coord.RespondIfCurrent(req.PromptToken, responseText) {
-		return respondResult{}, fmt.Errorf("question not available")
+		return respondResult{}, errors.New("question not available")
 	}
 
 	if wfState.MultiChoiceQuestion != nil && wfState.MultiChoiceQuestion.IsWorkGate {
@@ -290,7 +291,7 @@ type steerResult struct {
 
 func (s *Server) steerService(workspacePath, message string) (steerResult, error) {
 	if strings.TrimSpace(message) == "" {
-		return steerResult{}, fmt.Errorf("message cannot be empty")
+		return steerResult{}, errors.New("message cannot be empty")
 	}
 
 	coord := s.workspaceCoordinator(workspacePath)
@@ -303,6 +304,9 @@ func (s *Server) steerService(workspacePath, message string) (steerResult, error
 			FromAgent: "Human Partner",
 			ToAgent:   "coordinator",
 			Body:      steerBody,
+			Read:      false,
+			ReadAt:    "",
+			ReadBy:    "",
 			CreatedAt: steerCreatedAt,
 		}
 		insertIdx := findSteerInsertPosition(wf.Messages)

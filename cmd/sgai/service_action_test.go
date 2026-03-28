@@ -13,13 +13,13 @@ import (
 func TestActionRunServicePromptAction(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "prompt-action-ws")
-	writeActionTestConfig(t, wsDir, projectConfig{
-		Actions: []actionConfig{{
-			Name:   "Summarize",
-			Model:  "openai/gpt-5.4",
-			Prompt: "hello {{ .Name }}",
-		}},
-	})
+	writeActionTestConfig(t, wsDir, projectConfigWith(func(config *projectConfig) {
+		config.Actions = []actionConfig{actionConfigWith(func(action *actionConfig) {
+			action.Name = "Summarize"
+			action.Model = "openai/gpt-5.4"
+			action.Prompt = "hello {{ .Name }}"
+		})}
+	}))
 
 	var gotWorkspace string
 	var gotPrompt string
@@ -28,7 +28,7 @@ func TestActionRunServicePromptAction(t *testing.T) {
 		gotWorkspace = workspacePath
 		gotPrompt = prompt
 		gotModel = model
-		return adhocStartResult{Running: true, Message: "started"}
+		return adhocStartRunning("", "started")
 	}
 
 	result := server.actionRunService(wsDir, "Summarize", map[string]string{"Name": "Ada"})
@@ -42,12 +42,12 @@ func TestActionRunServicePromptAction(t *testing.T) {
 func TestActionRunServiceScriptAction(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "script-action-ws")
-	writeActionTestConfig(t, wsDir, projectConfig{
-		Actions: []actionConfig{{
-			Name:   "Print",
-			Script: `printf "%s" "{{ .Message }}"`,
-		}},
-	})
+	writeActionTestConfig(t, wsDir, projectConfigWith(func(config *projectConfig) {
+		config.Actions = []actionConfig{actionConfigWith(func(action *actionConfig) {
+			action.Name = "Print"
+			action.Script = `printf "%s" "{{ .Message }}"`
+		})}
+	}))
 
 	var gotWorkspace string
 	var gotName string
@@ -56,7 +56,7 @@ func TestActionRunServiceScriptAction(t *testing.T) {
 		gotWorkspace = workspacePath
 		gotName = actionName
 		gotArgv = append([]string(nil), argv...)
-		return adhocStartResult{Running: true, Message: "started"}
+		return adhocStartRunning("", "started")
 	}
 
 	result := server.actionRunService(wsDir, "Print", map[string]string{"Message": "hello world"})
@@ -70,17 +70,17 @@ func TestActionRunServiceScriptAction(t *testing.T) {
 func TestActionRunServiceScriptActionPreservesBackslashes(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "script-action-backslashes-ws")
-	writeActionTestConfig(t, wsDir, projectConfig{
-		Actions: []actionConfig{{
-			Name:   "Print",
-			Script: `printf "%s" "{{ .Message }}"`,
-		}},
-	})
+	writeActionTestConfig(t, wsDir, projectConfigWith(func(config *projectConfig) {
+		config.Actions = []actionConfig{actionConfigWith(func(action *actionConfig) {
+			action.Name = "Print"
+			action.Script = `printf "%s" "{{ .Message }}"`
+		})}
+	}))
 
 	var gotArgv []string
 	server.scriptActionRunner = func(_, _ string, argv []string) adhocStartResult {
 		gotArgv = append([]string(nil), argv...)
-		return adhocStartResult{Running: true, Message: "started"}
+		return adhocStartRunning("", "started")
 	}
 
 	result := server.actionRunService(wsDir, "Print", map[string]string{"Message": `C:\tmp\logs`})
@@ -91,14 +91,14 @@ func TestActionRunServiceScriptActionPreservesBackslashes(t *testing.T) {
 func TestActionRunServiceRejectsInvalidActionAtRunTime(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "invalid-action-ws")
-	writeActionTestConfig(t, wsDir, projectConfig{
-		Actions: []actionConfig{{
-			Name:   "Broken",
-			Model:  "openai/gpt-5.4",
-			Prompt: "hello",
-			Script: "printf test",
-		}},
-	})
+	writeActionTestConfig(t, wsDir, projectConfigWith(func(config *projectConfig) {
+		config.Actions = []actionConfig{actionConfigWith(func(action *actionConfig) {
+			action.Name = "Broken"
+			action.Model = "openai/gpt-5.4"
+			action.Prompt = "hello"
+			action.Script = "printf test"
+		})}
+	}))
 
 	result := server.actionRunService(wsDir, "Broken", nil)
 	require.Error(t, result.Error)
@@ -108,19 +108,19 @@ func TestActionRunServiceRejectsInvalidActionAtRunTime(t *testing.T) {
 func TestActionRunServiceRejectsDuplicateActionNames(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "duplicate-action-ws")
-	writeActionTestConfig(t, wsDir, projectConfig{
-		Actions: []actionConfig{
-			{
-				Name:   "Repeat",
-				Model:  "openai/gpt-5.4",
-				Prompt: "hello",
-			},
-			{
-				Name:   " Repeat ",
-				Script: `printf "%s" "hello"`,
-			},
-		},
-	})
+	writeActionTestConfig(t, wsDir, projectConfigWith(func(config *projectConfig) {
+		config.Actions = []actionConfig{
+			actionConfigWith(func(action *actionConfig) {
+				action.Name = "Repeat"
+				action.Model = "openai/gpt-5.4"
+				action.Prompt = "hello"
+			}),
+			actionConfigWith(func(action *actionConfig) {
+				action.Name = " Repeat "
+				action.Script = `printf "%s" "hello"`
+			}),
+		}
+	}))
 
 	result := server.actionRunService(wsDir, "Repeat", nil)
 	require.Error(t, result.Error)
@@ -140,13 +140,13 @@ func TestActionRunServicePropagatesConfigLoadErrors(t *testing.T) {
 func TestActionRunServiceRejectsMissingVariables(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "missing-vars-ws")
-	writeActionTestConfig(t, wsDir, projectConfig{
-		Actions: []actionConfig{{
-			Name:   "Summarize",
-			Model:  "openai/gpt-5.4",
-			Prompt: "hello {{ .Name }}",
-		}},
-	})
+	writeActionTestConfig(t, wsDir, projectConfigWith(func(config *projectConfig) {
+		config.Actions = []actionConfig{actionConfigWith(func(action *actionConfig) {
+			action.Name = "Summarize"
+			action.Model = "openai/gpt-5.4"
+			action.Prompt = "hello {{ .Name }}"
+		})}
+	}))
 
 	result := server.actionRunService(wsDir, "Summarize", nil)
 	require.Error(t, result.Error)
@@ -156,12 +156,12 @@ func TestActionRunServiceRejectsMissingVariables(t *testing.T) {
 func TestActionRunServiceRejectsShellOperators(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "shell-operator-action-ws")
-	writeActionTestConfig(t, wsDir, projectConfig{
-		Actions: []actionConfig{{
-			Name:   "Broken",
-			Script: `printf "%s" hello | cat`,
-		}},
-	})
+	writeActionTestConfig(t, wsDir, projectConfigWith(func(config *projectConfig) {
+		config.Actions = []actionConfig{actionConfigWith(func(action *actionConfig) {
+			action.Name = "Broken"
+			action.Script = `printf "%s" hello | cat`
+		})}
+	}))
 
 	result := server.actionRunService(wsDir, "Broken", nil)
 	require.Error(t, result.Error)
@@ -172,17 +172,17 @@ func TestActionRunServiceRejectsShellOperators(t *testing.T) {
 func TestActionRunServiceRejectsInvalidRenderedCommand(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "rendered-shell-operator-action-ws")
-	writeActionTestConfig(t, wsDir, projectConfig{
-		Actions: []actionConfig{{
-			Name:   "Print",
-			Script: `printf "%s" {{ .Message }}`,
-		}},
-	})
+	writeActionTestConfig(t, wsDir, projectConfigWith(func(config *projectConfig) {
+		config.Actions = []actionConfig{actionConfigWith(func(action *actionConfig) {
+			action.Name = "Print"
+			action.Script = `printf "%s" {{ .Message }}`
+		})}
+	}))
 
 	ran := false
 	server.scriptActionRunner = func(_, _ string, _ []string) adhocStartResult {
 		ran = true
-		return adhocStartResult{Running: true, Message: "started"}
+		return adhocStartRunning("", "started")
 	}
 
 	result := server.actionRunService(wsDir, "Print", map[string]string{"Message": "hello|cat"})

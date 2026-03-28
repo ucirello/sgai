@@ -19,6 +19,7 @@ func TestComposeFlowTemplate(t *testing.T) {
 			name:         "coordinatorAgent",
 			currentAgent: "coordinator",
 			validate: func(t *testing.T, result string) {
+				t.Helper()
 				assert.Contains(t, result, flowSectionPreamble)
 				assert.Contains(t, result, `skill({"name":"set-workflow-state"})`)
 				assert.Contains(t, result, flowSectionHumanCommDirect)
@@ -39,6 +40,7 @@ func TestComposeFlowTemplate(t *testing.T) {
 			name:         "nonCoordinatorAgent",
 			currentAgent: "backend-developer",
 			validate: func(t *testing.T, result string) {
+				t.Helper()
 				assert.Contains(t, result, flowSectionPreamble)
 				assert.Contains(t, result, flowSectionHumanCommNonCoordinator)
 				assert.Contains(t, result, flowSectionMessaging)
@@ -75,19 +77,23 @@ func TestParseFlow(t *testing.T) {
 		validate    func(*testing.T, *dag)
 	}{
 		{
-			name:     "emptyFlow",
-			flowSpec: "",
-			wantErr:  false,
+			name:        "emptyFlow",
+			flowSpec:    "",
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, d *dag) {
+				t.Helper()
 				assert.Contains(t, d.Nodes, "coordinator")
 				assert.Contains(t, d.Nodes, "general-purpose")
 			},
 		},
 		{
-			name:     "simpleFlow",
-			flowSpec: `"agent1" -> "agent2"`,
-			wantErr:  false,
+			name:        "simpleFlow",
+			flowSpec:    `"agent1" -> "agent2"`,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, d *dag) {
+				t.Helper()
 				assert.Contains(t, d.Nodes, "coordinator")
 				assert.Contains(t, d.Nodes, "agent1")
 				assert.Contains(t, d.Nodes, "agent2")
@@ -95,10 +101,12 @@ func TestParseFlow(t *testing.T) {
 			},
 		},
 		{
-			name:     "digraphFlow",
-			flowSpec: `digraph G { "a" -> "b" }`,
-			wantErr:  false,
+			name:        "digraphFlow",
+			flowSpec:    `digraph G { "a" -> "b" }`,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, d *dag) {
+				t.Helper()
 				assert.Contains(t, d.Nodes, "coordinator")
 				assert.Contains(t, d.Nodes, "a")
 				assert.Contains(t, d.Nodes, "b")
@@ -109,13 +117,14 @@ func TestParseFlow(t *testing.T) {
 			flowSpec:    `digraph G { "a" -> }`,
 			wantErr:     true,
 			errContains: "failed to",
+			validate:    nil,
 		},
 	}
 
 	t.Run("fileFlowSpec", func(t *testing.T) {
 		dir := t.TempDir()
 		flowContent := `digraph G { "x" -> "y" }`
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "flow.dot"), []byte(flowContent), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "flow.dot"), []byte(flowContent), 0o644))
 		result, err := parseFlow("@flow.dot", dir)
 		require.NoError(t, err)
 		assert.Contains(t, result.Nodes, "x")
@@ -149,7 +158,8 @@ func TestParseFlow(t *testing.T) {
 }
 
 func TestDagEnsureNode(t *testing.T) {
-	d := &dag{Nodes: make(map[string]*dagNode)}
+	d := testDag()
+	d.Nodes = make(map[string]*dagNode)
 
 	node1 := d.ensureNode("agent1")
 	assert.NotNil(t, node1)
@@ -170,6 +180,7 @@ func TestDagGetSuccessors(t *testing.T) {
 			"agent1": {Name: "agent1", Successors: []string{"agent2", "agent3"}},
 			"agent2": {Name: "agent2", Successors: []string{}},
 		},
+		EntryNodes: nil,
 	}
 
 	successors1 := d.getSuccessors("agent1")
@@ -188,6 +199,7 @@ func TestDagGetPredecessors(t *testing.T) {
 			"agent1": {Name: "agent1", Predecessors: []string{}},
 			"agent2": {Name: "agent2", Predecessors: []string{"agent1"}},
 		},
+		EntryNodes: nil,
 	}
 
 	pred1 := d.getPredecessors("agent1")
@@ -206,6 +218,7 @@ func TestDagIsTerminal(t *testing.T) {
 			"agent1": {Name: "agent1", Successors: []string{"agent2"}},
 			"agent2": {Name: "agent2", Successors: []string{}},
 		},
+		EntryNodes: nil,
 	}
 
 	assert.False(t, d.isTerminal("agent1"))
@@ -220,6 +233,7 @@ func TestDagAllAgents(t *testing.T) {
 			"agent1":      {Name: "agent1"},
 			"agent2":      {Name: "agent2"},
 		},
+		EntryNodes: nil,
 	}
 
 	agents := d.allAgents()
@@ -233,6 +247,7 @@ func TestDetermineNextAgent(t *testing.T) {
 			"agent1": {Name: "agent1", Successors: []string{"agent2"}},
 			"agent2": {Name: "agent2", Successors: []string{}},
 		},
+		EntryNodes: nil,
 	}
 
 	next := determineNextAgent(d, "agent1")
@@ -248,6 +263,7 @@ func TestDagToDOT(t *testing.T) {
 			"agent1": {Name: "agent1", Successors: []string{"agent2"}},
 			"agent2": {Name: "agent2", Successors: []string{}},
 		},
+		EntryNodes: nil,
 	}
 
 	dot := d.toDOT()
@@ -274,6 +290,7 @@ func TestDagInjectCoordinatorEdges(t *testing.T) {
 				}
 			},
 			validate: func(t *testing.T, d *dag) {
+				t.Helper()
 				assert.Equal(t, []string{"coordinator"}, d.EntryNodes)
 			},
 		},
@@ -289,6 +306,7 @@ func TestDagInjectCoordinatorEdges(t *testing.T) {
 				}
 			},
 			validate: func(t *testing.T, d *dag) {
+				t.Helper()
 				assert.Equal(t, []string{"coordinator"}, d.EntryNodes)
 				assert.Contains(t, d.Nodes, "coordinator")
 				assert.Contains(t, d.Nodes["coordinator"].Successors, "agent1")
@@ -321,9 +339,11 @@ func TestDagDetectCycles(t *testing.T) {
 						"agent1": {Name: "agent1", Successors: []string{"agent2"}},
 						"agent2": {Name: "agent2", Successors: []string{}},
 					},
+					EntryNodes: nil,
 				}
 			},
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
 		},
 		{
 			name: "hasCycle",
@@ -333,6 +353,7 @@ func TestDagDetectCycles(t *testing.T) {
 						"agent1": {Name: "agent1", Successors: []string{"agent2"}},
 						"agent2": {Name: "agent2", Successors: []string{"agent1"}},
 					},
+					EntryNodes: nil,
 				}
 			},
 			wantErr:     true,
@@ -416,15 +437,16 @@ func TestBuildMultiModelSectionYouMarker(t *testing.T) {
 func TestBuildFlowMessageWithAgentDescription(t *testing.T) {
 	dir := t.TempDir()
 	agentDir := filepath.Join(dir, ".sgai", "agent")
-	require.NoError(t, os.MkdirAll(agentDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "coordinator.md"), []byte("---\ndescription: Orchestrates the workflow\n---\n# Coordinator"), 0644))
-	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "worker.md"), []byte("---\ndescription: Does the work\nsnippets:\n  - go\n  - python\n---\n# Worker"), 0644))
+	require.NoError(t, os.MkdirAll(agentDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "coordinator.md"), []byte("---\ndescription: Orchestrates the workflow\n---\n# Coordinator"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "worker.md"), []byte("---\ndescription: Does the work\nsnippets:\n  - go\n  - python\n---\n# Worker"), 0o644))
 
 	d := &dag{
 		Nodes: map[string]*dagNode{
 			"coordinator": {Name: "coordinator", Successors: []string{"worker"}, Predecessors: []string{}},
 			"worker":      {Name: "worker", Successors: []string{}, Predecessors: []string{"coordinator"}},
 		},
+		EntryNodes: nil,
 	}
 	msg := buildFlowMessage(d, "worker", map[string]int{"coordinator": 1, "worker": 1}, dir, map[string]string{})
 	assert.Contains(t, msg, "Orchestrates the workflow")
@@ -437,15 +459,16 @@ func TestBuildFlowMessageWithAgentDescription(t *testing.T) {
 func TestBuildFlowMessageAgentNoDescription(t *testing.T) {
 	dir := t.TempDir()
 	agentDir := filepath.Join(dir, ".sgai", "agent")
-	require.NoError(t, os.MkdirAll(agentDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "coordinator.md"), []byte("---\ndescription: Orchestrates the workflow\n---\n# Coordinator"), 0644))
-	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "worker.md"), []byte("---\ntitle: Worker Agent\n---\n# Worker with no description field"), 0644))
+	require.NoError(t, os.MkdirAll(agentDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "coordinator.md"), []byte("---\ndescription: Orchestrates the workflow\n---\n# Coordinator"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "worker.md"), []byte("---\ntitle: Worker Agent\n---\n# Worker with no description field"), 0o644))
 
 	d := &dag{
 		Nodes: map[string]*dagNode{
 			"coordinator": {Name: "coordinator", Successors: []string{"worker"}, Predecessors: []string{}},
 			"worker":      {Name: "worker", Successors: []string{}, Predecessors: []string{"coordinator"}},
 		},
+		EntryNodes: nil,
 	}
 	msg := buildFlowMessage(d, "worker", map[string]int{"coordinator": 1, "worker": 0}, dir, map[string]string{})
 	assert.Contains(t, msg, "Orchestrates the workflow")
@@ -468,13 +491,13 @@ func TestInjectCoordinatorEdgesWithCoordinatorAsEntry(t *testing.T) {
 
 func TestParseFlowCycleDetection(t *testing.T) {
 	_, err := parseFlow("coordinator -> agent1\nagent1 -> coordinator", t.TempDir())
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cycle")
 }
 
 func TestParseFlowNoEntryNodes(t *testing.T) {
 	_, err := parseFlow("@invalid-nonexistent-file.dot", t.TempDir())
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func isSorted(s []string) bool {
@@ -502,11 +525,13 @@ func TestBuildFlowMessage(t *testing.T) {
 					"coordinator": {Name: "coordinator", Successors: []string{"agent1"}, Predecessors: []string{}},
 					"agent1":      {Name: "agent1", Successors: []string{}, Predecessors: []string{"coordinator"}},
 				},
+				EntryNodes: nil,
 			},
 			currentAgent: "coordinator",
 			visitCounts:  map[string]int{"coordinator": 1, "agent1": 0},
 			alias:        map[string]string{},
 			validate: func(t *testing.T, msg string) {
+				t.Helper()
 				assert.Contains(t, msg, "coordinator")
 				assert.Contains(t, msg, "(none - entry node)")
 				assert.Contains(t, msg, "agent1")
@@ -520,11 +545,13 @@ func TestBuildFlowMessage(t *testing.T) {
 					"coordinator": {Name: "coordinator", Successors: []string{"agent1"}, Predecessors: []string{}},
 					"agent1":      {Name: "agent1", Successors: []string{}, Predecessors: []string{"coordinator"}},
 				},
+				EntryNodes: nil,
 			},
 			currentAgent: "agent1",
 			visitCounts:  map[string]int{"coordinator": 1, "agent1": 1},
 			alias:        map[string]string{},
 			validate: func(t *testing.T, msg string) {
+				t.Helper()
 				assert.Contains(t, msg, "agent1")
 				assert.Contains(t, msg, "coordinator")
 				assert.Contains(t, msg, "(none - terminal node)")
@@ -539,11 +566,13 @@ func TestBuildFlowMessage(t *testing.T) {
 					"agent1":      {Name: "agent1", Successors: []string{"agent2"}, Predecessors: []string{"coordinator"}},
 					"agent2":      {Name: "agent2", Successors: []string{}, Predecessors: []string{"agent1"}},
 				},
+				EntryNodes: nil,
 			},
 			currentAgent: "agent1",
 			visitCounts:  map[string]int{"coordinator": 1, "agent1": 1, "agent2": 0},
 			alias:        map[string]string{},
 			validate: func(t *testing.T, msg string) {
+				t.Helper()
 				assert.Contains(t, msg, "agent1")
 				assert.Contains(t, msg, "coordinator")
 				assert.Contains(t, msg, "agent2")
@@ -557,11 +586,13 @@ func TestBuildFlowMessage(t *testing.T) {
 					"coordinator":  {Name: "coordinator", Successors: []string{"agent1-alias"}, Predecessors: []string{}},
 					"agent1-alias": {Name: "agent1-alias", Successors: []string{}, Predecessors: []string{"coordinator"}},
 				},
+				EntryNodes: nil,
 			},
 			currentAgent: "agent1-alias",
 			visitCounts:  map[string]int{"coordinator": 1, "agent1-alias": 1},
 			alias:        map[string]string{"agent1-alias": "agent1"},
 			validate: func(t *testing.T, msg string) {
+				t.Helper()
 				assert.Contains(t, msg, "agent1-alias")
 				assert.Contains(t, msg, "coordinator")
 			},

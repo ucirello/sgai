@@ -18,7 +18,6 @@ import (
 
 type externalRepositoryForTest struct {
 	Handle        string `json:"handle"`
-	RoutedName    string `json:"routedName"`
 	DirectoryName string `json:"directoryName"`
 	Label         string `json:"label"`
 	Title         string `json:"title"`
@@ -64,12 +63,13 @@ type externalForkResultForTest struct {
 func connectExternalMCPClient(t *testing.T, server *Server, r *http.Request) *mcp.ClientSession {
 	t.Helper()
 
-	mcpServer := buildExternalMCPServer(server, r)
+	mcpServer, errBuild := buildExternalMCPServer(server, r)
+	require.NoError(t, errBuild)
 	ct, st := mcp.NewInMemoryTransports()
 	_, errConnect := mcpServer.Connect(context.Background(), st, nil)
 	require.NoError(t, errConnect)
 
-	client := mcp.NewClient(&mcp.Implementation{Name: "test-client"}, nil)
+	client := mcp.NewClient(newMCPImplementation("test-client"), nil)
 	cs, errClient := client.Connect(context.Background(), ct, nil)
 	require.NoError(t, errClient)
 	t.Cleanup(func() { _ = cs.Close() })
@@ -80,12 +80,16 @@ func connectExternalMCPClient(t *testing.T, server *Server, r *http.Request) *mc
 func callExternalTool(t *testing.T, cs *mcp.ClientSession, name string, args any) *mcp.CallToolResult {
 	t.Helper()
 
-	result, errCall := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
+	params := new(mcp.CallToolParams)
+	params.Name = name
+	params.Arguments = args
+	result, errCall := cs.CallTool(context.Background(), params)
 	require.NoError(t, errCall)
 
 	return result
 }
 
+//nolint:ireturn // Generic test decoder returns the caller-selected structured payload type.
 func decodeExternalStructuredContent[T any](t *testing.T, result *mcp.CallToolResult) T {
 	t.Helper()
 
@@ -109,16 +113,28 @@ func externalToolText(t *testing.T, result *mcp.CallToolResult) string {
 	return ""
 }
 
-func findRepositoryByName(t *testing.T, repositories []externalRepositoryForTest, routedName string) externalRepositoryForTest {
+func findRepositoryByName(t *testing.T, repositories []externalRepositoryForTest, directoryName string) externalRepositoryForTest {
 	t.Helper()
 
-	for _, repository := range repositories {
-		if repository.RoutedName == routedName {
+	for i := range repositories {
+		repository := repositories[i]
+		if repository.DirectoryName == directoryName {
 			return repository
 		}
 	}
-	t.Fatalf("repository %q not found", routedName)
-	return externalRepositoryForTest{}
+	require.FailNowf(t, "repository not found", "repository %q not found", directoryName)
+	var repository externalRepositoryForTest
+	return repository
+}
+
+func decodeExternalStructuredContentMap(t *testing.T, result *mcp.CallToolResult) map[string]any {
+	t.Helper()
+
+	var out map[string]any
+	data, errMarshal := json.Marshal(result.StructuredContent)
+	require.NoError(t, errMarshal)
+	require.NoError(t, json.Unmarshal(data, &out))
+	return out
 }
 
 func addWorkspaceForTest(t *testing.T, rootPath, forkPath string) {
@@ -135,7 +151,7 @@ func TestBuildExternalMCPServerExposesFirstWaveTools(t *testing.T) {
 	req := httptestNewRequest(t, "http://factory.test/mcp/external")
 	cs := connectExternalMCPClient(t, server, req)
 
-	result, errList := cs.ListTools(context.Background(), &mcp.ListToolsParams{})
+	result, errList := cs.ListTools(context.Background(), new(mcp.ListToolsParams))
 	require.NoError(t, errList)
 
 	toolNames := mcpToolNames(result.Tools)
@@ -169,7 +185,7 @@ func TestExternalMCPFactoryInfoReturnsHybridRepositoryIdentity(t *testing.T) {
 
 	req := httptestNewRequest(t, "http://factory.test/mcp/external")
 	cs := connectExternalMCPClient(t, server, req)
-	result := callExternalTool(t, cs, "factory_info", map[string]any{})
+	result := callExternalTool(t, cs, "factory_info", struct{}{})
 	require.False(t, result.IsError)
 
 	info := decodeExternalStructuredContent[externalFactoryInfoForTest](t, result)
@@ -199,6 +215,26 @@ func TestExternalMCPFactoryInfoReturnsHybridRepositoryIdentity(t *testing.T) {
 	assert.Equal(t, rootRepository.Path, forkRepository.RootPath)
 }
 
+func TestExternalMCPFactoryInfoOmitsRoutedNameField(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "solo-dir")
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, "GOAL.md"), []byte("---\ntitle: Solo Title\n---\n# Solo"), 0o644))
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "factory_info", struct{}{})
+	require.False(t, result.IsError)
+
+	payload := decodeExternalStructuredContentMap(t, result)
+	repositories, ok := payload["repositories"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, repositories)
+
+	repository, ok := repositories[0].(map[string]any)
+	require.True(t, ok)
+	assert.NotContains(t, repository, "routedName")
+}
+
 func TestExternalMCPFactoryInfoPreservesForkModeWithoutAttachedRoot(t *testing.T) {
 	server, _ := setupTestServer(t)
 	rootWorkspaceDir := filepath.Join(t.TempDir(), "root-only-parent")
@@ -211,7 +247,7 @@ func TestExternalMCPFactoryInfoPreservesForkModeWithoutAttachedRoot(t *testing.T
 
 	req := httptestNewRequest(t, "http://factory.test/mcp/external")
 	cs := connectExternalMCPClient(t, server, req)
-	result := callExternalTool(t, cs, "factory_info", map[string]any{})
+	result := callExternalTool(t, cs, "factory_info", struct{}{})
 	require.False(t, result.IsError)
 
 	info := decodeExternalStructuredContent[externalFactoryInfoForTest](t, result)
@@ -220,7 +256,7 @@ func TestExternalMCPFactoryInfoPreservesForkModeWithoutAttachedRoot(t *testing.T
 	assert.Equal(t, resolveSymlinks(forkWorkspaceDir), forkRepository.Path)
 }
 
-func TestExternalMCPGoalEditLinkUsesRoutedWorkspaceNameWithoutWorkspaceDir(t *testing.T) {
+func TestExternalMCPGoalEditLinkUsesBasenameOnlyPathWithoutWorkspaceDir(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	workspaceDir := setupTestWorkspace(t, server, rootDir, "goal-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, "GOAL.md"), []byte("---\ntitle: Goal Title\n---\n# Goal"), 0o644))
@@ -230,7 +266,7 @@ func TestExternalMCPGoalEditLinkUsesRoutedWorkspaceNameWithoutWorkspaceDir(t *te
 	req.Header.Set("X-Forwarded-Host", "10.10.0.7:9443")
 
 	cs := connectExternalMCPClient(t, server, req)
-	result := callExternalTool(t, cs, "goal_edit_link", map[string]any{"target": "goal-ws"})
+	result := callExternalTool(t, cs, "goal_edit_link", externalTargetArgs{Target: "goal-ws"})
 	require.False(t, result.IsError)
 
 	link := decodeExternalStructuredContent[externalGoalEditLinkForTest](t, result)
@@ -249,7 +285,7 @@ func TestExternalMCPGoalEditLinkBracketsIPv6Hosts(t *testing.T) {
 	req.Host = "::1"
 
 	cs := connectExternalMCPClient(t, server, req)
-	result := callExternalTool(t, cs, "goal_edit_link", map[string]any{"target": "ipv6-goal-ws"})
+	result := callExternalTool(t, cs, "goal_edit_link", externalTargetArgs{Target: "ipv6-goal-ws"})
 	require.False(t, result.IsError)
 
 	link := decodeExternalStructuredContent[externalGoalEditLinkForTest](t, result)
@@ -273,13 +309,13 @@ func TestExternalMCPGoalEditLinkRejectsAmbiguousWorkspaceTarget(t *testing.T) {
 
 	req := httptestNewRequest(t, "http://factory.test/mcp/external")
 	cs := connectExternalMCPClient(t, server, req)
-	result := callExternalTool(t, cs, "goal_edit_link", map[string]any{"target": "shared-ws"})
+	result := callExternalTool(t, cs, "goal_edit_link", externalTargetArgs{Target: "shared-ws"})
 	assert.True(t, result.IsError)
 	assert.Contains(t, externalToolText(t, result), "matches multiple attached repositories")
 	assert.Contains(t, externalToolText(t, result), "absolute path")
 }
 
-func TestExternalMCPFactoryInfoUsesRoutedNamesForDuplicateBasenames(t *testing.T) {
+func TestExternalMCPFactoryInfoKeepsBasenameForDuplicateBasenames(t *testing.T) {
 	server, _ := setupTestServer(t)
 	firstDir := filepath.Join(t.TempDir(), "first", "shared-ws")
 	secondDir := filepath.Join(t.TempDir(), "second", "shared-ws")
@@ -296,7 +332,7 @@ func TestExternalMCPFactoryInfoUsesRoutedNamesForDuplicateBasenames(t *testing.T
 
 	req := httptestNewRequest(t, "http://factory.test/mcp/external")
 	cs := connectExternalMCPClient(t, server, req)
-	result := callExternalTool(t, cs, "factory_info", map[string]any{})
+	result := callExternalTool(t, cs, "factory_info", struct{}{})
 	require.False(t, result.IsError)
 
 	info := decodeExternalStructuredContent[externalFactoryInfoForTest](t, result)
@@ -314,11 +350,11 @@ func TestExternalMCPFactoryInfoUsesRoutedNamesForDuplicateBasenames(t *testing.T
 		}
 	}
 
-	assert.Equal(t, "first/shared-ws", firstRepository.RoutedName)
-	assert.Equal(t, "second/shared-ws", secondRepository.RoutedName)
+	assert.Equal(t, "shared-ws", firstRepository.DirectoryName)
+	assert.Equal(t, "shared-ws", secondRepository.DirectoryName)
 }
 
-func TestExternalMCPGoalEditLinkUsesRoutedNameForAbsolutePathTarget(t *testing.T) {
+func TestExternalMCPGoalEditLinkRejectsAmbiguousAbsolutePathTarget(t *testing.T) {
 	server, _ := setupTestServer(t)
 	firstDir := filepath.Join(t.TempDir(), "first", "shared-ws")
 	secondDir := filepath.Join(t.TempDir(), "second", "shared-ws")
@@ -335,13 +371,10 @@ func TestExternalMCPGoalEditLinkUsesRoutedNameForAbsolutePathTarget(t *testing.T
 
 	req := httptestNewRequest(t, "http://factory.test/mcp/external")
 	cs := connectExternalMCPClient(t, server, req)
-	result := callExternalTool(t, cs, "goal_edit_link", map[string]any{"target": firstDir})
-	require.False(t, result.IsError)
-
-	link := decodeExternalStructuredContent[externalGoalEditLinkForTest](t, result)
-	assert.Equal(t, resolveSymlinks(firstDir), link.Workspace.Path)
-	assert.Equal(t, "first/shared-ws", link.Workspace.RoutedName)
-	assert.Equal(t, "http://factory.test/workspaces/first%2Fshared-ws/goal/edit", link.URL)
+	result := callExternalTool(t, cs, "goal_edit_link", externalTargetArgs{Target: firstDir})
+	assert.True(t, result.IsError)
+	assert.Contains(t, externalToolText(t, result), "basename")
+	assert.Contains(t, externalToolText(t, result), "ambiguous")
 }
 
 func TestExternalMCPFormerRootBecomesStandaloneAfterLastForkRemoved(t *testing.T) {
@@ -355,19 +388,21 @@ func TestExternalMCPFormerRootBecomesStandaloneAfterLastForkRemoved(t *testing.T
 	server.classifyCache.delete(resolveSymlinks(workspaceDir))
 
 	server.mu.Lock()
-	server.sessions[workspaceDir] = &session{running: true}
+	runningSession := new(session)
+	runningSession.running = true
+	server.sessions[workspaceDir] = runningSession
 	server.mu.Unlock()
 
 	req := httptestNewRequest(t, "http://factory.test/mcp/external")
 	cs := connectExternalMCPClient(t, server, req)
-	infoResult := callExternalTool(t, cs, "factory_info", map[string]any{})
+	infoResult := callExternalTool(t, cs, "factory_info", struct{}{})
 	require.False(t, infoResult.IsError)
 
 	info := decodeExternalStructuredContent[externalFactoryInfoForTest](t, infoResult)
 	repository := findRepositoryByName(t, info.Repositories, "former-root")
 	assert.Equal(t, "standalone", repository.Mode)
 
-	startResult := callExternalTool(t, cs, "start_self_drive", map[string]any{"target": workspaceDir})
+	startResult := callExternalTool(t, cs, "start_self_drive", externalTargetArgs{Target: workspaceDir})
 	require.False(t, startResult.IsError)
 	action := decodeExternalStructuredContent[externalSessionActionForTest](t, startResult)
 	assert.True(t, action.AlreadyRunning)
@@ -380,12 +415,14 @@ func TestExternalMCPStartSelfDriveReportsAlreadyRunningSession(t *testing.T) {
 	workspaceDir := setupTestWorkspace(t, server, rootDir, "run-ws")
 
 	server.mu.Lock()
-	server.sessions[workspaceDir] = &session{running: true}
+	runningSession := new(session)
+	runningSession.running = true
+	server.sessions[workspaceDir] = runningSession
 	server.mu.Unlock()
 
 	req := httptestNewRequest(t, "http://factory.test/mcp/external")
 	cs := connectExternalMCPClient(t, server, req)
-	result := callExternalTool(t, cs, "start_self_drive", map[string]any{"target": "run-ws"})
+	result := callExternalTool(t, cs, "start_self_drive", externalTargetArgs{Target: "run-ws"})
 	require.False(t, result.IsError)
 
 	action := decodeExternalStructuredContent[externalSessionActionForTest](t, result)
@@ -393,7 +430,7 @@ func TestExternalMCPStartSelfDriveReportsAlreadyRunningSession(t *testing.T) {
 	assert.True(t, action.Running)
 	assert.Equal(t, "running", action.Status)
 	assert.Equal(t, "session already running", action.Message)
-	assert.Equal(t, "run-ws", action.Workspace.RoutedName)
+	assert.Equal(t, "run-ws", action.Workspace.DirectoryName)
 }
 
 func TestExternalMCPStopWorkspaceIsIdempotent(t *testing.T) {
@@ -402,7 +439,7 @@ func TestExternalMCPStopWorkspaceIsIdempotent(t *testing.T) {
 
 	req := httptestNewRequest(t, "http://factory.test/mcp/external")
 	cs := connectExternalMCPClient(t, server, req)
-	result := callExternalTool(t, cs, "stop_workspace", map[string]any{"target": "stop-ws"})
+	result := callExternalTool(t, cs, "stop_workspace", externalTargetArgs{Target: "stop-ws"})
 	require.False(t, result.IsError)
 
 	action := decodeExternalStructuredContent[externalSessionActionForTest](t, result)
@@ -415,16 +452,21 @@ func TestExternalMCPResetWorkspaceResetsStoppedState(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	workspaceDir := setupTestWorkspace(t, server, rootDir, "reset-ws")
 
-	coord, errCoord := state.NewCoordinatorWith(filepath.Join(workspaceDir, ".sgai", "state.json"), state.Workflow{Status: state.StatusWorking})
+	workflow := newTestWorkflow()
+	workflow.Status = state.StatusWorking
+	coord, errCoord := state.NewCoordinatorWith(filepath.Join(workspaceDir, ".sgai", "state.json"), workflow)
 	require.NoError(t, errCoord)
 
 	server.mu.Lock()
-	server.sessions[workspaceDir] = &session{coord: coord, running: false}
+	stoppedSession := new(session)
+	stoppedSession.coord = coord
+	stoppedSession.running = false
+	server.sessions[workspaceDir] = stoppedSession
 	server.mu.Unlock()
 
 	req := httptestNewRequest(t, "http://factory.test/mcp/external")
 	cs := connectExternalMCPClient(t, server, req)
-	result := callExternalTool(t, cs, "reset_workspace", map[string]any{"target": "reset-ws"})
+	result := callExternalTool(t, cs, "reset_workspace", externalTargetArgs{Target: "reset-ws"})
 	require.False(t, result.IsError)
 
 	action := decodeExternalStructuredContent[externalSessionActionForTest](t, result)
@@ -450,10 +492,7 @@ func TestExternalMCPForkRepositoryRejectsForkTargetsWithGuidance(t *testing.T) {
 
 	req := httptestNewRequest(t, "http://factory.test/mcp/external")
 	cs := connectExternalMCPClient(t, server, req)
-	result := callExternalTool(t, cs, "fork_repository", map[string]any{
-		"target":      forkWorkspaceDir,
-		"goalContent": "---\nflow: |\n  \"a\" -> \"b\"\n---\n# New Goal",
-	})
+	result := callExternalTool(t, cs, "fork_repository", externalForkArgs{Target: forkWorkspaceDir, GoalContent: "---\nflow: |\n  \"a\" -> \"b\"\n---\n# New Goal"})
 	assert.True(t, result.IsError)
 	assert.Contains(t, externalToolText(t, result), "already a fork workspace")
 	assert.Contains(t, externalToolText(t, result), "standalone repository or a root repository")
@@ -467,14 +506,11 @@ func TestExternalMCPForkRepositoryCreatesSiblingWorkspace(t *testing.T) {
 
 	req := httptestNewRequest(t, "http://factory.test/mcp/external")
 	cs := connectExternalMCPClient(t, server, req)
-	result := callExternalTool(t, cs, "fork_repository", map[string]any{
-		"target":      workspaceDir,
-		"goalContent": "---\nflow: |\n  \"a\" -> \"b\"\n---\n# Fork Goal",
-	})
+	result := callExternalTool(t, cs, "fork_repository", externalForkArgs{Target: workspaceDir, GoalContent: "---\nflow: |\n  \"a\" -> \"b\"\n---\n# Fork Goal"})
 	require.False(t, result.IsError)
 
 	forkResult := decodeExternalStructuredContent[externalForkResultForTest](t, result)
-	assert.Equal(t, "forkable-ws", forkResult.Parent.RoutedName)
+	assert.Equal(t, "forkable-ws", forkResult.Parent.DirectoryName)
 	assert.Equal(t, filepath.Dir(workspaceDir), filepath.Dir(forkResult.Workspace.Path))
 	assert.DirExists(t, forkResult.Workspace.Path)
 	assert.Equal(t, "fork", forkResult.Workspace.Mode)
@@ -485,7 +521,7 @@ func TestExternalMCPAttachRepositoryRequiresAbsolutePath(t *testing.T) {
 	server, _ := setupTestServer(t)
 	req := httptestNewRequest(t, "http://factory.test/mcp/external")
 	cs := connectExternalMCPClient(t, server, req)
-	result := callExternalTool(t, cs, "attach_repository", map[string]any{"path": "relative/path"})
+	result := callExternalTool(t, cs, "attach_repository", externalAttachArgs{Path: "relative/path"})
 	assert.True(t, result.IsError)
 	assert.Contains(t, externalToolText(t, result), "absolute on-disk path")
 }
@@ -498,7 +534,7 @@ func TestExternalMCPAttachRepositoryAttachesWorkspace(t *testing.T) {
 
 	req := httptestNewRequest(t, "http://factory.test/mcp/external")
 	cs := connectExternalMCPClient(t, server, req)
-	result := callExternalTool(t, cs, "attach_repository", map[string]any{"path": externalDir})
+	result := callExternalTool(t, cs, "attach_repository", externalAttachArgs{Path: externalDir})
 	require.False(t, result.IsError)
 
 	attachResult := decodeExternalStructuredContent[externalAttachResultForTest](t, result)
@@ -511,7 +547,7 @@ func TestExternalMCPAttachRepositoryAttachesWorkspace(t *testing.T) {
 func httptestNewRequest(t *testing.T, rawURL string) *http.Request {
 	t.Helper()
 
-	req, errRequest := http.NewRequest(http.MethodPost, rawURL, nil)
+	req, errRequest := http.NewRequest(http.MethodPost, rawURL, http.NoBody)
 	require.NoError(t, errRequest)
 	return req
 }

@@ -1,5 +1,5 @@
 import { useState, useEffect, Suspense, lazy, useRef, useCallback, useMemo } from "react";
-import { useParams, Link, useNavigate, useSearchParams } from "react-router";
+import { useParams, Link, useNavigate } from "react-router";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -31,11 +31,9 @@ import {
   buildWorkspaceGoalEditPath,
   buildWorkspaceNameDisambiguators,
   buildWorkspacePath,
-  getWorkspaceDirFromSearchParams,
   getWorkspaceDisplayLabel,
   isSameWorkspace,
-  resolveWorkspaceByIdentity,
-  resolveWorkspaceByExactRoutedName,
+  resolveWorkspaceByName,
 } from "@/lib/workspace-identity";
 
 const SessionTab = lazy(() => import("./tabs/SessionTab").then((m) => ({ default: m.SessionTab })));
@@ -164,10 +162,8 @@ function TabNav({ workspace, activeTab, isRoot, hasForks, showForkTab }: TabNavP
 
 export function WorkspaceDetail(): JSX.Element | null {
   const { name, "*": tabPath } = useParams<{ name: string; "*": string }>();
-  const [searchParams] = useSearchParams();
   const workspaceName = name ?? "";
-  const workspaceDir = getWorkspaceDirFromSearchParams(searchParams);
-  const workspaceRouteKey = workspaceDir ? `${workspaceName}:${workspaceDir}` : workspaceName;
+  const workspaceRouteKey = workspaceName;
   const requestedTab = tabPath?.split("/")[0] || "progress";
   const navigate = useNavigate();
 
@@ -186,21 +182,19 @@ export function WorkspaceDetail(): JSX.Element | null {
   const workspaceNameDisambiguators = useMemo(() => {
     return buildWorkspaceNameDisambiguators(workspaces);
   }, [workspaces]);
+  const matchingWorkspaceCount = useMemo(() => {
+    return workspaces.filter((workspace) => workspace.name === workspaceName).length;
+  }, [workspaceName, workspaces]);
 
   const detail = useMemo(() => {
-    if (workspaceDir) {
-      return resolveWorkspaceByIdentity(workspaces, workspaceName, workspaceDir);
-    }
-
-    return resolveWorkspaceByExactRoutedName(workspaces, workspaceName);
-  }, [workspaceDir, workspaceName, workspaces]);
+    return resolveWorkspaceByName(workspaces, workspaceName);
+  }, [workspaceName, workspaces]);
   const loading = fetchStatus === "fetching" && detail === null;
-  const isAmbiguousWorkspaceRoute = !workspaceDir && !workspaceName.includes("/")
-    && workspaces.filter((workspace) => workspace.name === workspaceName).length > 1;
+  const isAmbiguousWorkspaceRoute = matchingWorkspaceCount > 1;
   const routeError = fetchStatus === "error"
     ? "Failed to load workspace state"
     : isAmbiguousWorkspaceRoute
-      ? "Workspace route is ambiguous. Open the routed workspace link for this repository."
+      ? "Workspace route is ambiguous."
       : "Workspace not found.";
 
   useEffect(() => {
@@ -266,11 +260,9 @@ export function WorkspaceDetail(): JSX.Element | null {
   }, [startActionRun, workspaceName]);
 
   useEffect(() => {
-    if (!detail) return;
-    if (!isSameWorkspace(detail, { name: workspaceName, dir: workspaceDir ?? detail.dir })) return;
-    if (!redirectTab) return;
+    if (!detail || !redirectTab) return;
     navigate(buildWorkspacePath(detail, redirectTab), { replace: true });
-  }, [detail, navigate, redirectTab, workspaceDir, workspaceName]);
+  }, [detail, navigate, redirectTab]);
 
   if (loading && !detail) return <WorkspaceDetailSkeleton />;
 
@@ -280,7 +272,7 @@ export function WorkspaceDetail(): JSX.Element | null {
 
   const detailLabel = getWorkspaceDisplayLabel(detail, workspaceNameDisambiguators);
   if (!detail.hasSgai && !detail.isRoot) {
-    return <NoWorkspaceState label={detailLabel} goalEditPath={buildWorkspaceGoalEditPath(detail, workspaces)} dir={detail.dir} />;
+    return <NoWorkspaceState label={detailLabel} goalEditPath={buildWorkspaceGoalEditPath(detail)} dir={detail.dir} />;
   }
 
   const parentRoot = detail.isFork
@@ -305,7 +297,7 @@ export function WorkspaceDetail(): JSX.Element | null {
   const encodedWorkspace = encodeURIComponent(detail.name);
   const selfDriveLabel = effectiveRunning ? "Self-Drive" : "Self-drive";
   const showEditGoalAction = !effectiveRunning || detail.hasSgai || Boolean(detail.goalContent?.trim());
-  const goalEditPath = buildWorkspaceGoalEditPath(detail, workspaces);
+  const goalEditPath = buildWorkspaceGoalEditPath(detail);
   const showOpenEditorAction = true;
   const isActionDisabled = effectiveRunning || isStartStopPending || isSelfDrivePending || isResetPending;
   const isResetActionDisabled = isResetPending || isStartStopPending || isSelfDrivePending;
@@ -750,7 +742,6 @@ export function WorkspaceDetail(): JSX.Element | null {
               key={detail.dir}
               activeTab={activeTab}
               workspaceName={detail.name}
-              workspaceDir={detail.dir}
               currentModel={detail.currentModel}
               goalContent={detail.goalContent}
               pmContent={detail.pmContent}
@@ -779,7 +770,6 @@ function TabSkeleton() {
 function TabContent({
   activeTab,
   workspaceName,
-  workspaceDir,
   currentModel,
   goalContent,
   pmContent,
@@ -792,7 +782,6 @@ function TabContent({
 }: {
   activeTab: string;
   workspaceName: string;
-  workspaceDir?: string;
   currentModel?: string;
   goalContent?: string;
   pmContent?: string;
@@ -808,20 +797,19 @@ function TabContent({
       return (
         <EventsTab
           workspaceName={workspaceName}
-          workspaceDir={workspaceDir}
           goalContent={goalContent}
           actions={actions}
           actionConfigError={actionConfigError}
         />
       );
     case "fork":
-      return showForkTab ? <InlineForkEditor key={workspaceDir ?? workspaceName} workspaceName={workspaceName} /> : <NotYetAvailable pageName="Fork Tab" />;
+      return showForkTab ? <InlineForkEditor key={workspaceName} workspaceName={workspaceName} /> : <NotYetAvailable pageName="Fork Tab" />;
     case "log":
-      return <LogTab workspaceName={workspaceName} workspaceDir={workspaceDir} />;
+      return <LogTab workspaceName={workspaceName} />;
     case "messages":
-      return <MessagesTab workspaceName={workspaceName} workspaceDir={workspaceDir} />;
+      return <MessagesTab workspaceName={workspaceName} />;
     case "internals":
-      return <SessionTab workspaceName={workspaceName} workspaceDir={workspaceDir} pmContent={pmContent} hasProjectMgmt={hasProjectMgmt} />;
+      return <SessionTab workspaceName={workspaceName} pmContent={pmContent} hasProjectMgmt={hasProjectMgmt} />;
 
     case "run":
       return <RunTab workspaceName={workspaceName} currentModel={currentModel} />;
@@ -829,7 +817,6 @@ function TabContent({
       return (
         <ForksTab
           workspaceName={workspaceName}
-          workspaceDir={workspaceDir}
           actions={actions}
           actionConfigError={actionConfigError}
           onActionClick={onActionClick}

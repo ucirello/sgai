@@ -2,12 +2,11 @@ import { useEffect, useRef } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useFactoryState } from "@/lib/factory-state";
-import { resolveWorkspaceByIdentity } from "@/lib/workspace-identity";
+import { resolveWorkspaceByName } from "@/lib/workspace-identity";
 import type { ApiLogEntry } from "@/types";
 
 interface LogTabProps {
   workspaceName: string;
-  workspaceDir?: string;
 }
 
 function LogTabSkeleton() {
@@ -29,11 +28,11 @@ function LogLine({ line }: { line: ApiLogEntry }) {
   );
 }
 
-export function LogTab({ workspaceName, workspaceDir }: LogTabProps) {
+export function LogTab({ workspaceName }: LogTabProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const { workspaces, fetchStatus } = useFactoryState();
-  const workspace = resolveWorkspaceByIdentity(workspaces, workspaceName, workspaceDir);
+  const workspace = resolveWorkspaceByName(workspaces, workspaceName);
   const lines = workspace?.log ?? [];
 
   useEffect(() => {

@@ -575,7 +575,7 @@ describe("Dashboard", () => {
       });
     });
 
-    it("targets the correct duplicate-name workspace when deleting from the tree", async () => {
+    it("sends a basename-only delete request for duplicate-name tree rows", async () => {
       const user = userEvent.setup();
 
       mockWorkspaces = [
@@ -617,7 +617,7 @@ describe("Dashboard", () => {
       await user.click(within(dialog).getByRole("button", { name: /^Delete$/ }));
 
       await waitFor(() => {
-        expect(mockDeleteWorkspace).toHaveBeenCalledWith("shared-ws", "delete", "/tmp/second-parent/shared-ws");
+        expect(mockDeleteWorkspace).toHaveBeenCalledWith("shared-ws", "delete");
       });
     });
   });
@@ -733,7 +733,7 @@ describe("Dashboard", () => {
       await user.click(screen.getByRole("button", { name: /^Detach$/ }));
 
       await waitFor(() => {
-        expect(mockDeleteWorkspace).toHaveBeenCalledWith("workspace-2-fork-1", "detach", "/path/to/workspace-2-fork-1");
+        expect(mockDeleteWorkspace).toHaveBeenCalledWith("workspace-2-fork-1", "detach");
       });
     });
 
@@ -812,7 +812,7 @@ describe("Dashboard", () => {
       await user.click(await screen.findByRole("button", { name: /^Delete$/ }));
 
       await waitFor(() => {
-        expect(mockDeleteWorkspace).toHaveBeenCalledWith("root-ws-fork-1", "delete", "/path/to/root-ws-fork-1");
+        expect(mockDeleteWorkspace).toHaveBeenCalledWith("root-ws-fork-1", "delete");
       });
 
       await act(async () => {
@@ -1099,9 +1099,7 @@ describe("Dashboard", () => {
 
       const forkLink = screen.getByRole("link", { name: /workspace two fork title/i });
 
-      expect(forkLink.getAttribute("href")).toBe(
-        "/workspaces/workspace-2-fork-1/progress?workspaceDir=%2Fpath%2Fto%2Fworkspace-2-fork-1"
-      );
+      expect(forkLink.getAttribute("href")).toBe("/workspaces/workspace-2-fork-1/progress");
       act(() => {
         forkLink.focus();
       });

@@ -32,9 +32,9 @@ type signalBroker struct {
 }
 
 func newSignalBroker() *signalBroker {
-	return &signalBroker{
-		subscribers: make(map[*signalSubscriber]struct{}),
-	}
+	var broker signalBroker
+	broker.subscribers = make(map[*signalSubscriber]struct{})
+	return &broker
 }
 
 func (b *signalBroker) subscribe() *signalSubscriber {
@@ -227,13 +227,14 @@ func (s *Server) warmStateCache() {
 }
 
 func (s *Server) loadWorkspaceState(dir string) state.Workflow {
+	var emptyState state.Workflow
 	stPath := statePath(dir)
 	info, errStat := os.Stat(stPath)
 	if errStat != nil {
-		return state.Workflow{}
+		return emptyState
 	}
 	if info.Size() > maxStateSizeBytes {
-		return state.Workflow{}
+		return emptyState
 	}
 	return s.workspaceCoordinator(dir).State()
 }
@@ -241,7 +242,7 @@ func (s *Server) loadWorkspaceState(dir string) state.Workflow {
 func (s *Server) buildFullFactoryState() apiFactoryState {
 	groups, errScan := s.scanWorkspaceGroups()
 	if errScan != nil {
-		return apiFactoryState{}
+		return apiFactoryState{Workspaces: nil}
 	}
 
 	var allWorkspaces []workspaceInfo
@@ -269,7 +270,7 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 	kind := s.classifyWorkspaceCached(ws.Directory)
 
 	interactiveAuto := wfState.InteractionMode == state.ModeSelfDrive || wfState.InteractionMode == state.ModeContinuous
-	badgeClass, badgeText := badgeStatus(wfState, ws.Running)
+	badgeClass, badgeText := badgeStatus(&wfState, ws.Running)
 	needsInput := wfState.NeedsHumanInput()
 
 	currentAgent := wfState.CurrentAgent
@@ -291,7 +292,7 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 	hasEditedGoal := false
 	if data, errRead := os.ReadFile(filepath.Join(ws.Directory, "GOAL.md")); errRead == nil {
 		body := extractBody(data)
-		hasEditedGoal = len(strings.TrimSpace(string(body))) > 0
+		hasEditedGoal = strings.TrimSpace(string(body)) != ""
 	}
 
 	agentSeq := convertAgentSequence(
@@ -333,8 +334,8 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 			}
 		}
 		pendingQuestion = &apiPendingQuestionResponse{
-			PromptToken: promptTokenForState(coord, wfState),
-			Type:        questionType(wfState),
+			PromptToken: promptTokenForState(coord, &wfState),
+			Type:        questionType(&wfState),
 			AgentName:   agentName,
 			Message:     wfState.HumanMessage,
 			Questions:   questions,
@@ -347,6 +348,7 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 	full := apiWorkspaceFullState{
 		Name:              ws.DirName,
 		Dir:               ws.Directory,
+		Forks:             nil,
 		Running:           ws.Running,
 		NeedsInput:        needsInput,
 		InProgress:        ws.InProgress,
@@ -363,7 +365,7 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 		InteractiveAuto:   interactiveAuto,
 		ContinuousMode:    readContinuousModePrompt(ws.Directory) != "",
 		CurrentAgent:      currentAgent,
-		CurrentModel:      resolveCurrentModel(ws.Directory, wfState),
+		CurrentModel:      resolveCurrentModel(ws.Directory, &wfState),
 		Task:              wfState.Task,
 		GoalContent:       goalContent,
 		Title:             titleState.Title,
@@ -523,15 +525,15 @@ func serveReactIndex(w http.ResponseWriter, webappFS fs.FS) {
 	}
 }
 
-func (s *Server) resolveAPIWorkspace(r *http.Request) string {
+func (s *Server) resolveAPIWorkspace(r *http.Request) (workspacePath string, statusCode int, errMessage string) {
 	if name := r.URL.Query().Get("workspace"); name != "" {
-		return s.resolveWorkspaceNameToPath(name)
+		return s.resolveSingleWorkspacePath(name)
 	}
 	groups, errScan := s.scanWorkspaceGroups()
 	if errScan != nil || len(groups) == 0 {
-		return ""
+		return "", http.StatusNotFound, "workspace not found"
 	}
-	return groups[0].Root.Directory
+	return groups[0].Root.Directory, 0, ""
 }
 
 type apiAgentEntry struct {
@@ -544,9 +546,9 @@ type apiAgentsResponse struct {
 }
 
 func (s *Server) handleAPIAgents(w http.ResponseWriter, r *http.Request) {
-	workspacePath := s.resolveAPIWorkspace(r)
-	if workspacePath == "" {
-		http.Error(w, "workspace not found", http.StatusNotFound)
+	workspacePath, statusCode, errMessage := s.resolveAPIWorkspace(r)
+	if statusCode != 0 {
+		http.Error(w, errMessage, statusCode)
 		return
 	}
 
@@ -605,9 +607,9 @@ type apiSkillsResponse struct {
 }
 
 func (s *Server) handleAPISkills(w http.ResponseWriter, r *http.Request) {
-	workspacePath := s.resolveAPIWorkspace(r)
-	if workspacePath == "" {
-		http.Error(w, "workspace not found", http.StatusNotFound)
+	workspacePath, statusCode, errMessage := s.resolveAPIWorkspace(r)
+	if statusCode != 0 {
+		http.Error(w, errMessage, statusCode)
 		return
 	}
 
@@ -680,9 +682,9 @@ type apiSkillDetailResponse struct {
 }
 
 func (s *Server) handleAPISkillDetail(w http.ResponseWriter, r *http.Request) {
-	workspacePath := s.resolveAPIWorkspace(r)
-	if workspacePath == "" {
-		http.Error(w, "workspace not found", http.StatusNotFound)
+	workspacePath, statusCode, errMessage := s.resolveAPIWorkspace(r)
+	if statusCode != 0 {
+		http.Error(w, errMessage, statusCode)
 		return
 	}
 
@@ -734,9 +736,9 @@ type apiSnippetsResponse struct {
 }
 
 func (s *Server) handleAPISnippets(w http.ResponseWriter, r *http.Request) {
-	workspacePath := s.resolveAPIWorkspace(r)
-	if workspacePath == "" {
-		http.Error(w, "workspace not found", http.StatusNotFound)
+	workspacePath, statusCode, errMessage := s.resolveAPIWorkspace(r)
+	if statusCode != 0 {
+		http.Error(w, errMessage, statusCode)
 		return
 	}
 
@@ -765,9 +767,9 @@ type apiSnippetsByLanguageResponse struct {
 }
 
 func (s *Server) handleAPISnippetsByLanguage(w http.ResponseWriter, r *http.Request) {
-	workspacePath := s.resolveAPIWorkspace(r)
-	if workspacePath == "" {
-		http.Error(w, "workspace not found", http.StatusNotFound)
+	workspacePath, statusCode, errMessage := s.resolveAPIWorkspace(r)
+	if statusCode != 0 {
+		http.Error(w, errMessage, statusCode)
 		return
 	}
 
@@ -801,9 +803,9 @@ type apiSnippetDetailResponse struct {
 }
 
 func (s *Server) handleAPISnippetDetail(w http.ResponseWriter, r *http.Request) {
-	workspacePath := s.resolveAPIWorkspace(r)
-	if workspacePath == "" {
-		http.Error(w, "workspace not found", http.StatusNotFound)
+	workspacePath, statusCode, errMessage := s.resolveAPIWorkspace(r)
+	if statusCode != 0 {
+		http.Error(w, errMessage, statusCode)
 		return
 	}
 
@@ -870,16 +872,16 @@ type apiAgentSequenceEntry struct {
 func loadActionsForAPI(workspacePath string) actionAPIState {
 	configs, errLoad := loadActionConfigs(workspacePath)
 	if errLoad != nil {
-		return actionAPIState{ConfigError: errLoad.Error()}
+		return actionAPIState{Actions: nil, ConfigError: errLoad.Error()}
 	}
-	return actionAPIState{Actions: convertActionsForAPI(configs)}
+	return actionAPIState{Actions: convertActionsForAPI(configs), ConfigError: ""}
 }
 
 func convertActionsForAPI(configs []actionConfig) []apiActionEntry {
 	nameErrors := actionIdentityErrors(configs)
 	actions := make([]apiActionEntry, 0, len(configs))
-	for i, a := range configs {
-		actions = append(actions, convertActionForAPIWithIdentityError(a, nameErrors[i]))
+	for i := range configs {
+		actions = append(actions, convertActionForAPIWithIdentityError(&configs[i], nameErrors[i]))
 	}
 	return actions
 }
@@ -930,17 +932,12 @@ func (s *Server) resolveWorkspaceFromPath(w http.ResponseWriter, r *http.Request
 		http.Error(w, "workspace name is required", http.StatusBadRequest)
 		return "", false
 	}
-	workspacePaths := s.resolveWorkspaceNameToPaths(workspaceName)
-	switch len(workspacePaths) {
-	case 0:
-		http.Error(w, "workspace not found", http.StatusNotFound)
-		return "", false
-	case 1:
-		return workspacePaths[0], true
-	default:
-		http.Error(w, "workspace name is ambiguous; use routed workspace name", http.StatusConflict)
+	workspacePath, statusCode, errMessage := s.resolveSingleWorkspacePath(workspaceName)
+	if statusCode != 0 {
+		http.Error(w, errMessage, statusCode)
 		return "", false
 	}
+	return workspacePath, true
 }
 
 func (s *Server) resolveGoalWorkspaceFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {
@@ -949,77 +946,16 @@ func (s *Server) resolveGoalWorkspaceFromPath(w http.ResponseWriter, r *http.Req
 		http.Error(w, "workspace name is required", http.StatusBadRequest)
 		return "", false
 	}
-
-	workspacePaths := s.resolveWorkspaceNameToPaths(workspaceName)
-	switch len(workspacePaths) {
-	case 0:
-		http.Error(w, "workspace not found", http.StatusNotFound)
-		return "", false
-	case 1:
-		return workspacePaths[0], true
-	default:
-		http.Error(w, "workspace name is ambiguous; use routed workspace name", http.StatusConflict)
+	workspacePath, statusCode, errMessage := s.resolveSingleWorkspacePath(workspaceName)
+	if statusCode != 0 {
+		http.Error(w, errMessage, statusCode)
 		return "", false
 	}
+	return workspacePath, true
 }
 
-func (s *Server) resolveWorkspaceForAction(workspaceName, workspaceDir string) (string, int, string) {
-	if workspaceName == "" {
-		return "", http.StatusBadRequest, "workspace name is required"
-	}
-
-	if workspaceDir == "" {
-		matches := s.resolveWorkspaceNameToPaths(workspaceName)
-		switch len(matches) {
-		case 0:
-			return "", http.StatusNotFound, "workspace not found"
-		case 1:
-			return matches[0], 0, ""
-		default:
-			return "", http.StatusConflict, "workspace name is ambiguous; supply workspaceDir"
-		}
-	}
-
-	if !filepath.IsAbs(workspaceDir) {
-		return "", http.StatusBadRequest, "workspaceDir must be an absolute path"
-	}
-
-	workspacePath := s.resolveWorkspaceDirToPath(workspaceDir)
-	if workspacePath == "" {
-		return "", http.StatusNotFound, "workspace not found"
-	}
-	matches := s.resolveWorkspaceNameToPaths(workspaceName)
-	if !slices.ContainsFunc(matches, func(match string) bool {
-		return sameWorkspacePath(match, workspacePath)
-	}) {
-		return "", http.StatusBadRequest, "workspaceDir does not match workspace name"
-	}
-	return workspacePath, 0, ""
-}
-
-func (s *Server) resolveWorkspaceDirToPath(workspaceDir string) string {
-	wantedPath := resolveSymlinks(workspaceDir)
-	if wantedPath == "" {
-		return ""
-	}
-
-	groups, errScan := s.scanWorkspaceGroups()
-	if errScan != nil {
-		return ""
-	}
-
-	for _, grp := range groups {
-		if sameWorkspacePath(grp.Root.Directory, wantedPath) {
-			return grp.Root.Directory
-		}
-		for _, fork := range grp.Forks {
-			if sameWorkspacePath(fork.Directory, wantedPath) {
-				return fork.Directory
-			}
-		}
-	}
-
-	return ""
+func (s *Server) resolveWorkspaceForAction(workspaceName string) (workspacePath string, statusCode int, errMessage string) {
+	return s.resolveSingleWorkspacePath(workspaceName)
 }
 
 func sameWorkspacePath(leftPath, rightPath string) bool {
@@ -1151,14 +1087,14 @@ type apiForkEntry struct {
 	ComputedTitle string `json:"computedTitle,omitempty"`
 }
 
-func promptTokenForState(coord *state.Coordinator, wfState state.Workflow) string {
+func promptTokenForState(coord *state.Coordinator, wfState *state.Workflow) string {
 	if coord == nil || !wfState.NeedsHumanInput() {
 		return ""
 	}
 	return coord.CurrentPromptToken()
 }
 
-func questionType(wfState state.Workflow) string {
+func questionType(wfState *state.Workflow) string {
 	if wfState.MultiChoiceQuestion != nil {
 		if wfState.MultiChoiceQuestion.IsWorkGate {
 			return "work-gate"
@@ -1395,9 +1331,8 @@ func (s *Server) handleAPIForkWorkspace(w http.ResponseWriter, r *http.Request) 
 }
 
 type apiDeleteForkRequest struct {
-	ForkDir      string `json:"forkDir"`
-	WorkspaceDir string `json:"workspaceDir,omitempty"`
-	Confirm      bool   `json:"confirm"`
+	ForkDir string `json:"forkDir"`
+	Confirm bool   `json:"confirm"`
 }
 
 type apiDeleteForkResponse struct {
@@ -1412,7 +1347,7 @@ func (s *Server) handleAPIDeleteFork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	workspacePath, statusCode, errMessage := s.resolveWorkspaceForAction(r.PathValue("name"), req.WorkspaceDir)
+	workspacePath, statusCode, errMessage := s.resolveWorkspaceForAction(r.PathValue("name"))
 	if statusCode != 0 {
 		http.Error(w, errMessage, statusCode)
 		return
@@ -1466,6 +1401,8 @@ func (s *Server) resolveRootForDeleteFork(workspacePath string) string {
 		return resolveSymlinks(workspacePath)
 	case workspaceFork:
 		return resolveSymlinks(getRootWorkspacePath(workspacePath))
+	case workspaceStandalone:
+		return ""
 	default:
 		return ""
 	}
@@ -1492,9 +1429,8 @@ func (s *Server) resolveForkDir(requestForkDir, workspacePath, rootPath string) 
 }
 
 type apiDeleteWorkspaceRequest struct {
-	Confirm      bool   `json:"confirm"`
-	Operation    string `json:"operation,omitempty"`
-	WorkspaceDir string `json:"workspaceDir,omitempty"`
+	Confirm   bool   `json:"confirm"`
+	Operation string `json:"operation,omitempty"`
 }
 
 type apiDeleteWorkspaceResponse struct {
@@ -1510,7 +1446,7 @@ func (s *Server) handleAPIDeleteWorkspace(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	workspacePath, statusCode, errMessage := s.resolveWorkspaceForAction(r.PathValue("name"), req.WorkspaceDir)
+	workspacePath, statusCode, errMessage := s.resolveWorkspaceForAction(r.PathValue("name"))
 	if statusCode != 0 {
 		http.Error(w, errMessage, statusCode)
 		return
@@ -1792,6 +1728,9 @@ func (s *Server) handleAPISteer(w http.ResponseWriter, r *http.Request) {
 			FromAgent: "Human Partner",
 			ToAgent:   "coordinator",
 			Body:      steerBody,
+			Read:      false,
+			ReadAt:    "",
+			ReadBy:    "",
 			CreatedAt: steerCreatedAt,
 		}
 		insertIdx := findSteerInsertPosition(wf.Messages)
@@ -1925,10 +1864,19 @@ type apiDeleteMessageResponse struct {
 }
 
 func (s *Server) handleAPIListModels(w http.ResponseWriter, r *http.Request) {
+	workspaceName := r.URL.Query().Get("workspace")
+	if workspaceName != "" {
+		_, statusCode, errMessage := s.resolveSingleWorkspacePath(workspaceName)
+		if statusCode == http.StatusConflict {
+			http.Error(w, errMessage, statusCode)
+			return
+		}
+	}
+
 	validModels, errFetch := fetchValidModels()
 	if errFetch != nil {
 		log.Println("cannot fetch models:", errFetch)
-		writeJSON(w, apiModelsResponse{Models: []apiModelEntry{}})
+		writeJSON(w, apiModelsResponse{Models: []apiModelEntry{}, DefaultModel: ""})
 		return
 	}
 
@@ -1941,7 +1889,7 @@ func (s *Server) handleAPIListModels(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	defaultModel := s.coordinatorModelFromWorkspace(r.URL.Query().Get("workspace"))
+	defaultModel := s.coordinatorModelFromWorkspace(workspaceName)
 	writeJSON(w, apiModelsResponse{Models: entries, DefaultModel: defaultModel})
 }
 
@@ -1992,7 +1940,7 @@ func (s *Server) coordinatorModelFromWorkspace(workspace string) string {
 	return baseModel
 }
 
-func resolveCurrentModel(workspacePath string, wfState state.Workflow) string {
+func resolveCurrentModel(workspacePath string, wfState *state.Workflow) string {
 	if wfState.CurrentModel != "" {
 		return wfState.CurrentModel
 	}
@@ -2038,13 +1986,13 @@ type apiBrowseDirectoriesResponse struct {
 }
 
 func (s *Server) handleAPIBrowseDirectories(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Query().Get("path")
-	entries, errBrowse := browseDirectoriesService(path)
+	browsePath := r.URL.Query().Get("path")
+	entries, errBrowse := browseDirectoriesService(browsePath)
 	if errBrowse != nil {
 		http.Error(w, errBrowse.Error(), http.StatusBadRequest)
 		return
 	}
-	writeJSON(w, apiBrowseDirectoriesResponse{Path: path, Entries: entries})
+	writeJSON(w, apiBrowseDirectoriesResponse{Path: browsePath, Entries: entries})
 }
 
 type apiAttachWorkspaceRequest struct {

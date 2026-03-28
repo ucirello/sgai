@@ -18,22 +18,24 @@ func TestListAgentsService(t *testing.T) {
 		{
 			name: "listAgentsWithAgentFiles",
 			setupFunc: func(t *testing.T, workspacePath string) {
+				t.Helper()
 				agentsDir := filepath.Join(workspacePath, ".sgai", "agent")
-				require.NoError(t, os.MkdirAll(agentsDir, 0755))
+				require.NoError(t, os.MkdirAll(agentsDir, 0o755))
 				agent1Content := `---
 description: Agent 1 description
 ---
 # Agent 1 Instructions`
 				agent1Path := filepath.Join(agentsDir, "agent1.md")
-				require.NoError(t, os.WriteFile(agent1Path, []byte(agent1Content), 0644))
+				require.NoError(t, os.WriteFile(agent1Path, []byte(agent1Content), 0o644))
 				agent2Content := `---
 description: Agent 2 description
 ---
 # Agent 2 Instructions`
 				agent2Path := filepath.Join(agentsDir, "agent2.md")
-				require.NoError(t, os.WriteFile(agent2Path, []byte(agent2Content), 0644))
+				require.NoError(t, os.WriteFile(agent2Path, []byte(agent2Content), 0o644))
 			},
 			validate: func(t *testing.T, result listAgentsResult) {
+				t.Helper()
 				assert.Len(t, result.Agents, 2)
 				agentNames := make(map[string]bool)
 				for _, agent := range result.Agents {
@@ -46,9 +48,11 @@ description: Agent 2 description
 		{
 			name: "listAgentsNoAgents",
 			setupFunc: func(t *testing.T, workspacePath string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			validate: func(t *testing.T, result listAgentsResult) {
+				t.Helper()
 				assert.Empty(t, result.Agents)
 			},
 		},
@@ -57,10 +61,10 @@ description: Agent 2 description
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
+			server := NewServer(rootDir, newTestServerPaths(), "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
-			require.NoError(t, os.MkdirAll(workspacePath, 0755))
+			require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 			tt.setupFunc(t, workspacePath)
 
 			result := server.listAgentsService(workspacePath)
@@ -72,12 +76,12 @@ description: Agent 2 description
 	}
 }
 
-func newTestServerWithWorkspace(t *testing.T) (*Server, string) {
+func newTestServerWithWorkspace(t *testing.T) (server *Server, workspacePath string) {
 	t.Helper()
 	rootDir := t.TempDir()
-	server := NewServer(rootDir, serverPaths{}, "")
-	workspacePath := filepath.Join(rootDir, "test-workspace")
-	require.NoError(t, os.MkdirAll(workspacePath, 0755))
+	server = NewServer(rootDir, newTestServerPaths(), "")
+	workspacePath = filepath.Join(rootDir, "test-workspace")
+	require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 	return server, workspacePath
 }
 
@@ -85,8 +89,8 @@ func TestListSkillsService(t *testing.T) {
 	t.Run("listSkillsWithSkills", func(t *testing.T) {
 		server, workspacePath := newTestServerWithWorkspace(t)
 		skillsDir := filepath.Join(workspacePath, ".sgai", "skills", "test-skill")
-		require.NoError(t, os.MkdirAll(skillsDir, 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(skillsDir, "SKILL.md"), []byte("---\nname: Test Skill\ndescription: A test skill\n---\n# Test Skill Content"), 0644))
+		require.NoError(t, os.MkdirAll(skillsDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(skillsDir, "SKILL.md"), []byte("---\nname: Test Skill\ndescription: A test skill\n---\n# Test Skill Content"), 0o644))
 
 		result := server.listSkillsService(workspacePath)
 		assert.NotEmpty(t, result.Categories)
@@ -94,7 +98,7 @@ func TestListSkillsService(t *testing.T) {
 
 	t.Run("listSkillsNoSkills", func(t *testing.T) {
 		server, workspacePath := newTestServerWithWorkspace(t)
-		require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 
 		result := server.listSkillsService(workspacePath)
 		assert.Empty(t, result.Categories)
@@ -113,18 +117,20 @@ func TestSkillDetailService(t *testing.T) {
 			name:      "skillFound",
 			skillName: "test-skill",
 			setupFunc: func(t *testing.T, workspacePath string) {
+				t.Helper()
 				skillsDir := filepath.Join(workspacePath, ".sgai", "skills", "test-skill")
-				require.NoError(t, os.MkdirAll(skillsDir, 0755))
+				require.NoError(t, os.MkdirAll(skillsDir, 0o755))
 				skillContent := `---
 name: Test Skill
 description: A test skill
 ---
 # Test Skill Content`
 				skillPath := filepath.Join(skillsDir, "SKILL.md")
-				require.NoError(t, os.WriteFile(skillPath, []byte(skillContent), 0644))
+				require.NoError(t, os.WriteFile(skillPath, []byte(skillContent), 0o644))
 			},
 			wantFound: true,
 			validate: func(t *testing.T, result skillDetailResult) {
+				t.Helper()
 				assert.True(t, result.Found)
 				assert.Equal(t, "test-skill", result.Name)
 				assert.Contains(t, result.RawContent, "Test Skill Content")
@@ -134,10 +140,12 @@ description: A test skill
 			name:      "skillNotFound",
 			skillName: "non-existent-skill",
 			setupFunc: func(t *testing.T, workspacePath string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai", "skills"), 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai", "skills"), 0o755))
 			},
 			wantFound: false,
 			validate: func(t *testing.T, result skillDetailResult) {
+				t.Helper()
 				assert.False(t, result.Found)
 			},
 		},
@@ -146,10 +154,10 @@ description: A test skill
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
+			server := NewServer(rootDir, newTestServerPaths(), "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
-			require.NoError(t, os.MkdirAll(workspacePath, 0755))
+			require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 			tt.setupFunc(t, workspacePath)
 
 			result := server.skillDetailService(workspacePath, tt.skillName)
@@ -165,8 +173,8 @@ func TestListSnippetsService(t *testing.T) {
 	t.Run("listSnippetsWithSnippets", func(t *testing.T) {
 		server, workspacePath := newTestServerWithWorkspace(t)
 		snippetsDir := filepath.Join(workspacePath, ".sgai", "snippets", "go")
-		require.NoError(t, os.MkdirAll(snippetsDir, 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(snippetsDir, "test-snippet.go"), []byte("---\nname: Test Snippet\ndescription: A test snippet\n---\npackage main"), 0644))
+		require.NoError(t, os.MkdirAll(snippetsDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(snippetsDir, "test-snippet.go"), []byte("---\nname: Test Snippet\ndescription: A test snippet\n---\npackage main"), 0o644))
 
 		result := server.listSnippetsService(workspacePath)
 		assert.NotEmpty(t, result.Languages)
@@ -174,7 +182,7 @@ func TestListSnippetsService(t *testing.T) {
 
 	t.Run("listSnippetsNoSnippets", func(t *testing.T) {
 		server, workspacePath := newTestServerWithWorkspace(t)
-		require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 
 		result := server.listSnippetsService(workspacePath)
 		assert.Empty(t, result.Languages)
@@ -193,18 +201,20 @@ func TestSnippetsByLanguageService(t *testing.T) {
 			name: "snippetsFound",
 			lang: "go",
 			setupFunc: func(t *testing.T, workspacePath string) {
+				t.Helper()
 				snippetsDir := filepath.Join(workspacePath, ".sgai", "snippets", "go")
-				require.NoError(t, os.MkdirAll(snippetsDir, 0755))
+				require.NoError(t, os.MkdirAll(snippetsDir, 0o755))
 				snippetContent := `---
 name: Test Snippet
 description: A test snippet
 ---
 package main`
 				snippetPath := filepath.Join(snippetsDir, "test-snippet.go")
-				require.NoError(t, os.WriteFile(snippetPath, []byte(snippetContent), 0644))
+				require.NoError(t, os.WriteFile(snippetPath, []byte(snippetContent), 0o644))
 			},
 			wantFound: true,
 			validate: func(t *testing.T, result snippetsByLanguageResult) {
+				t.Helper()
 				assert.True(t, result.Found)
 				assert.Equal(t, "go", result.Language)
 			},
@@ -213,10 +223,12 @@ package main`
 			name: "snippetsNotFound",
 			lang: "python",
 			setupFunc: func(t *testing.T, workspacePath string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai", "snippets"), 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai", "snippets"), 0o755))
 			},
 			wantFound: false,
 			validate: func(t *testing.T, result snippetsByLanguageResult) {
+				t.Helper()
 				assert.False(t, result.Found)
 			},
 		},
@@ -225,10 +237,10 @@ package main`
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
+			server := NewServer(rootDir, newTestServerPaths(), "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
-			require.NoError(t, os.MkdirAll(workspacePath, 0755))
+			require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 			tt.setupFunc(t, workspacePath)
 
 			result := server.snippetsByLanguageService(workspacePath, tt.lang)
@@ -254,8 +266,9 @@ func TestSnippetDetailService(t *testing.T) {
 			lang:     "go",
 			fileName: "test-snippet",
 			setupFunc: func(t *testing.T, workspacePath string) {
+				t.Helper()
 				snippetsDir := filepath.Join(workspacePath, ".sgai", "snippets", "go")
-				require.NoError(t, os.MkdirAll(snippetsDir, 0755))
+				require.NoError(t, os.MkdirAll(snippetsDir, 0o755))
 				snippetContent := `---
 name: Test Snippet
 description: A test snippet
@@ -263,10 +276,11 @@ when_to_use: When testing
 ---
 package main`
 				snippetPath := filepath.Join(snippetsDir, "test-snippet.go")
-				require.NoError(t, os.WriteFile(snippetPath, []byte(snippetContent), 0644))
+				require.NoError(t, os.WriteFile(snippetPath, []byte(snippetContent), 0o644))
 			},
 			wantFound: true,
 			validate: func(t *testing.T, result snippetDetailResult) {
+				t.Helper()
 				assert.True(t, result.Found)
 				assert.Equal(t, "Test Snippet", result.Name)
 				assert.Equal(t, "go", result.Language)
@@ -278,10 +292,12 @@ package main`
 			lang:     "go",
 			fileName: "non-existent",
 			setupFunc: func(t *testing.T, workspacePath string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai", "snippets", "go"), 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai", "snippets", "go"), 0o755))
 			},
 			wantFound: false,
 			validate: func(t *testing.T, result snippetDetailResult) {
+				t.Helper()
 				assert.False(t, result.Found)
 			},
 		},
@@ -290,10 +306,10 @@ package main`
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
+			server := NewServer(rootDir, newTestServerPaths(), "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
-			require.NoError(t, os.MkdirAll(workspacePath, 0755))
+			require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 			tt.setupFunc(t, workspacePath)
 
 			result := server.snippetDetailService(workspacePath, tt.lang, tt.fileName)
@@ -308,11 +324,11 @@ package main`
 func TestListModelsService(t *testing.T) {
 	t.Skip("Integration test - requires opencode CLI to be installed")
 	rootDir := t.TempDir()
-	server := NewServer(rootDir, serverPaths{}, "")
+	server := NewServer(rootDir, newTestServerPaths(), "")
 
 	workspacePath := filepath.Join(rootDir, "test-workspace")
-	require.NoError(t, os.MkdirAll(workspacePath, 0755))
-	require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+	require.NoError(t, os.MkdirAll(workspacePath, 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 
 	result := server.listModelsService("test-workspace")
 	assert.NotEmpty(t, result.Models)
@@ -321,7 +337,7 @@ func TestListModelsService(t *testing.T) {
 func TestListModelsServiceEmptyWorkspace(t *testing.T) {
 	t.Skip("Integration test - requires opencode CLI to be installed")
 	rootDir := t.TempDir()
-	server := NewServer(rootDir, serverPaths{}, "")
+	server := NewServer(rootDir, newTestServerPaths(), "")
 
 	result := server.listModelsService("non-existent-workspace")
 	assert.Empty(t, result.Models)

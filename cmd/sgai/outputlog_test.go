@@ -71,7 +71,7 @@ func TestCircularLogBufferLines(t *testing.T) {
 			}
 
 			lines := buf.lines()
-			assert.Equal(t, len(tt.expected), len(lines))
+			assert.Len(t, lines, len(tt.expected))
 			for i, expected := range tt.expected {
 				if i < len(lines) {
 					assert.Equal(t, expected.text, lines[i].text)
@@ -92,12 +92,12 @@ func TestRingWriterWrite(t *testing.T) {
 	rw := newRingWriter()
 
 	n, err := rw.Write([]byte("line1\n"))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, 6, n)
 	assert.Equal(t, 2, rw.size)
 
 	n, err = rw.Write([]byte("line2\n"))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, 6, n)
 	assert.Equal(t, 4, rw.size)
 }
@@ -106,13 +106,13 @@ func TestRingWriterWritePartial(t *testing.T) {
 	rw := newRingWriter()
 
 	n, err := rw.Write([]byte("partial"))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, 7, n)
 	assert.Equal(t, 0, rw.size)
 	assert.Equal(t, []byte("partial"), rw.partial)
 
 	n, err = rw.Write([]byte(" line\n"))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, 6, n)
 	assert.Equal(t, 2, rw.size)
 	assert.Nil(t, rw.partial)
@@ -138,7 +138,7 @@ func TestRingWriterDumpEmpty(t *testing.T) {
 	var buf bytes.Buffer
 	rw.dump(&buf)
 
-	assert.Equal(t, "", buf.String())
+	assert.Empty(t, buf.String())
 }
 
 func TestRingWriterDumpPartial(t *testing.T) {
@@ -240,13 +240,13 @@ func TestPrepareLogFile(t *testing.T) {
 		t.Cleanup(func() { _ = f.Close() })
 
 		_, errStat := os.Stat(logPath)
-		assert.NoError(t, errStat)
+		require.NoError(t, errStat)
 	})
 
 	t.Run("rotatesExisting", func(t *testing.T) {
 		dir := t.TempDir()
 		logPath := filepath.Join(dir, "output.log")
-		require.NoError(t, os.WriteFile(logPath, []byte("old content"), 0644))
+		require.NoError(t, os.WriteFile(logPath, []byte("old content"), 0o644))
 
 		f, err := prepareLogFile(logPath)
 		require.NoError(t, err)
@@ -262,16 +262,16 @@ func TestRotateLogFile(t *testing.T) {
 	t.Run("fileNotExists", func(t *testing.T) {
 		dir := t.TempDir()
 		err := rotateLogFile(filepath.Join(dir, "nonexistent.log"))
-		assert.NoError(t, err)
+		require.NoError(t, err)
 	})
 
 	t.Run("fileExists", func(t *testing.T) {
 		dir := t.TempDir()
 		logPath := filepath.Join(dir, "output.log")
-		require.NoError(t, os.WriteFile(logPath, []byte("content"), 0644))
+		require.NoError(t, os.WriteFile(logPath, []byte("content"), 0o644))
 
 		err := rotateLogFile(logPath)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		_, errStat := os.Stat(logPath)
 		assert.True(t, os.IsNotExist(errStat))
@@ -283,13 +283,14 @@ func TestRotateLogFile(t *testing.T) {
 }
 
 func TestSessionLogWriter(t *testing.T) {
-	sess := &session{outputLog: newCircularLogBuffer()}
+	sess := newTestSession()
+	sess.outputLog = newCircularLogBuffer()
 	srv, _ := setupTestServer(t)
 
 	w := newSessionLogWriter(sess, "/test", srv, "test-ws")
 
 	n, err := w.Write([]byte("hello world\n"))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, 12, n)
 
 	lines := sess.outputLog.lines()
@@ -298,7 +299,8 @@ func TestSessionLogWriter(t *testing.T) {
 }
 
 func TestSessionLogWriterMultipleLines(t *testing.T) {
-	sess := &session{outputLog: newCircularLogBuffer()}
+	sess := newTestSession()
+	sess.outputLog = newCircularLogBuffer()
 	srv, _ := setupTestServer(t)
 
 	w := newSessionLogWriter(sess, "/test", srv, "test-ws")
@@ -313,13 +315,14 @@ func TestSessionLogWriterMultipleLines(t *testing.T) {
 }
 
 func TestSessionLogWriterPartialLine(t *testing.T) {
-	sess := &session{outputLog: newCircularLogBuffer()}
+	sess := newTestSession()
+	sess.outputLog = newCircularLogBuffer()
 	srv, _ := setupTestServer(t)
 
 	w := newSessionLogWriter(sess, "/test", srv, "test-ws")
 
 	_, _ = w.Write([]byte("part"))
-	assert.Len(t, sess.outputLog.lines(), 0)
+	assert.Empty(t, sess.outputLog.lines())
 
 	_, _ = w.Write([]byte("ial\n"))
 	lines := sess.outputLog.lines()

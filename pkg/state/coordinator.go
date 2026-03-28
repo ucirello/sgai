@@ -23,6 +23,7 @@ type Coordinator struct {
 	currentPromptToken string
 	promptSeq          uint64
 	savePath           string
+	saveWorkflow       func(string, *Workflow) error
 
 	doneOnce    sync.Once
 	doneTimer   *time.Timer
@@ -39,44 +40,44 @@ func NewCoordinator(path string) (*Coordinator, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading coordinator state: %w", err)
 	}
-	return &Coordinator{
-		wf:       wf,
-		savePath: path,
-	}, nil
+	return newCoordinator(path, &wf), nil
 }
 
 // NewCoordinatorEmpty creates a Coordinator with an empty workflow state for the given path.
 // Use this when state.json does not yet exist and the workflow is starting fresh.
 func NewCoordinatorEmpty(path string) *Coordinator {
-	return &Coordinator{
-		wf: Workflow{
-			Status:   StatusWorking,
-			Progress: []ProgressEntry{},
-			Messages: []Message{},
-		},
-		savePath: path,
-	}
+	wf := NewWorkflow()
+	wf.Status = StatusWorking
+	return newCoordinator(path, &wf)
 }
 
 // NewCoordinatorWith creates a Coordinator seeded with the given workflow state and
 // persists it to disk immediately. Use this in tests and setup code that needs to
 // establish a known on-disk state before a Coordinator is loaded by the server.
+//
+//nolint:gocritic // Tests seed coordinators with value snapshots to avoid later aliasing.
 func NewCoordinatorWith(path string, wf Workflow) (*Coordinator, error) {
-	c := &Coordinator{
-		wf:       wf,
-		savePath: path,
-	}
-	if err := save(path, wf); err != nil {
+	c := newCoordinator(path, &wf)
+	snapshot := wf.detached()
+	if err := c.saveWorkflow(path, &snapshot); err != nil {
 		return nil, fmt.Errorf("saving initial coordinator state: %w", err)
 	}
 	return c, nil
+}
+
+func newCoordinator(path string, wf *Workflow) *Coordinator {
+	coord := new(Coordinator)
+	coord.wf = wf.detached()
+	coord.savePath = path
+	coord.saveWorkflow = save
+	return coord
 }
 
 // State returns a snapshot of the current workflow under the coordinator lock.
 func (c *Coordinator) State() Workflow {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.wf
+	return c.wf.detached()
 }
 
 // OnUpdate registers a callback that fires after every successful UpdateState.
@@ -93,12 +94,13 @@ func (c *Coordinator) OnUpdate(fn func()) {
 func (c *Coordinator) UpdateState(fn func(*Workflow)) error {
 	c.mu.Lock()
 	fn(&c.wf)
-	snapshot := c.wf
+	snapshot := c.wf.detached()
 	notify := c.onUpdate
-	c.mu.Unlock()
-	if err := save(c.savePath, snapshot); err != nil {
+	if err := c.saveWorkflow(c.savePath, &snapshot); err != nil {
+		c.mu.Unlock()
 		return err
 	}
+	c.mu.Unlock()
 	if notify != nil {
 		notify()
 	}
@@ -137,23 +139,7 @@ func (c *Coordinator) AskAndWait(ctx context.Context, question *MultiChoiceQuest
 	case <-ctx.Done():
 		log.Println("askandwait: context cancelled:", ctx.Err())
 		c.clearPendingQuestion(responseCh)
-		return "", ctx.Err()
-	}
-}
-
-func (c *Coordinator) clearPendingQuestion(responseCh chan string) {
-	c.mu.Lock()
-	if c.currentResponseCh == responseCh {
-		c.currentResponseCh = nil
-		c.currentPromptToken = ""
-	}
-	c.mu.Unlock()
-
-	if err := c.UpdateState(func(wf *Workflow) {
-		wf.MultiChoiceQuestion = nil
-		wf.HumanMessage = ""
-	}); err != nil {
-		log.Println("failed to clear pending human input:", err)
+		return "", fmt.Errorf("waiting for human response: %w", ctx.Err())
 	}
 }
 
@@ -179,32 +165,6 @@ func (c *Coordinator) RespondIfCurrent(promptToken, answer string) bool {
 	return c.respondIfCurrent(promptToken, answer)
 }
 
-func (c *Coordinator) respondIfCurrent(promptToken, answer string) bool {
-	c.mu.Lock()
-	responseCh := c.currentResponseCh
-	currentPromptToken := c.currentPromptToken
-	c.mu.Unlock()
-
-	if responseCh == nil {
-		log.Println("askandwait: no pending question, discarding response")
-		return false
-	}
-
-	if promptToken != "" && promptToken != currentPromptToken {
-		log.Println("askandwait: stale prompt token, discarding response")
-		return false
-	}
-
-	select {
-	case responseCh <- answer:
-		log.Println("askandwait: response queued for delivery")
-		return true
-	default:
-		log.Println("askandwait: response channel full, response discarded")
-		return false
-	}
-}
-
 // SetAgentCancel stores the cancel function for the current agent run.
 // It is called before each agent subprocess is launched so the watchdog can
 // terminate that specific run if it hangs after setting status:agent-done.
@@ -214,9 +174,9 @@ func (c *Coordinator) SetAgentCancel(cancel context.CancelFunc) {
 	c.mu.Unlock()
 }
 
-// GetAgentCancel returns the cancel function for the current agent run.
+// AgentCancel returns the cancel function for the current agent run.
 // Returns nil if none has been set or after ResetAgentDoneWatchdog clears it.
-func (c *Coordinator) GetAgentCancel() context.CancelFunc {
+func (c *Coordinator) AgentCancel() context.CancelFunc {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.agentCancel
@@ -262,5 +222,47 @@ func (c *Coordinator) Stop() {
 	defer c.mu.Unlock()
 	if c.doneTimer != nil {
 		c.doneTimer.Stop()
+	}
+}
+
+func (c *Coordinator) clearPendingQuestion(responseCh chan string) {
+	c.mu.Lock()
+	if c.currentResponseCh == responseCh {
+		c.currentResponseCh = nil
+		c.currentPromptToken = ""
+	}
+	c.mu.Unlock()
+
+	if err := c.UpdateState(func(wf *Workflow) {
+		wf.MultiChoiceQuestion = nil
+		wf.HumanMessage = ""
+	}); err != nil {
+		log.Println("failed to clear pending human input:", err)
+	}
+}
+
+func (c *Coordinator) respondIfCurrent(promptToken, answer string) bool {
+	c.mu.Lock()
+	responseCh := c.currentResponseCh
+	currentPromptToken := c.currentPromptToken
+	c.mu.Unlock()
+
+	if responseCh == nil {
+		log.Println("askandwait: no pending question, discarding response")
+		return false
+	}
+
+	if promptToken != "" && promptToken != currentPromptToken {
+		log.Println("askandwait: stale prompt token, discarding response")
+		return false
+	}
+
+	select {
+	case responseCh <- answer:
+		log.Println("askandwait: response queued for delivery")
+		return true
+	default:
+		log.Println("askandwait: response channel full, response discarded")
+		return false
 	}
 }

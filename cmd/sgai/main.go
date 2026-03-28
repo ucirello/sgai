@@ -51,7 +51,7 @@ func main() {
 
 	if requiresOpencode(subcommand) {
 		if _, err := exec.LookPath("opencode"); err != nil {
-			log.Println("opencode is required but not found in PATH")
+			fmt.Fprintln(os.Stderr, "opencode is required but not found in PATH")
 			os.Exit(1)
 		}
 	}
@@ -105,30 +105,29 @@ Examples:
 // mcpURL is the HTTP URL of the MCP server for this workflow.
 // logWriter, when non-nil, receives a copy of the agent output for the web UI log tab.
 // sessionCoord is the coordinator already managing state for this session; pass nil when starting standalone.
-func runWorkflow(ctx context.Context, dir string, mcpURL string, logWriter io.Writer, sessionCoord *state.Coordinator) {
-	runner, cleanup, ok := buildWorkflowRunner(dir, mcpURL, logWriter, sessionCoord)
-	if !ok {
+func runWorkflow(ctx context.Context, dir, mcpURL string, logWriter io.Writer, sessionCoord *state.Coordinator) {
+	runner, cleanup, errBuild := buildWorkflowRunner(dir, mcpURL, logWriter, sessionCoord)
+	if errBuild != nil {
+		log.Println("failed to build workflow runner:", errBuild)
 		return
 	}
 	defer cleanup()
 	runner.run(ctx)
 }
 
-func unlockInteractiveForRetrospective(wfState *state.Workflow, currentAgent string, coord *state.Coordinator, paddedsgai string) {
+func unlockInteractiveForRetrospective(wfState *state.Workflow, currentAgent string, coord *state.Coordinator, paddedsgai string) error {
 	if currentAgent != "retrospective" {
-		return
+		return nil
 	}
 	if wfState.InteractionMode == state.ModeRetrospective {
-		return
+		return nil
 	}
 	wfState.InteractionMode = state.ModeRetrospective
-	snapshot := *wfState
-	if errUpdate := coord.UpdateState(func(wf *state.Workflow) {
-		*wf = snapshot
-	}); errUpdate != nil {
-		log.Fatalln("failed to save state for retrospective unlock:", errUpdate)
+	if errSave := saveState(coord, wfState); errSave != nil {
+		return fmt.Errorf("save state for retrospective unlock: %w", errSave)
 	}
 	fmt.Println("["+paddedsgai+"]", "transitioning to retrospective mode")
+	return nil
 }
 
 func ensureImplicitAgentModel(flowDag *dag, metadata *GoalMetadata, agentName string) {
@@ -220,12 +219,12 @@ func hasPendingMessagesForAnyModel(messages []state.Message, models []string, ag
 	return false
 }
 
-func messageRecipientsForAgent(workingDir, toAgent string, metadata GoalMetadata) []string {
+func messageRecipientsForAgent(workingDir, toAgent string, modelsByAgent map[string]any) []string {
 	if toAgent == "" || strings.Contains(toAgent, ":") {
 		return []string{toAgent}
 	}
 
-	models := getModelsForAgent(metadata.Models, toAgent)
+	models := getModelsForAgent(modelsByAgent, toAgent)
 	if len(models) == 0 && workingDir != "" {
 		goalPath := filepath.Join(workingDir, "GOAL.md")
 		if content, errRead := os.ReadFile(goalPath); errRead == nil {
@@ -293,53 +292,52 @@ type multiModelConfig struct {
 	stderrLog        io.Writer
 }
 
-func runMultiModelAgent(ctx context.Context, cfg multiModelConfig, wfState state.Workflow, metadata GoalMetadata, iterationCounter *int) state.Workflow {
+func runMultiModelAgent(ctx context.Context, cfg *multiModelConfig, wfState *state.Workflow, metadata *GoalMetadata, iterationCounter *int) state.Workflow {
+	currentState := *wfState
 	models := getModelsForAgent(metadata.Models, cfg.agent)
 	if len(models) <= 1 {
-		return runSingleModelIteration(ctx, cfg, wfState, metadata, iterationCounter, models)
+		return runSingleModelIteration(ctx, cfg, &currentState, metadata, iterationCounter, models)
 	}
 
-	wfState.ModelStatuses = syncModelStatuses(wfState.ModelStatuses, models, cfg.agent)
-	if errUpdate := cfg.coord.UpdateState(func(wf *state.Workflow) {
-		*wf = wfState
-	}); errUpdate != nil {
-		log.Fatalln("failed to save state before multi-model loop:", errUpdate)
+	currentState.ModelStatuses = syncModelStatuses(currentState.ModelStatuses, models, cfg.agent)
+	if errSave := saveState(cfg.coord, &currentState); errSave != nil {
+		return failWorkflowState(cfg, &currentState, "failed to save state before multi-model loop: %v", errSave)
 	}
 
 	for {
 		if ctx.Err() != nil {
 			fmt.Println("["+cfg.paddedsgai+"]", "interrupted, stopping multi-model agent...")
-			return wfState
+			return currentState
 		}
 
-		var errReloadGoalMetadata error
-		metadata, errReloadGoalMetadata = tryReloadGoalMetadata(cfg.goalPath, metadata, cfg.flowDag)
+		updatedMetadata, errReloadGoalMetadata := tryReloadGoalMetadata(cfg.goalPath, metadata, cfg.flowDag)
 		if errReloadGoalMetadata != nil {
-			log.Fatalln("failed to reload GOAL.md frontmatter:", errReloadGoalMetadata)
+			return failWorkflowState(cfg, &currentState, "failed to reload GOAL.md frontmatter: %v", errReloadGoalMetadata)
 		}
+		*metadata = updatedMetadata
 		newModels := getModelsForAgent(metadata.Models, cfg.agent)
 
 		if len(newModels) <= 1 {
 			fmt.Println("["+cfg.paddedsgai+"]", "switching to single-model mode for", cfg.agent)
-			cleanupModelStatuses(&wfState)
-			return runSingleModelIteration(ctx, cfg, wfState, metadata, iterationCounter, newModels)
+			cleanupModelStatuses(&currentState)
+			return runSingleModelIteration(ctx, cfg, &currentState, metadata, iterationCounter, newModels)
 		}
 
-		wfState.ModelStatuses = syncModelStatuses(wfState.ModelStatuses, newModels, cfg.agent)
+		currentState.ModelStatuses = syncModelStatuses(currentState.ModelStatuses, newModels, cfg.agent)
 		models = newModels
 
 		for _, modelSpec := range models {
 			if ctx.Err() != nil {
-				return wfState
+				return currentState
 			}
 
 			modelID := formatModelID(cfg.agent, modelSpec)
 
-			currentStatus := wfState.ModelStatuses[modelID]
-			hasMessages := hasMessagesForModel(wfState.Messages, modelID)
+			currentStatus := currentState.ModelStatuses[modelID]
+			hasMessages := hasMessagesForModel(currentState.Messages, modelID)
 
 			if currentStatus == "model-done" && hasMessages {
-				wfState.ModelStatuses[modelID] = "model-working"
+				currentState.ModelStatuses[modelID] = "model-working"
 				currentStatus = "model-working"
 				fmt.Println("["+cfg.paddedsgai+"]", "reverting", modelID, "to model-working due to pending messages")
 			}
@@ -348,47 +346,41 @@ func runMultiModelAgent(ctx context.Context, cfg multiModelConfig, wfState state
 				continue
 			}
 
-			wfState.CurrentModel = modelID
-			if errUpdate := cfg.coord.UpdateState(func(wf *state.Workflow) {
-				*wf = wfState
-			}); errUpdate != nil {
-				log.Fatalln("failed to save state before model iteration:", errUpdate)
+			currentState.CurrentModel = modelID
+			if errSave := saveState(cfg.coord, &currentState); errSave != nil {
+				return failWorkflowState(cfg, &currentState, "failed to save state before model iteration: %v", errSave)
 			}
 
 			fmt.Println("["+cfg.paddedsgai+"]", "running model:", modelID)
-			wfState = runSingleModelIteration(ctx, cfg, wfState, metadata, iterationCounter, []string{modelSpec})
+			currentState = runSingleModelIteration(ctx, cfg, &currentState, metadata, iterationCounter, []string{modelSpec})
 
 			newState := cfg.coord.State()
 
 			switch newState.Status {
 			case state.StatusAgentDone:
-				wfState.ModelStatuses[modelID] = "model-done"
-				wfState.Status = state.StatusWorking
-				if errUpdate := cfg.coord.UpdateState(func(wf *state.Workflow) {
-					*wf = wfState
-				}); errUpdate != nil {
-					log.Fatalln("failed to save state after model done:", errUpdate)
+				currentState.ModelStatuses[modelID] = "model-done"
+				currentState.Status = state.StatusWorking
+				if errSave := saveState(cfg.coord, &currentState); errSave != nil {
+					return failWorkflowState(cfg, &currentState, "failed to save state after model done: %v", errSave)
 				}
 			case state.StatusComplete:
 				return newState
 			}
 		}
 
-		if allModelsDone(wfState.ModelStatuses) && !hasPendingMessagesForAnyModel(wfState.Messages, models, cfg.agent) {
+		if allModelsDone(currentState.ModelStatuses) && !hasPendingMessagesForAnyModel(currentState.Messages, models, cfg.agent) {
 			fmt.Println("["+cfg.paddedsgai+"]", "multi-model consensus reached for", cfg.agent)
-			cleanupModelStatuses(&wfState)
-			wfState.Status = state.StatusAgentDone
-			if errUpdate := cfg.coord.UpdateState(func(wf *state.Workflow) {
-				*wf = wfState
-			}); errUpdate != nil {
-				log.Fatalln("failed to save state after consensus:", errUpdate)
+			cleanupModelStatuses(&currentState)
+			currentState.Status = state.StatusAgentDone
+			if errSave := saveState(cfg.coord, &currentState); errSave != nil {
+				return failWorkflowState(cfg, &currentState, "failed to save state after consensus: %v", errSave)
 			}
-			return wfState
+			return currentState
 		}
 	}
 }
 
-func runSingleModelIteration(ctx context.Context, cfg multiModelConfig, wfState state.Workflow, metadata GoalMetadata, iterationCounter *int, models []string) state.Workflow {
+func runSingleModelIteration(ctx context.Context, cfg *multiModelConfig, wfState *state.Workflow, metadata *GoalMetadata, iterationCounter *int, models []string) state.Workflow {
 	modelSpec := ""
 	if len(models) > 0 {
 		modelSpec = models[0]
@@ -396,7 +388,8 @@ func runSingleModelIteration(ctx context.Context, cfg multiModelConfig, wfState 
 	return runFlowAgentWithModel(ctx, cfg, wfState, metadata, iterationCounter, modelSpec)
 }
 
-func runFlowAgentWithModel(ctx context.Context, cfg multiModelConfig, wfState state.Workflow, metadata GoalMetadata, iterationCounter *int, modelSpec string) state.Workflow {
+func runFlowAgentWithModel(ctx context.Context, cfg *multiModelConfig, wfState *state.Workflow, metadata *GoalMetadata, iterationCounter *int, modelSpec string) state.Workflow {
+	currentState := *wfState
 	paddedAgentName := cfg.agent + strings.Repeat(" ", max(0, cfg.longestNameLen-len(cfg.agent)))
 	var capturedSessionID string
 	var consecutiveWorkingIterations int
@@ -405,26 +398,32 @@ func runFlowAgentWithModel(ctx context.Context, cfg multiModelConfig, wfState st
 	for {
 		if ctx.Err() != nil {
 			fmt.Println("["+cfg.paddedsgai+"]", "interrupted, stopping agent...")
-			return wfState
+			return currentState
 		}
 
 		*iterationCounter++
 		prefix := buildAgentPrefix(cfg.dir, paddedAgentName, *iterationCounter)
 
-		saveState(cfg.coord, wfState)
-		copyProjectManagementToRetrospective(cfg.dir, cfg.retrospectiveDir)
+		if errSave := saveState(cfg.coord, &currentState); errSave != nil {
+			return failWorkflowState(cfg, &currentState, "failed to save state: %v", errSave)
+		}
+		if errCopy := copyProjectManagementToRetrospective(cfg.dir, cfg.retrospectiveDir); errCopy != nil {
+			log.Println("failed to copy PROJECT_MANAGEMENT.md to retrospective:", errCopy)
+		}
 
 		baseAgent := resolveBaseAgent(metadata.Alias, cfg.agent)
 		agentArgs := buildAgentArgs(cfg.agent, baseAgent, modelSpec, capturedSessionID)
-		agentMsg := buildAgentMessage(cfg, wfState, metadata)
+		agentMsg := buildAgentMessage(cfg, &currentState, metadata)
 
-		newState, capturedSessionID, errExec := executeAgentProcess(ctx, cfg, agentArgs, agentMsg, prefix, outputCapture, wfState)
+		newState, capturedSessionID, errExec := executeAgentProcess(ctx, cfg, agentArgs, agentMsg, prefix, outputCapture, &currentState)
 		if errExec != nil {
 			return *errExec
 		}
 
 		if cfg.retrospectiveDir != "" && capturedSessionID != "" && shouldLogAgent(cfg.dir, baseAgent) {
-			exportAgentSession(cfg, capturedSessionID, *iterationCounter)
+			if errExport := exportAgentSession(cfg, capturedSessionID, *iterationCounter); errExport != nil {
+				log.Println("failed to export session:", errExport)
+			}
 		}
 
 		if newState.VisitCounts == nil {
@@ -433,25 +432,29 @@ func runFlowAgentWithModel(ctx context.Context, cfg multiModelConfig, wfState st
 
 		switch newState.Status {
 		case state.StatusComplete:
-			return handleCompleteStatus(ctx, cfg, newState, wfState, metadata)
+			return handleCompleteStatus(ctx, cfg, &newState, metadata)
 
 		case state.StatusAgentDone:
-			saveState(cfg.coord, newState)
+			if errSave := saveState(cfg.coord, &newState); errSave != nil {
+				return failWorkflowState(cfg, &newState, "failed to save state: %v", errSave)
+			}
 			fmt.Println("["+cfg.paddedsgai+"]", "agent", cfg.agent, "done:", newState.Task)
 			return newState
 
 		case state.StatusWorking:
-			saveState(cfg.coord, newState)
-			if agentHasUnreadOutgoingMessages(newState, cfg.agent) {
+			if errSave := saveState(cfg.coord, &newState); errSave != nil {
+				return failWorkflowState(cfg, &newState, "failed to save state: %v", errSave)
+			}
+			if agentHasUnreadOutgoingMessages(&newState, cfg.agent) {
 				fmt.Println("["+cfg.paddedsgai+"]", "agent", cfg.agent, "sent message(s), yielding control...")
 				return newState
 			}
 			consecutiveWorkingIterations = handleWorkingLoop(cfg, &capturedSessionID, consecutiveWorkingIterations)
-			wfState = newState
+			currentState = newState
 			continue
 
 		default:
-			log.Fatalln("["+cfg.paddedsgai+"]", "unexpected status:", newState.Status)
+			return failWorkflowState(cfg, &newState, "[%s] unexpected status: %s", cfg.paddedsgai, newState.Status)
 		}
 	}
 }
@@ -461,26 +464,41 @@ func buildAgentPrefix(dir, paddedAgentName string, iteration int) string {
 	return fmt.Sprintf("[%s][%s:%04d]", workspaceName, paddedAgentName, iteration)
 }
 
-func saveState(coord *state.Coordinator, s state.Workflow) {
+func saveState(coord *state.Coordinator, wfState *state.Workflow) error {
 	if errUpdate := coord.UpdateState(func(wf *state.Workflow) {
-		*wf = s
+		*wf = *wfState
 	}); errUpdate != nil {
-		log.Fatalln("failed to save state:", errUpdate)
+		return fmt.Errorf("save state: %w", errUpdate)
 	}
+	return nil
 }
 
-func copyProjectManagementToRetrospective(dir, retrospectiveDir string) {
+func failWorkflowState(cfg *multiModelConfig, wfState *state.Workflow, format string, args ...any) state.Workflow {
+	currentState := *wfState
+	message := fmt.Sprintf(format, args...)
+	log.Println(message)
+	currentState.Status = state.StatusAgentDone
+	currentState.Task = message
+	addEnvironmentMessage(&currentState, cfg.agent, message)
+	if errSave := saveState(cfg.coord, &currentState); errSave != nil {
+		log.Println("failed to save workflow failure state:", errSave)
+	}
+	return currentState
+}
+
+func copyProjectManagementToRetrospective(dir, retrospectiveDir string) error {
 	if retrospectiveDir == "" {
-		return
+		return nil
 	}
 	pmPath := filepath.Join(dir, ".sgai", "PROJECT_MANAGEMENT.md")
 	if _, errStat := os.Stat(pmPath); errStat != nil {
-		return
+		return nil
 	}
 	pmRetrospectivePath := filepath.Join(retrospectiveDir, "PROJECT_MANAGEMENT.md")
 	if err := copyFileAtomic(pmPath, pmRetrospectivePath); err != nil {
-		log.Fatalln("failed to copy PROJECT_MANAGEMENT.md to retrospective:", err)
+		return fmt.Errorf("copy PROJECT_MANAGEMENT.md to retrospective: %w", err)
 	}
+	return nil
 }
 
 func buildAgentArgs(agent, baseAgent, modelSpec, sessionID string) []string {
@@ -503,7 +521,7 @@ func buildAgentArgs(agent, baseAgent, modelSpec, sessionID string) []string {
 	return args
 }
 
-func buildAgentMessage(cfg multiModelConfig, wfState state.Workflow, metadata GoalMetadata) string {
+func buildAgentMessage(cfg *multiModelConfig, wfState *state.Workflow, metadata *GoalMetadata) string {
 	msg := buildFlowMessage(cfg.flowDag, cfg.agent, wfState.VisitCounts, cfg.dir, metadata.Alias)
 
 	multiModelSection := buildMultiModelSection(wfState.CurrentModel, metadata.Models, cfg.agent)
@@ -512,8 +530,8 @@ func buildAgentMessage(cfg multiModelConfig, wfState state.Workflow, metadata Go
 	}
 
 	pendingCount := 0
-	for _, m := range wfState.Messages {
-		if !m.Read && messageMatchesRecipient(m, cfg.agent, wfState.CurrentModel) {
+	for i := range wfState.Messages {
+		if !wfState.Messages[i].Read && messageMatchesRecipient(&wfState.Messages[i], cfg.agent, wfState.CurrentModel) {
 			pendingCount++
 		}
 	}
@@ -521,15 +539,15 @@ func buildAgentMessage(cfg multiModelConfig, wfState state.Workflow, metadata Go
 		msg = fmt.Sprintf("\nYOU HAVE %d PENDING MESSAGE(S). YOU MUST CALL `sgai_check_inbox()` TO READ THEM.\n", pendingCount) + msg
 	}
 
-	pendingTodosCount := countPendingTodos(wfState, cfg.agent)
+	pendingTodosCount := countPendingTodos(todosForAgent(wfState, cfg.agent))
 	if pendingTodosCount > 0 {
 		msg += fmt.Sprintf("\nYou have %d pending TODO items. Please complete them before marking agent-done.\n", pendingTodosCount)
 	}
 
 	if cfg.agent != "coordinator" {
 		outboxPending := 0
-		for _, m := range wfState.Messages {
-			if !m.Read && messageMatchesSender(m, cfg.agent, wfState.CurrentModel) {
+		for i := range wfState.Messages {
+			if !wfState.Messages[i].Read && messageMatchesSender(&wfState.Messages[i], cfg.agent, wfState.CurrentModel) {
 				outboxPending++
 			}
 		}
@@ -556,7 +574,7 @@ func opencodeEnv(overrides ...string) []string {
 	return append(env, overrides...)
 }
 
-func buildAgentEnv(cfg multiModelConfig, modelSpec string) ([]string, error) {
+func buildAgentEnv(cfg *multiModelConfig, modelSpec string) ([]string, error) {
 	agentIdentity := cfg.agent
 	if modelSpec != "" {
 		model, variant := parseModelAndVariant(modelSpec)
@@ -575,11 +593,17 @@ func buildAgentEnv(cfg multiModelConfig, modelSpec string) ([]string, error) {
 		"SGAI_AGENT_IDENTITY="+agentIdentity), nil
 }
 
-func executeAgentProcess(ctx context.Context, cfg multiModelConfig, agentArgs []string, agentMsg, prefix string, outputCapture *ringWriter, wfState state.Workflow) (state.Workflow, string, *state.Workflow) {
+func executeAgentProcess(ctx context.Context, cfg *multiModelConfig, agentArgs []string, agentMsg, prefix string, outputCapture *ringWriter, wfState *state.Workflow) (newState state.Workflow, sessionID string, errState *state.Workflow) {
+	var zeroState state.Workflow
 	stderrOut := buildAgentOutputWriter(os.Stderr, cfg.logWriter, cfg.stderrLog)
 	stdoutOut := buildAgentOutputWriter(os.Stdout, cfg.logWriter, cfg.stdoutLog)
 	stderrWriter := &prefixWriter{prefix: prefix + " ", w: stderrOut, startTime: time.Now()}
-	jsonWriter := &jsonPrettyWriter{prefix: prefix + " ", w: stdoutOut, coord: cfg.coord, currentAgent: cfg.agent, startTime: time.Now()}
+	var jsonWriter jsonPrettyWriter
+	jsonWriter.prefix = prefix + " "
+	jsonWriter.w = stdoutOut
+	jsonWriter.coord = cfg.coord
+	jsonWriter.currentAgent = cfg.agent
+	jsonWriter.startTime = time.Now()
 
 	cfg.coord.ResetAgentDoneWatchdog()
 	agentEnv, errBuildAgentEnv := buildAgentEnv(cfg, extractModelFromArgs(agentArgs))
@@ -588,11 +612,11 @@ func executeAgentProcess(ctx context.Context, cfg multiModelConfig, agentArgs []
 		if errUpdate := cfg.coord.UpdateState(func(wf *state.Workflow) {
 			wf.Status = state.StatusAgentDone
 		}); errUpdate != nil {
-			log.Fatalln("failed to save state:", errUpdate)
+			log.Println("failed to save state:", errUpdate)
 		}
 		fmt.Fprintln(os.Stderr, "agent", cfg.agent, "marked as agent-done due to setup failure")
 		result := cfg.coord.State()
-		return state.Workflow{}, "", &result
+		return zeroState, "", &result
 	}
 
 	agentCtx, agentCancel := context.WithCancel(ctx)
@@ -600,23 +624,24 @@ func executeAgentProcess(ctx context.Context, cfg multiModelConfig, agentArgs []
 
 	cmd := exec.CommandContext(agentCtx, "opencode", agentArgs...)
 	cmd.Dir = cfg.dir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var procAttr syscall.SysProcAttr
+	procAttr.Setpgid = true
+	cmd.SysProcAttr = &procAttr
 	cmd.Env = agentEnv
 	cmd.Stdin = strings.NewReader(agentMsg)
 	cmd.Stderr = io.MultiWriter(stderrWriter, outputCapture)
-	cmd.Stdout = io.MultiWriter(jsonWriter, outputCapture)
+	cmd.Stdout = io.MultiWriter(&jsonWriter, outputCapture)
 
 	if errStart := cmd.Start(); errStart != nil {
 		agentCancel()
 		fmt.Fprintln(os.Stderr, "failed to start opencode:", errStart)
-		if errUpdate := cfg.coord.UpdateState(func(wf *state.Workflow) {
-			wf.Status = state.StatusAgentDone
-		}); errUpdate != nil {
-			log.Fatalln("failed to save state:", errUpdate)
+		result := cfg.coord.State()
+		result.Status = state.StatusAgentDone
+		if errSave := saveState(cfg.coord, &result); errSave != nil {
+			log.Println("failed to save state:", errSave)
 		}
 		fmt.Fprintln(os.Stderr, "agent", cfg.agent, "marked as agent-done due to start failure")
-		result := cfg.coord.State()
-		return state.Workflow{}, "", &result
+		return zeroState, "", &result
 	}
 
 	processExited := make(chan struct{})
@@ -630,19 +655,18 @@ func executeAgentProcess(ctx context.Context, cfg multiModelConfig, agentArgs []
 	if errWait != nil {
 		if ctx.Err() != nil {
 			fmt.Println("["+cfg.paddedsgai+"]", "interrupted during agent execution")
-			return state.Workflow{}, "", &wfState
+			return zeroState, "", wfState
 		}
 		fmt.Fprintln(os.Stderr, "\n=== RAW AGENT OUTPUT (last 1000 lines) ===")
 		outputCapture.dump(os.Stderr)
 		fmt.Fprintln(os.Stderr, "=== END RAW AGENT OUTPUT ===")
-		if errUpdate := cfg.coord.UpdateState(func(wf *state.Workflow) {
-			wf.Status = state.StatusAgentDone
-		}); errUpdate != nil {
-			log.Fatalln("failed to save state:", errUpdate)
+		result := cfg.coord.State()
+		result.Status = state.StatusAgentDone
+		if errSave := saveState(cfg.coord, &result); errSave != nil {
+			log.Println("failed to save state:", errSave)
 		}
 		fmt.Fprintln(os.Stderr, "agent", cfg.agent, "marked as agent-done due to error", errWait)
-		result := cfg.coord.State()
-		return state.Workflow{}, "", &result
+		return zeroState, "", &result
 	}
 
 	jsonWriter.Flush()
@@ -677,23 +701,26 @@ func extractModelFromArgs(args []string) string {
 	return model + " (" + variant + ")"
 }
 
-func exportAgentSession(cfg multiModelConfig, sessionID string, iteration int) {
+func exportAgentSession(cfg *multiModelConfig, sessionID string, iteration int) error {
 	timestamp := time.Now().Format("20060102150405")
 	sessionFile := filepath.Join(cfg.retrospectiveDir, fmt.Sprintf("%04d-%s-%s.json", iteration, cfg.agent, timestamp))
 	if err := exportSession(cfg.dir, sessionID, sessionFile); err != nil {
-		log.Fatalln("failed to export session:", err)
+		return fmt.Errorf("export session: %w", err)
 	}
+	return nil
 }
 
-func handleCompleteStatus(ctx context.Context, cfg multiModelConfig, newState, wfState state.Workflow, metadata GoalMetadata) state.Workflow {
+func handleCompleteStatus(ctx context.Context, cfg *multiModelConfig, newState *state.Workflow, metadata *GoalMetadata) state.Workflow {
 	if cfg.agent != "coordinator" {
 		fmt.Println("["+cfg.paddedsgai+"]", "agent", cfg.agent, "set status=complete, only coordinator can complete workflow; treating as agent-done")
 		newState.Status = state.StatusAgentDone
-		saveState(cfg.coord, newState)
-		return newState
+		if errSave := saveState(cfg.coord, newState); errSave != nil {
+			return failWorkflowState(cfg, newState, "failed to save state: %v", errSave)
+		}
+		return *newState
 	}
 
-	if blocked := blockCompletionOnPendingTodos(cfg, newState, wfState); blocked != nil {
+	if blocked := blockCompletionOnPendingTodos(cfg, newState); blocked != nil {
 		return *blocked
 	}
 
@@ -709,12 +736,14 @@ func handleCompleteStatus(ctx context.Context, cfg multiModelConfig, newState, w
 		return *blocked
 	}
 
-	copyCompletionArtifactsToRetrospective(cfg)
-	return newState
+	if errCopy := copyCompletionArtifactsToRetrospective(cfg); errCopy != nil {
+		log.Println("failed to copy completion artifacts to retrospective:", errCopy)
+	}
+	return *newState
 }
 
-func blockCompletionOnProjectCriticCouncil(cfg multiModelConfig, newState state.Workflow, metadata GoalMetadata) *state.Workflow {
-	if !retrospectiveEnabled(metadata) {
+func blockCompletionOnProjectCriticCouncil(cfg *multiModelConfig, newState *state.Workflow, metadata *GoalMetadata) *state.Workflow {
+	if !retrospectiveEnabled(metadata.Retrospective) {
 		return nil
 	}
 	if _, exists := cfg.flowDag.Nodes["project-critic-council"]; !exists {
@@ -725,13 +754,15 @@ func blockCompletionOnProjectCriticCouncil(cfg multiModelConfig, newState state.
 	}
 	fmt.Println("["+cfg.paddedsgai+"]", "blocking completion: project-critic-council has not returned a verdict yet")
 	newState.Status = state.StatusAgentDone
-	addProjectCriticCouncilRedirectMessages(&newState, cfg.dir, cfg.agent, metadata)
-	saveState(cfg.coord, newState)
-	return &newState
+	addProjectCriticCouncilRedirectMessages(newState, cfg.dir, cfg.agent, metadata.Models)
+	if errSave := saveState(cfg.coord, newState); errSave != nil {
+		log.Println("failed to save state:", errSave)
+	}
+	return newState
 }
 
-func blockCompletionOnRetrospective(cfg multiModelConfig, newState state.Workflow, metadata GoalMetadata) *state.Workflow {
-	if !retrospectiveEnabled(metadata) {
+func blockCompletionOnRetrospective(cfg *multiModelConfig, newState *state.Workflow, metadata *GoalMetadata) *state.Workflow {
+	if !retrospectiveEnabled(metadata.Retrospective) {
 		return nil
 	}
 	if _, exists := cfg.flowDag.Nodes["retrospective"]; !exists {
@@ -742,16 +773,18 @@ func blockCompletionOnRetrospective(cfg multiModelConfig, newState state.Workflo
 	}
 	fmt.Println("["+cfg.paddedsgai+"]", "blocking completion: retrospective agent has not run yet")
 	newState.Status = state.StatusAgentDone
-	addRetrospectiveRedirectMessage(&newState, cfg.agent)
-	saveState(cfg.coord, newState)
-	return &newState
+	addRetrospectiveRedirectMessage(newState, cfg.agent)
+	if errSave := saveState(cfg.coord, newState); errSave != nil {
+		log.Println("failed to save state:", errSave)
+	}
+	return newState
 }
 
-func addProjectCriticCouncilRedirectMessages(s *state.Workflow, workingDir, fromAgent string, metadata GoalMetadata) {
+func addProjectCriticCouncilRedirectMessages(s *state.Workflow, workingDir, fromAgent string, modelsByAgent map[string]any) {
 	if hasUnreadMessageForAgent(s.Messages, "project-critic-council") {
 		return
 	}
-	recipients := messageRecipientsForAgent(workingDir, "project-critic-council", metadata)
+	recipients := messageRecipientsForAgent(workingDir, "project-critic-council", modelsByAgent)
 	createdAt := time.Now().UTC().Format(time.RFC3339)
 	for _, recipient := range recipients {
 		s.Messages = append(s.Messages, state.Message{
@@ -760,6 +793,8 @@ func addProjectCriticCouncilRedirectMessages(s *state.Workflow, workingDir, from
 			ToAgent:   recipient,
 			Body:      "All work is complete and verified. Please return your final completion verdict before retrospective begins.",
 			Read:      false,
+			ReadAt:    "",
+			ReadBy:    "",
 			CreatedAt: createdAt,
 		})
 	}
@@ -775,6 +810,8 @@ func addRetrospectiveRedirectMessage(s *state.Workflow, fromAgent string) {
 		ToAgent:   "retrospective",
 		Body:      "All work is complete and verified. Please run the retrospective analysis.",
 		Read:      false,
+		ReadAt:    "",
+		ReadBy:    "",
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	})
 }
@@ -788,59 +825,61 @@ func hasUnreadMessageForAgent(messages []state.Message, toAgent string) bool {
 	return false
 }
 
-func blockCompletionOnPendingTodos(cfg multiModelConfig, newState, wfState state.Workflow) *state.Workflow {
-	count := 0
-	for _, todo := range wfState.Todos {
-		if todo.Status != "completed" && todo.Status != "cancelled" {
-			count++
-		}
-	}
+func blockCompletionOnPendingTodos(cfg *multiModelConfig, newState *state.Workflow) *state.Workflow {
+	count := countPendingTodos(todosForAgent(newState, cfg.agent))
 	if count == 0 {
 		return nil
 	}
 	fmt.Println("["+cfg.paddedsgai+"]", "coordinator cannot complete workflow, there are pending TODO items")
 	newState.Status = state.StatusWorking
-	addEnvironmentMessage(&newState, cfg.agent, fmt.Sprintf("# Pending TODO items.\nYou have %d pending TODO items. Please complete them before marking workflow complete.\n", count))
-	saveState(cfg.coord, newState)
-	return &newState
+	addEnvironmentMessage(newState, cfg.agent, fmt.Sprintf("# Pending TODO items.\nYou have %d pending TODO items. Please complete them before marking workflow complete.\n", count))
+	if errSave := saveState(cfg.coord, newState); errSave != nil {
+		log.Println("failed to save state:", errSave)
+	}
+	return newState
 }
 
-func blockCompletionOnGateScript(ctx context.Context, cfg multiModelConfig, newState state.Workflow, metadata GoalMetadata) *state.Workflow {
+func blockCompletionOnGateScript(ctx context.Context, cfg *multiModelConfig, newState *state.Workflow, metadata *GoalMetadata) *state.Workflow {
 	if metadata.CompletionGateScript == "" {
 		return nil
 	}
 	fmt.Println("["+cfg.paddedsgai+"]", "running completionGateScript:", metadata.CompletionGateScript)
 	newState.Task = "running completionGateScript: " + metadata.CompletionGateScript
-	saveState(cfg.coord, newState)
+	if errSave := saveState(cfg.coord, newState); errSave != nil {
+		log.Println("failed to save state:", errSave)
+	}
 	output, errScript := runCompletionGateScript(ctx, cfg.dir, metadata.CompletionGateScript)
 	if errScript == nil {
 		return nil
 	}
 	fmt.Println("["+cfg.paddedsgai+"]", "completionGateScript failed, blocking completion")
 	newState.Status = state.StatusWorking
-	addEnvironmentMessage(&newState, cfg.agent, formatCompletionGateScriptFailureMessage(metadata.CompletionGateScript, output))
-	saveState(cfg.coord, newState)
-	return &newState
+	addEnvironmentMessage(newState, cfg.agent, formatCompletionGateScriptFailureMessage(metadata.CompletionGateScript, output))
+	if errSave := saveState(cfg.coord, newState); errSave != nil {
+		log.Println("failed to save state:", errSave)
+	}
+	return newState
 }
 
-func copyCompletionArtifactsToRetrospective(cfg multiModelConfig) {
+func copyCompletionArtifactsToRetrospective(cfg *multiModelConfig) error {
 	if cfg.retrospectiveDir == "" {
-		return
+		return nil
 	}
 	goalRetrospectivePath := filepath.Join(cfg.retrospectiveDir, "GOAL.md")
 	if err := copyFileAtomic(cfg.goalPath, goalRetrospectivePath); err != nil {
-		log.Fatalln("failed to copy GOAL.md to retrospective:", err)
+		return fmt.Errorf("copy GOAL.md to retrospective: %w", err)
 	}
 	pmPath := filepath.Join(cfg.dir, ".sgai", "PROJECT_MANAGEMENT.md")
 	if _, errStat := os.Stat(pmPath); errStat == nil {
 		pmRetrospectivePath := filepath.Join(cfg.retrospectiveDir, "PROJECT_MANAGEMENT.md")
 		if err := copyFileAtomic(pmPath, pmRetrospectivePath); err != nil {
-			log.Fatalln("failed to copy PROJECT_MANAGEMENT.md to retrospective:", err)
+			return fmt.Errorf("copy PROJECT_MANAGEMENT.md to retrospective: %w", err)
 		}
 	}
+	return nil
 }
 
-func handleWorkingLoop(cfg multiModelConfig, capturedSessionID *string, consecutiveWorkingIterations int) int {
+func handleWorkingLoop(cfg *multiModelConfig, capturedSessionID *string, consecutiveWorkingIterations int) int {
 	consecutiveWorkingIterations++
 	if consecutiveWorkingIterations >= maxConsecutiveWorkingIterations {
 		fmt.Println("["+cfg.paddedsgai+"]", "agent", cfg.agent, "stuck in working loop after", consecutiveWorkingIterations, "iterations; discarding session to recover")
@@ -851,9 +890,9 @@ func handleWorkingLoop(cfg multiModelConfig, capturedSessionID *string, consecut
 	return consecutiveWorkingIterations
 }
 
-func agentHasUnreadOutgoingMessages(s state.Workflow, agentName string) bool {
-	for _, msg := range s.Messages {
-		if !msg.Read && messageMatchesSender(msg, agentName, s.CurrentModel) {
+func agentHasUnreadOutgoingMessages(wfState *state.Workflow, agentName string) bool {
+	for i := range wfState.Messages {
+		if !wfState.Messages[i].Read && messageMatchesSender(&wfState.Messages[i], agentName, wfState.CurrentModel) {
 			return true
 		}
 	}
@@ -877,6 +916,8 @@ func addEnvironmentMessage(wfState *state.Workflow, toAgent, body string) {
 		ToAgent:   toAgent,
 		Body:      body,
 		Read:      false,
+		ReadAt:    "",
+		ReadBy:    "",
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	})
 }
@@ -885,7 +926,7 @@ func addAgentHandoffProgress(wfState *state.Workflow, targetAgent string) {
 	progressEntry := state.ProgressEntry{
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
 		Agent:       "sgai",
-		Description: fmt.Sprintf("Handing off to %s", targetAgent),
+		Description: "Handing off to " + targetAgent,
 	}
 	wfState.Progress = append(wfState.Progress, progressEntry)
 }
@@ -910,14 +951,18 @@ func markCurrentAgentInSequence(s *state.Workflow, currentAgent string) {
 	})
 }
 
-// countPendingTodos returns the count of non-completed, non-cancelled TODO items.
-// For coordinator, it checks ProjectTodos; for other agents, it checks Todos.
-func countPendingTodos(wfState state.Workflow, agent string) int {
+// todosForAgent returns the TODO list enforced for the given agent.
+func todosForAgent(wf *state.Workflow, agent string) []state.TodoItem {
 	if agent == "coordinator" {
-		return 0
+		return wf.ProjectTodos
 	}
+	return wf.Todos
+}
+
+// countPendingTodos returns the count of non-completed, non-cancelled TODO items.
+func countPendingTodos(todos []state.TodoItem) int {
 	count := 0
-	for _, todo := range wfState.Todos {
+	for _, todo := range todos {
 		if todo.Status != "completed" && todo.Status != "cancelled" {
 			count++
 		}
@@ -954,19 +999,20 @@ type agentMetadata struct {
 }
 
 func parseAgentFileMetadata(dir, agentName string) (agentMetadata, bool) {
+	var zeroMetadata agentMetadata
 	agentPath := filepath.Join(dir, ".sgai", "agent", agentName+".md")
 	content, err := os.ReadFile(agentPath)
 	if err != nil {
-		return agentMetadata{}, false
+		return zeroMetadata, false
 	}
 	yamlContent, ok := splitFrontmatter(content)
 	if !ok {
-		return agentMetadata{}, false
+		return zeroMetadata, false
 	}
 	var metadata agentMetadata
 	metadata.Log = true
 	if err := yaml.Unmarshal(yamlContent, &metadata); err != nil {
-		return agentMetadata{}, false
+		return zeroMetadata, false
 	}
 	return metadata, true
 }
@@ -996,7 +1042,7 @@ type frontmatterSections struct {
 func splitFrontmatterSections(content []byte) (frontmatterSections, error) {
 	delimiter := []byte("---")
 	if !bytes.HasPrefix(content, delimiter) {
-		return frontmatterSections{}, fmt.Errorf("content has no frontmatter")
+		return frontmatterSections{}, errors.New("content has no frontmatter")
 	}
 	lineEnding, rest, errLineEnding := frontmatterLineEnding(content[len(delimiter):])
 	if errLineEnding != nil {
@@ -1009,22 +1055,22 @@ func splitFrontmatterSections(content []byte) (frontmatterSections, error) {
 	return frontmatterSections{yamlContent: yamlContent, after: after, lineEnding: lineEnding}, nil
 }
 
-func frontmatterLineEnding(content []byte) ([]byte, []byte, error) {
+func frontmatterLineEnding(content []byte) (lineEnding, remaining []byte, err error) {
 	if bytes.HasPrefix(content, []byte("\r\n")) {
 		return []byte("\r\n"), content[2:], nil
 	}
 	if bytes.HasPrefix(content, []byte("\n")) {
 		return []byte("\n"), content[1:], nil
 	}
-	return nil, nil, fmt.Errorf("frontmatter opening delimiter must end with newline")
+	return nil, nil, errors.New("frontmatter opening delimiter must end with newline")
 }
 
-func splitFrontmatterBody(content, lineEnding []byte) ([]byte, []byte, error) {
+func splitFrontmatterBody(content, lineEnding []byte) (yamlContent, after []byte, err error) {
 	delimiter := []byte("---")
 	if bytes.HasPrefix(content, delimiter) {
 		after := content[len(delimiter):]
 		if len(after) > 0 && !bytes.HasPrefix(after, lineEnding) {
-			return nil, nil, fmt.Errorf("frontmatter closing delimiter must be on its own line")
+			return nil, nil, errors.New("frontmatter closing delimiter must be on its own line")
 		}
 		return nil, after, nil
 	}
@@ -1032,7 +1078,7 @@ func splitFrontmatterBody(content, lineEnding []byte) ([]byte, []byte, error) {
 	for {
 		nextLineOffset := bytes.Index(content[scanOffset:], lineEnding)
 		if nextLineOffset < 0 {
-			return nil, nil, fmt.Errorf("no closing '---' found for frontmatter")
+			return nil, nil, errors.New("no closing '---' found for frontmatter")
 		}
 		nextLineOffset += scanOffset
 		lineStart := nextLineOffset + len(lineEnding)
@@ -1054,17 +1100,17 @@ func splitFrontmatter(content []byte) (yamlContent []byte, ok bool) {
 	return content[yamlStart:yamlEnd], true
 }
 
-func frontmatterBounds(content []byte) (int, int, int, bool, error) {
+func frontmatterBounds(content []byte) (yamlStart, yamlEnd, afterStart int, ok bool, err error) {
 	line, next, ok := nextFrontmatterLine(content, 0)
 	if !ok || !bytes.Equal(line, []byte("---")) {
 		return 0, 0, 0, false, nil
 	}
 
-	yamlStart := next
+	yamlStart = next
 	for lineStart := next; ; {
 		line, next, ok = nextFrontmatterLine(content, lineStart)
 		if !ok {
-			return 0, 0, 0, false, fmt.Errorf("no closing '---' found for frontmatter")
+			return 0, 0, 0, false, errors.New("no closing '---' found for frontmatter")
 		}
 		if bytes.Equal(line, []byte("---")) {
 			return yamlStart, lineStart, next, true, nil
@@ -1073,19 +1119,19 @@ func frontmatterBounds(content []byte) (int, int, int, bool, error) {
 	}
 }
 
-func nextFrontmatterLine(content []byte, start int) ([]byte, int, bool) {
+func nextFrontmatterLine(content []byte, start int) (line []byte, next int, ok bool) {
 	if start >= len(content) {
 		return nil, start, false
 	}
 
 	end := bytes.IndexByte(content[start:], '\n')
 	if end == -1 {
-		line := bytes.TrimSuffix(content[start:], []byte("\r"))
+		line = bytes.TrimSuffix(content[start:], []byte("\r"))
 		return line, len(content), true
 	}
 
 	end += start
-	line := bytes.TrimSuffix(content[start:end], []byte("\r"))
+	line = bytes.TrimSuffix(content[start:end], []byte("\r"))
 	return line, end + 1, true
 }
 
@@ -1195,21 +1241,26 @@ func fetchValidModels() (map[string]bool, error) {
 
 // tryReloadGoalMetadata attempts to reload GOAL.md frontmatter from disk.
 // If the file is unavailable, it preserves current metadata.
-func tryReloadGoalMetadata(goalPath string, current GoalMetadata, flowDag *dag) (GoalMetadata, error) {
+func tryReloadGoalMetadata(goalPath string, current *GoalMetadata, flowDag *dag) (GoalMetadata, error) {
+	var currentMetadata GoalMetadata
+	if current != nil {
+		currentMetadata = *current
+	}
+
 	content, errRead := os.ReadFile(goalPath)
 	if errRead != nil {
 		if os.IsNotExist(errRead) {
-			return current, nil
+			return currentMetadata, nil
 		}
-		return current, fmt.Errorf("failed to read GOAL.md: %w", errRead)
+		return currentMetadata, fmt.Errorf("failed to read GOAL.md: %w", errRead)
 	}
 
 	newMetadata, errParse := parseYAMLFrontmatter(content)
 	if errParse != nil {
 		if strings.TrimSpace(newMetadata.Title) != "" {
-			current.Title = newMetadata.Title
+			currentMetadata.Title = newMetadata.Title
 		}
-		return current, errParse
+		return currentMetadata, errParse
 	}
 
 	ensureImplicitAgentModel(flowDag, &newMetadata, "retrospective")
@@ -1221,16 +1272,17 @@ func tryReloadGoalMetadata(goalPath string, current GoalMetadata, flowDag *dag) 
 // parseYAMLFrontmatter extracts YAML frontmatter from content delimited by "---".
 // If no frontmatter is found, returns default metadata.
 func parseYAMLFrontmatter(content []byte) (GoalMetadata, error) {
+	var zeroMetadata GoalMetadata
 	sections, errSplit := splitFrontmatterSections(content)
 	if errSplit != nil {
 		if !bytes.HasPrefix(content, []byte("---")) {
-			return GoalMetadata{}, nil
+			return zeroMetadata, nil
 		}
-		return GoalMetadata{}, errSplit
+		return zeroMetadata, errSplit
 	}
 
 	title, hasTitle := extractFrontmatterTitle(sections.yamlContent)
-	metadata := GoalMetadata{}
+	var metadata GoalMetadata
 	if hasTitle {
 		metadata.Title = title
 	}
@@ -1247,11 +1299,11 @@ func parseYAMLFrontmatter(content []byte) (GoalMetadata, error) {
 //go:embed skel/**
 var skelFS embed.FS
 
-func findFirstPendingMessageAgent(s state.Workflow) string {
-	if len(s.Messages) == 0 {
+func findFirstPendingMessageAgent(messages []state.Message) string {
+	if len(messages) == 0 {
 		return ""
 	}
-	for _, msg := range s.Messages {
+	for _, msg := range messages {
 		if !msg.Read {
 			return extractAgentFromModelID(msg.ToAgent)
 		}
@@ -1259,28 +1311,27 @@ func findFirstPendingMessageAgent(s state.Workflow) string {
 	return ""
 }
 
-func redirectToPendingMessageAgent(s *state.Workflow, coord *state.Coordinator, paddedsgai string) bool {
-	pendingAgent := findFirstPendingMessageAgent(*s)
+func redirectToPendingMessageAgent(s *state.Workflow, coord *state.Coordinator, paddedsgai string) (bool, error) {
+	pendingAgent := findFirstPendingMessageAgent(s.Messages)
 	if pendingAgent == "" {
-		return false
+		return false, nil
 	}
 	fmt.Println("["+paddedsgai+"]", "pending messages for", pendingAgent, "- redirecting before completion")
 	s.Status = state.StatusWorking
 	s.CurrentAgent = pendingAgent
 	s.VisitCounts[pendingAgent]++
-	snapshot := *s
-	if errUpdate := coord.UpdateState(func(wf *state.Workflow) {
-		*wf = snapshot
-	}); errUpdate != nil {
-		log.Fatalln("failed to save state:", errUpdate)
+	if errSave := saveState(coord, s); errSave != nil {
+		return false, fmt.Errorf("save state while redirecting to pending message agent: %w", errSave)
 	}
-	return true
+	return true, nil
 }
 
 func runCompletionGateScript(ctx context.Context, dir, script string) (string, error) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", script)
 	cmd.Dir = dir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var procAttr syscall.SysProcAttr
+	procAttr.Setpgid = true
+	cmd.SysProcAttr = &procAttr
 
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
@@ -1288,7 +1339,7 @@ func runCompletionGateScript(ctx context.Context, dir, script string) (string, e
 
 	errStart := cmd.Start()
 	if errStart != nil {
-		return "", errStart
+		return "", fmt.Errorf("starting completion gate script %q: %w", script, errStart)
 	}
 
 	processExited := make(chan struct{})
@@ -1366,7 +1417,7 @@ func initializeJJ(dir string) error {
 	cmd.Dir = dir
 	if err := cmd.Run(); err != nil {
 		if isExecNotFound(err) {
-			return fmt.Errorf("jj is required but not found in PATH")
+			return errors.New("jj is required but not found in PATH")
 		}
 		initCmd := exec.Command("jj", "git", "init", "--colocate")
 		initCmd.Dir = dir
@@ -1394,20 +1445,20 @@ func extractBody(content []byte) []byte {
 
 // generateRetrospectiveDirName generates a timestamp-based folder name in format YYYY-MM-DD-HH-II.XXXX
 // where XXXX is 4 random lowercase alphanumeric characters [a-z0-9]
-func generateRetrospectiveDirName() string {
+func generateRetrospectiveDirName() (string, error) {
 	timestamp := time.Now().Format("2006-01-02-15-04")
 	suffix := make([]byte, 4)
 	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
 	if _, err := rand.Read(suffix); err != nil {
-		log.Fatalln("failed to generate random suffix:", err)
+		return "", fmt.Errorf("generate random suffix: %w", err)
 	}
 	for i := range suffix {
 		suffix[i] = chars[int(suffix[i])%len(chars)]
 	}
-	return timestamp + "." + string(suffix)
+	return timestamp + "." + string(suffix), nil
 }
 
-func openRetrospectiveLogs(retrospectiveDir string) (io.WriteCloser, io.WriteCloser, error) {
+func openRetrospectiveLogs(retrospectiveDir string) (stdoutLog, stderrLog io.WriteCloser, err error) {
 	stdoutLogPath := filepath.Join(retrospectiveDir, "stdout.log")
 	stderrLogPath := filepath.Join(retrospectiveDir, "stderr.log")
 
@@ -1465,7 +1516,7 @@ func (p *prefixWriter) Write(data []byte) (int, error) {
 		if i < len(lines)-1 || line != "" {
 			timestamp := formatElapsed(p.startTime)
 			if _, err := p.w.Write([]byte(timestamp + p.prefix + line + "\n")); err != nil {
-				return 0, err
+				return 0, fmt.Errorf("writing prefixed output: %w", err)
 			}
 		}
 	}
@@ -1520,19 +1571,24 @@ type jsonPrettyWriter struct {
 	startTime    time.Time
 }
 
-func (j *jsonPrettyWriter) tsPrefix() string {
-	return formatElapsed(j.startTime) + j.prefix
-}
-
 func (j *jsonPrettyWriter) Write(data []byte) (int, error) {
 	j.buf = append(j.buf, data...)
 	j.processBuffer()
 	return len(data), nil
 }
 
+func (j *jsonPrettyWriter) Flush() {
+	j.processBuffer()
+	j.flushText()
+}
+
+func (j *jsonPrettyWriter) tsPrefix() string {
+	return formatElapsed(j.startTime) + j.prefix
+}
+
 func (j *jsonPrettyWriter) processBuffer() {
 	for {
-		idx := strings.Index(string(j.buf), "\n")
+		idx := bytes.Index(j.buf, []byte("\n"))
 		if idx == -1 {
 			return
 		}
@@ -1549,15 +1605,15 @@ func (j *jsonPrettyWriter) processBuffer() {
 			continue
 		}
 
-		j.processEvent(event)
+		j.processEvent(&event)
 	}
 }
 
-func (j *jsonPrettyWriter) processEvent(event streamEvent) {
+func (j *jsonPrettyWriter) processEvent(event *streamEvent) {
 	if event.SessionID != "" {
 		j.sessionID = event.SessionID
 	}
-	part := event.Part
+	part := &event.Part
 
 	switch event.Type {
 	case "text":
@@ -1638,13 +1694,9 @@ func (j *jsonPrettyWriter) flushText() {
 	}
 }
 
-func (j *jsonPrettyWriter) Flush() {
-	j.processBuffer()
-	j.flushText()
-}
-
 func dollarBreakdownForStep(cost float64, tokens state.TokenUsage) state.DollarBreakdown {
-	breakdown := state.DollarBreakdown{Total: cost}
+	var breakdown state.DollarBreakdown
+	breakdown.Total = cost
 	totalTokens := tokens.Input + tokens.Output + tokens.Reasoning + tokens.CacheRead + tokens.CacheWrite
 	if totalTokens == 0 || cost == 0 {
 		return breakdown
@@ -1662,7 +1714,7 @@ func dollarBreakdownForStep(cost float64, tokens state.TokenUsage) state.DollarB
 	return breakdown
 }
 
-func (j *jsonPrettyWriter) recordStepCost(p part, timestamp int64) {
+func (j *jsonPrettyWriter) recordStepCost(p *part, timestamp int64) {
 	if j.coord == nil || j.currentAgent == "" {
 		return
 	}
@@ -1879,11 +1931,11 @@ func updateProjectManagementWithRetrospectiveDir(pmPath, retrospectiveDirRel str
 
 	finalContent := newHeader + content
 
-	if err := os.MkdirAll(filepath.Dir(pmPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(pmPath), 0o755); err != nil {
 		return fmt.Errorf("failed to create .sgai directory: %w", err)
 	}
 
-	if err := os.WriteFile(pmPath, []byte(finalContent), 0644); err != nil {
+	if err := os.WriteFile(pmPath, []byte(finalContent), 0o644); err != nil {
 		return fmt.Errorf("failed to write PROJECT_MANAGEMENT.md: %w", err)
 	}
 
@@ -1892,7 +1944,7 @@ func updateProjectManagementWithRetrospectiveDir(pmPath, retrospectiveDirRel str
 
 // canResumeWorkflow determines if an existing workflow can be resumed
 // based on the current workflow state.
-func canResumeWorkflow(wfState state.Workflow) bool {
+func canResumeWorkflow(wfState *state.Workflow) bool {
 	return wfState.Status == state.StatusWorking ||
 		wfState.Status == state.StatusAgentDone ||
 		wfState.NeedsHumanInput()
@@ -1910,43 +1962,43 @@ func extractRetrospectiveDirFromProjectManagement(pmPath string) (string, error)
 
 	lines := linesWithTrailingEmpty(string(content))
 	if len(lines) == 0 {
-		return "", fmt.Errorf("missing frontmatter header in PROJECT_MANAGEMENT.md")
+		return "", errors.New("missing frontmatter header in PROJECT_MANAGEMENT.md")
 	}
 
 	if strings.TrimSpace(lines[0]) != "---" {
-		return "", fmt.Errorf("missing frontmatter header in PROJECT_MANAGEMENT.md")
+		return "", errors.New("missing frontmatter header in PROJECT_MANAGEMENT.md")
 	}
 
 	closingDelimiterIdx := slices.IndexFunc(lines[1:], func(line string) bool {
 		return strings.TrimSpace(line) == "---"
 	})
 	if closingDelimiterIdx < 0 {
-		return "", fmt.Errorf("missing closing frontmatter delimiter in PROJECT_MANAGEMENT.md")
+		return "", errors.New("missing closing frontmatter delimiter in PROJECT_MANAGEMENT.md")
 	}
 
 	for _, line := range lines[1 : 1+closingDelimiterIdx] {
 		if after, ok := strings.CutPrefix(line, headerPrefix); ok {
 			after = strings.TrimSpace(after)
 			if after == "" {
-				return "", fmt.Errorf("empty Retrospective Session in PROJECT_MANAGEMENT.md")
+				return "", errors.New("empty Retrospective Session in PROJECT_MANAGEMENT.md")
 			}
 			return after, nil
 		}
 	}
 
-	return "", fmt.Errorf("missing Retrospective Session in PROJECT_MANAGEMENT.md")
+	return "", errors.New("missing Retrospective Session in PROJECT_MANAGEMENT.md")
 }
 
 func copyFileAtomic(src, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return err
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return fmt.Errorf("creating destination directory for %s: %w", dst, err)
 	}
 
 	tmpDst := dst + ".tmp"
 
 	srcFile, err := os.Open(src)
 	if err != nil {
-		return err
+		return fmt.Errorf("opening source file %s: %w", src, err)
 	}
 	defer func() {
 		if err := srcFile.Close(); err != nil {
@@ -1956,7 +2008,7 @@ func copyFileAtomic(src, dst string) error {
 
 	tmpFile, err := os.Create(tmpDst)
 	if err != nil {
-		return err
+		return fmt.Errorf("creating temp file %s: %w", tmpDst, err)
 	}
 	tmpClosed := false
 	defer func() {
@@ -1973,16 +2025,19 @@ func copyFileAtomic(src, dst string) error {
 	}()
 
 	if _, err = io.Copy(tmpFile, srcFile); err != nil {
+		err = fmt.Errorf("copying %s to %s: %w", src, tmpDst, err)
 		return err
 	}
 
-	if err = tmpFile.Close(); err != nil {
-		return err
+	errClose := tmpFile.Close()
+	if errClose != nil {
+		return fmt.Errorf("closing temp file %s: %w", tmpDst, errClose)
 	}
 	tmpClosed = true
 
-	if err = os.Rename(tmpDst, dst); err != nil {
-		return err
+	errRename := os.Rename(tmpDst, dst)
+	if errRename != nil {
+		return fmt.Errorf("renaming %s to %s: %w", tmpDst, dst, errRename)
 	}
 
 	return nil
@@ -2025,10 +2080,13 @@ func exportSession(dir, sessionID, outputPath string) error {
 	if err != nil {
 		return fmt.Errorf("opencode export failed: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
-		return err
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return fmt.Errorf("creating export directory for %s: %w", outputPath, err)
 	}
-	return os.WriteFile(outputPath, output, 0644)
+	if errWrite := os.WriteFile(outputPath, output, 0o644); errWrite != nil {
+		return fmt.Errorf("writing exported session to %s: %w", outputPath, errWrite)
+	}
+	return nil
 }
 
 func formatDuration(d time.Duration) string {
@@ -2067,9 +2125,9 @@ func copyLayerSubfolder(workspaceDir, srcDir, dstDir, subfolder string) error {
 		return nil
 	}
 
-	return filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
+	errWalk := filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			return fmt.Errorf("walking overlay path %s: %w", path, err)
 		}
 		if d.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("checking overlay source path: symlinked path is not allowed: %s", path)
@@ -2077,7 +2135,7 @@ func copyLayerSubfolder(workspaceDir, srcDir, dstDir, subfolder string) error {
 
 		relPath, err := filepath.Rel(srcDir, path)
 		if err != nil {
-			return err
+			return fmt.Errorf("computing relative path inside %s: %w", subfolder, err)
 		}
 
 		if d.IsDir() {
@@ -2085,7 +2143,10 @@ func copyLayerSubfolder(workspaceDir, srcDir, dstDir, subfolder string) error {
 			if err := rejectSymlinkedWorkspacePath(workspaceDir, dstPath); err != nil {
 				return err
 			}
-			return os.MkdirAll(dstPath, 0755)
+			if errMkdir := os.MkdirAll(dstPath, 0o755); errMkdir != nil {
+				return fmt.Errorf("creating overlay directory %s: %w", dstPath, errMkdir)
+			}
+			return nil
 		}
 
 		if isProtectedFile(subfolder, relPath) {
@@ -2099,6 +2160,10 @@ func copyLayerSubfolder(workspaceDir, srcDir, dstDir, subfolder string) error {
 
 		return copyFileAtomic(path, dstPath)
 	})
+	if errWalk != nil {
+		return fmt.Errorf("walking overlay subfolder %s: %w", srcDir, errWalk)
+	}
+	return nil
 }
 
 func isExistingDirectory(path string) bool {
@@ -2122,6 +2187,6 @@ func isFalsish(s string) bool {
 	}
 }
 
-func retrospectiveEnabled(metadata GoalMetadata) bool {
-	return !isFalsish(metadata.Retrospective)
+func retrospectiveEnabled(retrospective string) bool {
+	return !isFalsish(retrospective)
 }

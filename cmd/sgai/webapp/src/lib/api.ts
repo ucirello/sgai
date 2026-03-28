@@ -146,7 +146,7 @@ export const api = {
         `/api/v1/workspaces/${encodeURIComponent(name)}/open-editor/project-management`,
         { method: "POST" },
       ),
-    deleteWorkspace: (name: string, operation?: ApiRepositoryOperation, workspaceDir?: string) =>
+    deleteWorkspace: (name: string, operation?: ApiRepositoryOperation) =>
       fetchJSON<ApiDeleteWorkspaceResponse>(
         `/api/v1/workspaces/${encodeURIComponent(name)}/delete`,
         {
@@ -154,7 +154,6 @@ export const api = {
           body: JSON.stringify({
             confirm: true,
             ...(operation ? { operation } : {}),
-            ...(workspaceDir ? { workspaceDir } : {}),
           }),
         },
       ),

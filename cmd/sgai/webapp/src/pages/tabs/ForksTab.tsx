@@ -18,14 +18,13 @@ import {
   buildWorkspaceNameDisambiguators,
   buildWorkspacePath,
   getWorkspaceDisplayLabel,
-  resolveWorkspaceByIdentity,
+  resolveWorkspaceByName,
 } from "@/lib/workspace-identity";
 import { useAdhocRun } from "@/hooks/useAdhocRun";
 import type { ApiForkEntry, ApiActionEntry, ApiWorkspaceEntry } from "@/types";
 
 interface ForksTabProps {
   workspaceName: string;
-  workspaceDir?: string;
   actions?: ApiActionEntry[];
   actionConfigError?: string;
   onActionClick?: (action: ApiActionEntry, variables: Record<string, string>, forkName: string) => void;
@@ -357,10 +356,10 @@ function InlineRunBox({ workspaceName }: { workspaceName: string }) {
   );
 }
 
-export function ForksTab({ workspaceName, workspaceDir, actions, actionConfigError, onActionClick, isActionRunning = false }: ForksTabProps) {
+export function ForksTab({ workspaceName, actions, actionConfigError, onActionClick, isActionRunning = false }: ForksTabProps) {
   const navigate = useNavigate();
   const { workspaces: allWorkspaces, fetchStatus } = useFactoryState();
-  const workspace = resolveWorkspaceByIdentity(allWorkspaces, workspaceName, workspaceDir);
+  const workspace = resolveWorkspaceByName(allWorkspaces, workspaceName);
   const workspaceNameDisambiguators = useMemo(() => {
     return buildWorkspaceNameDisambiguators(allWorkspaces);
   }, [allWorkspaces]);

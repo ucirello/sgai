@@ -27,7 +27,9 @@ type circularLogBuffer struct {
 
 func newCircularLogBuffer() *circularLogBuffer {
 	return &circularLogBuffer{
+		mu:   sync.RWMutex{},
 		ring: ring.New(outputBufferSize),
+		size: 0,
 	}
 }
 
@@ -74,7 +76,10 @@ type ringWriter struct {
 
 func newRingWriter() *ringWriter {
 	return &ringWriter{
-		ring: ring.New(outputBufferSize),
+		mu:      sync.Mutex{},
+		ring:    ring.New(outputBufferSize),
+		size:    0,
+		partial: nil,
 	}
 }
 
@@ -146,7 +151,7 @@ func prepareLogFile(logPath string) (*os.File, error) {
 		return nil, err
 	}
 
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("opening log file: %w", err)
 	}
@@ -158,7 +163,10 @@ func rotateLogFile(logPath string) error {
 	if _, err := os.Stat(logPath); os.IsNotExist(err) {
 		return nil
 	}
-	return os.Rename(logPath, logPath+".old")
+	if errRename := os.Rename(logPath, logPath+".old"); errRename != nil {
+		return fmt.Errorf("rotating log file %s: %w", logPath, errRename)
+	}
+	return nil
 }
 
 type sessionLogWriter struct {
@@ -172,6 +180,8 @@ type sessionLogWriter struct {
 
 func newSessionLogWriter(sess *session, workspacePath string, srv *Server, workspaceName string) *sessionLogWriter {
 	return &sessionLogWriter{
+		mu:            sync.Mutex{},
+		partial:       nil,
 		sess:          sess,
 		workspacePath: workspacePath,
 		srv:           srv,
@@ -203,7 +213,7 @@ func (w *sessionLogWriter) Write(data []byte) (int, error) {
 }
 
 func (w *sessionLogWriter) addLine(text string) {
-	w.sess.outputLog.add(logLine{text: text})
+	w.sess.outputLog.add(logLine{prefix: "", text: text})
 	w.srv.notifyStateChange()
 }
 

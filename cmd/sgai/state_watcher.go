@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -93,19 +94,19 @@ func (s *Server) checkWorkspaceState(dir string, snapshots map[string]workspaceS
 
 	wfState := s.workspaceCoordinator(dir).State()
 
-	current := buildStateSnapshot(info.ModTime(), wfState, goalInfo)
+	current := buildStateSnapshot(info.ModTime(), &wfState, goalInfo)
 
 	if !hasPrev {
 		snapshots[dir] = current
 		return
 	}
 
-	s.emitStateChangeEvents(dir, prev, current)
+	s.emitStateChangeEvents(&prev, &current)
 
 	snapshots[dir] = current
 }
 
-func buildStateSnapshot(modTime time.Time, wfState state.Workflow, goalInfo os.FileInfo) workspaceStateSnapshot {
+func buildStateSnapshot(modTime time.Time, wfState *state.Workflow, goalInfo os.FileInfo) workspaceStateSnapshot {
 	snapshot := workspaceStateSnapshot{
 		modTime:      modTime,
 		status:       wfState.Status,
@@ -113,6 +114,8 @@ func buildStateSnapshot(modTime time.Time, wfState state.Workflow, goalInfo os.F
 		progressLen:  len(wfState.Progress),
 		todosHash:    hashTodos(wfState.ProjectTodos, wfState.Todos),
 		messagesHash: hashMessages(wfState.Messages),
+		goalModTime:  time.Time{},
+		goalHash:     "",
 	}
 	if goalInfo != nil {
 		snapshot.goalModTime = goalInfo.ModTime()
@@ -121,7 +124,7 @@ func buildStateSnapshot(modTime time.Time, wfState state.Workflow, goalInfo os.F
 	return snapshot
 }
 
-func (s *Server) emitStateChangeEvents(_ string, prev, current workspaceStateSnapshot) {
+func (s *Server) emitStateChangeEvents(prev, current *workspaceStateSnapshot) {
 	changed := prev.status != current.status ||
 		prev.needsInput != current.needsInput ||
 		current.progressLen > prev.progressLen ||
@@ -144,7 +147,7 @@ func hashTodos(projectTodos, agentTodos []state.TodoItem) string {
 		return ""
 	}
 	h.Write(data)
-	return fmt.Sprintf("%x", h.Sum(nil))[:16]
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 func hashMessages(messages []state.Message) string {
@@ -154,7 +157,7 @@ func hashMessages(messages []state.Message) string {
 		return ""
 	}
 	h.Write(data)
-	return fmt.Sprintf("%x", h.Sum(nil))[:16]
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 func hashGoalFile(goalInfo os.FileInfo) string {
@@ -164,5 +167,5 @@ func hashGoalFile(goalInfo os.FileInfo) string {
 	h := sha256.New()
 	_, _ = fmt.Fprint(h, goalInfo.ModTime().String())
 	_, _ = fmt.Fprintf(h, "%d", goalInfo.Size())
-	return fmt.Sprintf("%x", h.Sum(nil))[:16]
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }

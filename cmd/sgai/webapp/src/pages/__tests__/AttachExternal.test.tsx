@@ -82,7 +82,7 @@ describe("AttachExternal", () => {
     });
   });
 
-  it("routes duplicate basename attachments to a unique goal-edit path", async () => {
+  it("routes duplicate basename attachments to the basename goal-edit path", async () => {
     const user = userEvent.setup();
     mockWorkspaces = [{ name: "attached-repo", dir: "/Users/you/src/first/attached-repo" }];
     mockAttach.mockResolvedValueOnce({ name: "attached-repo", dir: "/Users/you/src/second/attached-repo", hasGoal: false });
@@ -94,7 +94,7 @@ describe("AttachExternal", () => {
     await user.click(screen.getByRole("button", { name: "Attach External Repository" }));
 
     await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith("/workspaces/second%2Fattached-repo/goal/edit");
+      expect(mockNavigate).toHaveBeenCalledWith("/workspaces/attached-repo/goal/edit");
     });
   });
 

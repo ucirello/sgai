@@ -339,56 +339,6 @@ describe("WorkspaceDetail", () => {
       });
     });
 
-    it("resolves duplicate-name progress routes with workspaceDir", async () => {
-      mockWorkspaces = [
-        createMockWorkspace({
-          name: "shared-ws",
-          dir: "/tmp/first/shared-ws",
-          title: "First Shared Workspace",
-          task: "First task",
-        }),
-        createMockWorkspace({
-          name: "shared-ws",
-          dir: "/tmp/second/shared-ws",
-          title: "Second Shared Workspace",
-          task: "Second task",
-        }),
-      ];
-
-      renderWorkspaceDetailRouter("/workspaces/shared-ws/progress?workspaceDir=%2Ftmp%2Fsecond%2Fshared-ws");
-
-      await waitFor(() => {
-        expect(screen.getByText("Second Shared Workspace · second")).toBeTruthy();
-        expect(screen.getByText("Second task")).toBeTruthy();
-        expect(screen.queryByText("First Shared Workspace")).toBeNull();
-      });
-    });
-
-    it("resolves duplicate-name routed detail paths without workspaceDir", async () => {
-      mockWorkspaces = [
-        createMockWorkspace({
-          name: "shared-ws",
-          dir: "/tmp/first/shared-ws",
-          title: "First Shared Workspace",
-          task: "First task",
-        }),
-        createMockWorkspace({
-          name: "shared-ws",
-          dir: "/tmp/second/shared-ws",
-          title: "Second Shared Workspace",
-          task: "Second task",
-        }),
-      ];
-
-      renderWorkspaceDetailRouter("/workspaces/second%2Fshared-ws");
-
-      await waitFor(() => {
-        expect(screen.getByText("Second Shared Workspace · second")).toBeTruthy();
-        expect(screen.getByText("Second task")).toBeTruthy();
-        expect(screen.queryByText("First Shared Workspace")).toBeNull();
-      });
-    });
-
     it("shows an actionable error for ambiguous duplicate-basename detail routes without workspaceDir", async () => {
       mockWorkspaces = [
         createMockWorkspace({
@@ -409,11 +359,11 @@ describe("WorkspaceDetail", () => {
 
       await waitFor(() => {
         expect(router.state.location.pathname).toBe("/workspaces/shared-ws");
-        expect(screen.getByText("Workspace route is ambiguous. Open the routed workspace link for this repository.")).toBeTruthy();
+        expect(screen.getByText("Workspace route is ambiguous.")).toBeTruthy();
       });
     });
 
-    it("shows the selected duplicate-name root's forks when workspaceDir is present", async () => {
+    it("shows an ambiguous error for duplicate-basename forks routes", async () => {
       mockWorkspaces = [
         createMockWorkspace({
           name: "shared-ws",
@@ -471,10 +421,11 @@ describe("WorkspaceDetail", () => {
         }),
       ];
 
-      renderWorkspaceDetailRouter("/workspaces/shared-ws/forks?workspaceDir=%2Ftmp%2Fsecond%2Fshared-ws");
+      renderWorkspaceDetailRouter("/workspaces/shared-ws/forks");
 
       await waitFor(() => {
-        expect(screen.getByText("Second Fork")).toBeTruthy();
+        expect(screen.getByText("Workspace route is ambiguous.")).toBeTruthy();
+        expect(screen.queryByText("Second Fork")).toBeNull();
         expect(screen.queryByText("First Fork")).toBeNull();
       });
     });
@@ -633,7 +584,7 @@ describe("WorkspaceDetail", () => {
       renderWorkspaceDetailRouter("/workspaces/test-workspace/forks");
 
       await user.click(await screen.findByRole("button", { name: "Respond to fork Needs Input Fork" }));
-      expect(mockNavigate).toHaveBeenCalledWith("/workspaces/needs-input-fork/respond?workspaceDir=%2Fpath%2Fto%2Fneeds-input-fork");
+      expect(mockNavigate).toHaveBeenCalledWith("/workspaces/needs-input-fork/respond");
 
       await user.click(screen.getByRole("button", { name: "Open fork Plain Fork in Editor" }));
 
@@ -642,7 +593,7 @@ describe("WorkspaceDetail", () => {
       });
 
       await user.click(screen.getByRole("button", { name: "Open fork Plain Fork in sgai" }));
-      expect(mockNavigate).toHaveBeenCalledWith("/workspaces/plain-fork/progress?workspaceDir=%2Fpath%2Fto%2Fplain-fork");
+      expect(mockNavigate).toHaveBeenCalledWith("/workspaces/plain-fork/progress");
 
       await user.click(screen.getByRole("button", { name: "Choose action for fork plain-fork" }));
 
@@ -807,7 +758,7 @@ describe("WorkspaceDetail", () => {
       renderWorkspaceDetailRouter("/workspaces/test-workspace/progress");
 
       await waitFor(() => {
-        expect(mockNavigate).toHaveBeenCalledWith("/workspaces/test-workspace/forks?workspaceDir=%2Fpath%2Fto%2Ftest-workspace", { replace: true });
+        expect(mockNavigate).toHaveBeenCalledWith("/workspaces/test-workspace/forks", { replace: true });
       });
 
       expect(screen.getByRole("link", { name: "Forks" })).toBeTruthy();
@@ -820,7 +771,7 @@ describe("WorkspaceDetail", () => {
       renderWorkspaceDetailRouter("/workspaces/test-workspace/unknown");
 
       await waitFor(() => {
-        expect(mockNavigate).toHaveBeenCalledWith("/workspaces/test-workspace/progress?workspaceDir=%2Fpath%2Fto%2Ftest-workspace", { replace: true });
+        expect(mockNavigate).toHaveBeenCalledWith("/workspaces/test-workspace/progress", { replace: true });
       });
 
       expect(screen.getByRole("link", { name: "Progress" })).toBeTruthy();
@@ -890,38 +841,6 @@ describe("WorkspaceDetail", () => {
 
       const editGoalLink = await screen.findByRole("link", { name: "Edit GOAL" });
       expect(editGoalLink.getAttribute("href")).toBe("/workspaces/test-workspace/goal/edit");
-    });
-
-    it("uses a routed goal-edit path for duplicate workspace names", async () => {
-      const user = userEvent.setup();
-
-      mockWorkspaces = [
-        createMockWorkspace({
-          name: "shared-ws",
-          dir: "/tmp/first/shared-ws",
-          title: "First Shared Workspace",
-          hasSgai: false,
-          goalContent: "",
-          rawGoalContent: "",
-          isRoot: true,
-        }),
-        createMockWorkspace({
-          name: "shared-ws",
-          dir: "/tmp/second/shared-ws",
-          title: "Second Shared Workspace",
-          hasSgai: false,
-          goalContent: "",
-          rawGoalContent: "",
-          isRoot: true,
-        }),
-      ];
-
-      renderWorkspaceDetailRouter("/workspaces/shared-ws/progress?workspaceDir=%2Ftmp%2Fsecond%2Fshared-ws");
-
-      const editGoalButton = await screen.findByRole("button", { name: "Edit GOAL" });
-      await user.click(editGoalButton);
-
-      expect(mockNavigate).toHaveBeenCalledWith("/workspaces/second%2Fshared-ws/goal/edit");
     });
 
     it("shows Stop button when workspace is running", async () => {
@@ -1239,7 +1158,7 @@ describe("WorkspaceDetail", () => {
       await user.click(within(dialog).getByRole("button", { name: /^Detach$/ }));
 
       await waitFor(() => {
-        expect(mockDeleteWorkspace).toHaveBeenCalledWith("test-workspace", "detach", "/path/to/test-workspace");
+        expect(mockDeleteWorkspace).toHaveBeenCalledWith("test-workspace", "detach");
       });
     });
 
@@ -1360,7 +1279,7 @@ describe("WorkspaceDetail", () => {
       await user.click(await screen.findByRole("button", { name: /^Detach$/ }));
 
       await waitFor(() => {
-        expect(mockDeleteWorkspace).toHaveBeenCalledWith("root-ws-fork-1", "detach", "/path/to/root-ws-fork-1");
+        expect(mockDeleteWorkspace).toHaveBeenCalledWith("root-ws-fork-1", "detach");
       });
 
       view.rerender(workspaceDetailTestView("root-ws", "forks"));
@@ -1695,7 +1614,7 @@ describe("WorkspaceDetail", () => {
       await user.click(respondButtons[0]);
 
       await waitFor(() => {
-        expect(mockNavigate).toHaveBeenCalledWith("/workspaces/test-workspace/respond?workspaceDir=%2Fpath%2Fto%2Ftest-workspace");
+        expect(mockNavigate).toHaveBeenCalledWith("/workspaces/test-workspace/respond");
       });
     });
   });

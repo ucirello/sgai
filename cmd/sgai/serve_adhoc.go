@@ -25,7 +25,7 @@ func (s *Server) getAdhocState(workspacePath string) *adhocPromptState {
 	defer s.mu.Unlock()
 	st := s.adhocStates[workspacePath]
 	if st == nil {
-		st = &adhocPromptState{}
+		st = new(adhocPromptState)
 		s.adhocStates[workspacePath] = st
 	}
 	return st

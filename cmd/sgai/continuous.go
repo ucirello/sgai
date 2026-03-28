@@ -30,17 +30,16 @@ const (
 	continuousModePollInterval = 2 * time.Second
 )
 
-func runContinuousWorkflow(ctx context.Context, dir string, continuousPrompt string, mcpURL string, logWriter io.Writer, sessionCoord *state.Coordinator) {
-	runner := &workflowRunner{
-		dir:       dir,
-		mcpURL:    mcpURL,
-		logWriter: logWriter,
-		coord:     sessionCoord,
-	}
+func runContinuousWorkflow(ctx context.Context, dir, continuousPrompt, mcpURL string, logWriter io.Writer, sessionCoord *state.Coordinator) {
+	var runner workflowRunner
+	runner.dir = dir
+	runner.mcpURL = mcpURL
+	runner.logWriter = logWriter
+	runner.coord = sessionCoord
 	runner.runContinuous(ctx, continuousPrompt)
 }
 
-func runContinuousModePrompt(ctx context.Context, dir string, prompt string, mcpURL string, coord *state.Coordinator) {
+func runContinuousModePrompt(ctx context.Context, dir, prompt, mcpURL string, coord *state.Coordinator) {
 	updateContinuousModeState(coord, "Running continuous mode prompt...", "continuous-mode", "continuous mode prompt started")
 
 	for attempt := range continuousModeMaxRetries {
@@ -117,7 +116,7 @@ func watchForTriggerWithAfter(ctx context.Context, dir string, coord *state.Coor
 	}
 }
 
-func prependSteeringMessage(goalPath string, message string) error {
+func prependSteeringMessage(goalPath, message string) error {
 	content, errRead := os.ReadFile(goalPath)
 	if errRead != nil {
 		return fmt.Errorf("reading GOAL.md: %w", errRead)
@@ -127,7 +126,10 @@ func prependSteeringMessage(goalPath string, message string) error {
 
 	if !bytes.HasPrefix(content, delimiter) {
 		newContent := message + "\n\n" + string(content)
-		return os.WriteFile(goalPath, []byte(newContent), 0644)
+		if errWrite := os.WriteFile(goalPath, []byte(newContent), 0o644); errWrite != nil {
+			return fmt.Errorf("writing GOAL.md: %w", errWrite)
+		}
+		return nil
 	}
 
 	rest := content[len(delimiter):]
@@ -138,7 +140,10 @@ func prependSteeringMessage(goalPath string, message string) error {
 	closingIdx := bytes.Index(rest, delimiter)
 	if closingIdx == -1 {
 		newContent := message + "\n\n" + string(content)
-		return os.WriteFile(goalPath, []byte(newContent), 0644)
+		if errWrite := os.WriteFile(goalPath, []byte(newContent), 0o644); errWrite != nil {
+			return fmt.Errorf("writing GOAL.md: %w", errWrite)
+		}
+		return nil
 	}
 
 	frontmatterEnd := len(delimiter) + 1 + closingIdx + len(delimiter)
@@ -155,7 +160,10 @@ func prependSteeringMessage(goalPath string, message string) error {
 		buf.Write(content[frontmatterEnd:])
 	}
 
-	return os.WriteFile(goalPath, buf.Bytes(), 0644)
+	if errWrite := os.WriteFile(goalPath, buf.Bytes(), 0o644); errWrite != nil {
+		return fmt.Errorf("writing GOAL.md: %w", errWrite)
+	}
+	return nil
 }
 
 func hasHumanPartnerMessage(messages []state.Message) (bool, *state.Message) {
@@ -237,7 +245,7 @@ func readContinuousModePrompt(workspacePath string) string {
 	return metadata.ContinuousModePrompt
 }
 
-func readContinuousModeAutoCron(workspacePath string) (time.Duration, string) {
+func readContinuousModeAutoCron(workspacePath string) (autoDuration time.Duration, cronExpr string) {
 	goalPath := filepath.Join(workspacePath, "GOAL.md")
 	data, errRead := os.ReadFile(goalPath)
 	if errRead != nil {
@@ -248,7 +256,6 @@ func readContinuousModeAutoCron(workspacePath string) (time.Duration, string) {
 		return 0, ""
 	}
 
-	var autoDuration time.Duration
 	if metadata.ContinuousModeAuto != "" {
 		parsed, errParseDuration := time.ParseDuration(metadata.ContinuousModeAuto)
 		if errParseDuration != nil {

@@ -1,8 +1,6 @@
 import { getRepositoryTitle } from "@/lib/repository-title";
 import type { ApiWorkspaceEntry } from "@/types";
 
-export const WORKSPACE_DIR_SEARCH_PARAM = "workspaceDir";
-
 export type WorkspaceIdentity = Pick<ApiWorkspaceEntry, "name" | "dir">;
 
 type WorkspaceLabelSource = WorkspaceIdentity & Pick<ApiWorkspaceEntry, "title" | "computedTitle">;
@@ -97,103 +95,23 @@ export function getWorkspaceDisplayLabel(
   return `${baseLabel} · ${disambiguator}`;
 }
 
-export function getWorkspaceDirFromSearchParams(searchParams: URLSearchParams): string | null {
-  const workspaceDir = searchParams.get(WORKSPACE_DIR_SEARCH_PARAM)?.trim();
-  return workspaceDir || null;
-}
-
 export function buildWorkspacePath(workspace: WorkspaceIdentity, suffix = ""): string {
   const normalizedSuffix = suffix.replace(/^\/+/, "");
   const basePath = `/workspaces/${encodeURIComponent(workspace.name)}`;
-  const path = normalizedSuffix ? `${basePath}/${normalizedSuffix}` : basePath;
-  return `${path}?${WORKSPACE_DIR_SEARCH_PARAM}=${encodeURIComponent(workspace.dir)}`;
+  return normalizedSuffix ? `${basePath}/${normalizedSuffix}` : basePath;
 }
 
-export function buildWorkspaceRoutedNames(workspaces: WorkspaceIdentity[]): Map<string, string> {
-  const grouped = new Map<string, WorkspaceIdentity[]>();
-
-  for (const workspace of workspaces) {
-    const existing = grouped.get(workspace.name) ?? [];
-    existing.push(workspace);
-    grouped.set(workspace.name, existing);
-  }
-
-  const routedNames = new Map<string, string>();
-
-  for (const [workspaceName, group] of grouped) {
-    if (group.length < 2) {
-      for (const workspace of group) {
-        routedNames.set(workspace.dir, workspaceName);
-      }
-      continue;
-    }
-
-    const groupDisambiguators = buildGroupDisambiguators(group);
-    for (const workspace of group) {
-      const disambiguator = groupDisambiguators.get(workspace.dir) ?? workspace.dir;
-      routedNames.set(workspace.dir, `${disambiguator}/${workspace.name}`);
-    }
-  }
-
-  return routedNames;
+export function buildWorkspaceGoalEditPath(workspace: WorkspaceIdentity): string {
+  return `/workspaces/${encodeURIComponent(workspace.name)}/goal/edit`;
 }
 
-export function getWorkspaceRoutedName(workspace: WorkspaceIdentity, workspaces: WorkspaceIdentity[]): string {
-  return buildWorkspaceRoutedNames(workspaces).get(workspace.dir) ?? workspace.name;
-}
-
-export function buildWorkspaceGoalEditPath(workspace: WorkspaceIdentity, workspaces: WorkspaceIdentity[]): string {
-  const routedName = getWorkspaceRoutedName(workspace, workspaces);
-  return `/workspaces/${encodeURIComponent(routedName)}/goal/edit`;
-}
-
-export function resolveWorkspaceByIdentity<T extends WorkspaceIdentity>(
+export function resolveWorkspaceByName<T extends WorkspaceIdentity>(
   workspaces: T[],
   workspaceName: string,
-  workspaceDir?: string | null,
 ): T | null {
   const matches = workspaces.filter((workspace) => workspace.name === workspaceName);
 
-  if (matches.length === 0) {
-    return null;
-  }
-
-  if (workspaceDir) {
-    return matches.find((workspace) => workspace.dir === workspaceDir) ?? null;
-  }
-
-  return matches[0] ?? null;
-}
-
-export function resolveWorkspaceByRoutedName<T extends WorkspaceIdentity>(workspaces: T[], workspaceRoutedName: string): T | null {
-  const exactMatch = resolveWorkspaceByExactRoutedName(workspaces, workspaceRoutedName);
-
-  if (exactMatch) {
-    return exactMatch;
-  }
-
-  const basenameMatches = workspaces.filter((workspace) => workspace.name === workspaceRoutedName);
-
-  if (basenameMatches.length !== 1) {
-    return null;
-  }
-
-  return basenameMatches[0] ?? null;
-}
-
-export function resolveWorkspaceByExactRoutedName<T extends WorkspaceIdentity>(
-  workspaces: T[],
-  workspaceRoutedName: string,
-): T | null {
-  const routedNames = buildWorkspaceRoutedNames(workspaces);
-
-  for (const workspace of workspaces) {
-    if ((routedNames.get(workspace.dir) ?? workspace.name) === workspaceRoutedName) {
-      return workspace;
-    }
-  }
-
-  return null;
+  return matches.length === 1 ? (matches[0] ?? null) : null;
 }
 
 export function isSameWorkspace(

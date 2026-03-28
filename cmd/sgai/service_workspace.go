@@ -91,15 +91,15 @@ func (s *Server) forkWorkspaceService(workspacePath, goalContent string) (forkWo
 	s.classifyCache.delete(workspacePath)
 
 	forkCanonical := resolveSymlinks(forkPath)
-	state := s.currentWorkspaceListState()
-	if state.externalDirs[resolveSymlinks(workspacePath)] {
-		state.externalDirs[forkCanonical] = true
+	listState := s.currentWorkspaceListState()
+	if listState.externalDirs[resolveSymlinks(workspacePath)] {
+		listState.externalDirs[forkCanonical] = true
 	}
-	state.pinnedDirs[forkCanonical] = true
-	if errSave := s.saveWorkspaceListState(state, true, true); errSave != nil {
+	listState.pinnedDirs[forkCanonical] = true
+	if errSave := s.saveWorkspaceListState(listState, true, true); errSave != nil {
 		return forkWorkspaceResult{}, failForkWorkspaceSetup(workspacePath, forkPath, "failed to persist workspace lists", errSave)
 	}
-	s.commitWorkspaceListState(state)
+	s.commitWorkspaceListState(listState)
 
 	s.notifyStateChange()
 
@@ -149,7 +149,10 @@ func goalContentBodyIsEmpty(goalContent string) bool {
 
 func writeGoalContent(dir, content string) error {
 	goalPath := filepath.Join(dir, "GOAL.md")
-	return os.WriteFile(goalPath, []byte(content), 0644)
+	if errWrite := os.WriteFile(goalPath, []byte(content), 0o644); errWrite != nil {
+		return fmt.Errorf("writing GOAL.md: %w", errWrite)
+	}
+	return nil
 }
 
 type deleteForkResult struct {
@@ -163,24 +166,24 @@ func (s *Server) deleteForkByPathService(forkDir string) (deleteForkResult, erro
 
 func (s *Server) deleteForkService(workspacePath, forkDir string, confirm bool) (deleteForkResult, error) {
 	if s.classifyWorkspaceCached(workspacePath) != workspaceRoot {
-		return deleteForkResult{}, fmt.Errorf("workspace is not a root")
+		return deleteForkResult{}, errors.New("workspace is not a root")
 	}
 
 	if !confirm {
-		return deleteForkResult{}, fmt.Errorf("confirmation required to delete fork")
+		return deleteForkResult{}, errors.New("confirmation required to delete fork")
 	}
 
 	validatedForkDir, errValidate := s.validateDirectory(forkDir)
 	if errValidate != nil {
-		return deleteForkResult{}, fmt.Errorf("invalid fork directory")
+		return deleteForkResult{}, errors.New("invalid fork directory")
 	}
 
 	if s.classifyWorkspaceCached(validatedForkDir) != workspaceFork {
-		return deleteForkResult{}, fmt.Errorf("fork workspace not found")
+		return deleteForkResult{}, errors.New("fork workspace not found")
 	}
 
 	if resolveSymlinks(getRootWorkspacePath(validatedForkDir)) != resolveSymlinks(workspacePath) {
-		return deleteForkResult{}, fmt.Errorf("fork does not belong to root")
+		return deleteForkResult{}, errors.New("fork does not belong to root")
 	}
 
 	return s.deleteForkWorkspaceService(validatedForkDir)
@@ -205,11 +208,11 @@ type updateGoalResult struct {
 
 func (s *Server) updateGoalService(workspacePath, content string) (updateGoalResult, error) {
 	if content == "" {
-		return updateGoalResult{}, fmt.Errorf("content cannot be empty")
+		return updateGoalResult{}, errors.New("content cannot be empty")
 	}
 
 	goalPath := filepath.Join(workspacePath, "GOAL.md")
-	if errWrite := os.WriteFile(goalPath, []byte(content), 0644); errWrite != nil {
+	if errWrite := os.WriteFile(goalPath, []byte(content), 0o644); errWrite != nil {
 		return updateGoalResult{}, fmt.Errorf("failed to write GOAL.md: %w", errWrite)
 	}
 

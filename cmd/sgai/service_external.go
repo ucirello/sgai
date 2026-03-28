@@ -21,7 +21,7 @@ func (s *Server) externalFilePath() string {
 	return filepath.Join(s.externalConfigDir, "external.json")
 }
 
-func loadPersistedDirectorySet(filePath, label, pruneLogPrefix, warningLogPrefix string) (map[string]bool, bool, error) {
+func loadPersistedDirectorySet(filePath, label, pruneLogPrefix, warningLogPrefix string) (directories map[string]bool, pruned bool, err error) {
 	data, errRead := os.ReadFile(filePath)
 	if errRead != nil {
 		if os.IsNotExist(errRead) {
@@ -33,20 +33,19 @@ func loadPersistedDirectorySet(filePath, label, pruneLogPrefix, warningLogPrefix
 	if errJSON := json.Unmarshal(data, &dirs); errJSON != nil {
 		return nil, false, fmt.Errorf("parsing %s: %w", label, errJSON)
 	}
-	existing := make(map[string]bool, len(dirs))
-	pruned := false
+	directories = make(map[string]bool, len(dirs))
 	for _, d := range dirs {
 		if _, errStat := os.Stat(d); errStat == nil {
-			existing[resolveSymlinks(d)] = true
+			directories[resolveSymlinks(d)] = true
 		} else if os.IsNotExist(errStat) {
 			log.Println(pruneLogPrefix, d)
 			pruned = true
 		} else {
 			log.Println(warningLogPrefix, d, errStat)
-			existing[resolveSymlinks(d)] = true
+			directories[resolveSymlinks(d)] = true
 		}
 	}
-	return existing, pruned, nil
+	return directories, pruned, nil
 }
 
 func (s *Server) loadExternalDirs() error {
@@ -168,19 +167,6 @@ func (s *Server) isExternalWorkspace(workspacePath string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return directorySetContains(s.externalDirs, workspacePath)
-}
-
-type deleteExternalForkResult struct {
-	Deleted bool
-	Message string
-}
-
-func (s *Server) deleteExternalForkService(forkDir string) (deleteExternalForkResult, error) {
-	result, errDelete := s.deleteForkWorkspaceService(forkDir)
-	if errDelete != nil {
-		return deleteExternalForkResult{}, errDelete
-	}
-	return deleteExternalForkResult(result), nil
 }
 
 type directoryEntry struct {

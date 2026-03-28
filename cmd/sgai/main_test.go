@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +20,322 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/ucirello/sgai/pkg/state"
 )
+
+func newTestDagNode(name string) *dagNode {
+	return &dagNode{
+		Name:         name,
+		Predecessors: nil,
+		Successors:   nil,
+	}
+}
+
+func newTestDag(nodeNames ...string) *dag {
+	nodes := make(map[string]*dagNode, len(nodeNames))
+	for _, nodeName := range nodeNames {
+		nodes[nodeName] = newTestDagNode(nodeName)
+	}
+	return &dag{
+		Nodes:      nodes,
+		EntryNodes: nil,
+	}
+}
+
+func newTestGoalMetadata() GoalMetadata {
+	return GoalMetadata{
+		Title:                "",
+		Flow:                 "",
+		Models:               nil,
+		Alias:                nil,
+		CompletionGateScript: "",
+		ContinuousModePrompt: "",
+		ContinuousModeAuto:   "",
+		ContinuousModeCron:   "",
+		Retrospective:        "",
+	}
+}
+
+//nolint:ireturn // Generic test fixture helper returns the concrete type selected by each test.
+func updated[T any](value T, update func(*T)) T {
+	update(&value)
+	return value
+}
+
+func updatedPtr[T any](value T, update func(*T)) *T {
+	update(&value)
+	return &value
+}
+
+func newTestTokenUsage() state.TokenUsage {
+	return state.TokenUsage{
+		Input:      0,
+		Output:     0,
+		Reasoning:  0,
+		CacheRead:  0,
+		CacheWrite: 0,
+	}
+}
+
+func newTestDollarBreakdown() state.DollarBreakdown {
+	return state.DollarBreakdown{
+		Input:      0,
+		Output:     0,
+		Reasoning:  0,
+		CacheRead:  0,
+		CacheWrite: 0,
+		Total:      0,
+	}
+}
+
+func newTestSessionCost() state.SessionCost {
+	return state.SessionCost{
+		TotalCost:   0,
+		Dollars:     newTestDollarBreakdown(),
+		TotalTokens: newTestTokenUsage(),
+		ByAgent:     nil,
+	}
+}
+
+func newTestWorkflow() state.Workflow {
+	return state.Workflow{
+		Status:              "",
+		Task:                "",
+		Progress:            nil,
+		HumanMessage:        "",
+		MultiChoiceQuestion: nil,
+		Messages:            nil,
+		VisitCounts:         nil,
+		CurrentAgent:        "",
+		Todos:               nil,
+		ProjectTodos:        nil,
+		AgentSequence:       nil,
+		SessionID:           "",
+		Cost:                newTestSessionCost(),
+		InteractionMode:     "",
+		ModelStatuses:       nil,
+		CurrentModel:        "",
+		Summary:             "",
+		SummaryManual:       false,
+	}
+}
+
+func newTestMultiChoiceQuestion() state.MultiChoiceQuestion {
+	return state.MultiChoiceQuestion{
+		Questions:  nil,
+		IsWorkGate: false,
+	}
+}
+
+func newTestMessage() state.Message {
+	return state.Message{
+		ID:        0,
+		FromAgent: "",
+		ToAgent:   "",
+		Body:      "",
+		Read:      false,
+		ReadAt:    "",
+		ReadBy:    "",
+		CreatedAt: "",
+	}
+}
+
+func newTestSession() *session {
+	return &session{
+		mu:           sync.Mutex{},
+		cancel:       nil,
+		running:      false,
+		outputLog:    nil,
+		mcpCloseOnce: sync.Once{},
+		mcpCloseFn:   nil,
+		coord:        nil,
+	}
+}
+
+func newTestServerPaths() serverPaths {
+	return serverPaths{
+		pinnedConfigDir:   "",
+		externalConfigDir: "",
+	}
+}
+
+func newTestEventsProgressDisplay() eventsProgressDisplay {
+	return eventsProgressDisplay{
+		Timestamp:       "",
+		FormattedTime:   "",
+		Agent:           "",
+		Description:     "",
+		ShowDateDivider: false,
+		DateDivider:     "",
+	}
+}
+
+func newTestWorkspaceGroup() workspaceGroup {
+	return workspaceGroup{
+		Root:  newTestWorkspaceInfo(),
+		Forks: nil,
+	}
+}
+
+func newTestTodoItem() state.TodoItem {
+	return state.TodoItem{
+		ID:       "",
+		Content:  "",
+		Status:   "",
+		Priority: "",
+	}
+}
+
+func newTestAgentSequenceEntry() state.AgentSequenceEntry {
+	return state.AgentSequenceEntry{
+		Agent:     "",
+		StartTime: "",
+		IsCurrent: false,
+	}
+}
+
+func newTestQuestionItem() state.QuestionItem {
+	return state.QuestionItem{
+		Question:    "",
+		Choices:     nil,
+		MultiSelect: false,
+	}
+}
+
+func newTestActionConfig() actionConfig {
+	return actionConfig{
+		Name:        "",
+		Model:       "",
+		Prompt:      "",
+		Script:      "",
+		Description: "",
+	}
+}
+
+func newTestProjectConfig() projectConfig {
+	return projectConfig{
+		DefaultModel: "",
+		MCP:          nil,
+		Editor:       "",
+		Actions:      nil,
+	}
+}
+
+func newTestAPIActionEntry() apiActionEntry {
+	return apiActionEntry{
+		Name:            "",
+		Model:           "",
+		Prompt:          "",
+		Script:          "",
+		Description:     "",
+		Kind:            "",
+		Variables:       nil,
+		ValidationError: "",
+	}
+}
+
+func newTestAPIRespondRequest() apiRespondRequest {
+	return apiRespondRequest{
+		PromptToken:     "",
+		Answer:          "",
+		SelectedChoices: nil,
+	}
+}
+
+func newTestMultiModelConfig() multiModelConfig {
+	return multiModelConfig{
+		dir:              "",
+		goalPath:         "",
+		agent:            "",
+		flowDag:          nil,
+		statePath:        "",
+		coord:            nil,
+		retrospectiveDir: "",
+		longestNameLen:   0,
+		paddedsgai:       "",
+		mcpURL:           "",
+		logWriter:        nil,
+		stdoutLog:        nil,
+		stderrLog:        nil,
+	}
+}
+
+func newTestWorkspaceInfo() workspaceInfo {
+	return workspaceInfo{
+		Directory:    "",
+		DirName:      "",
+		Kind:         "",
+		IsRoot:       false,
+		Running:      false,
+		NeedsInput:   false,
+		InProgress:   false,
+		Pinned:       false,
+		HasWorkspace: false,
+		External:     false,
+	}
+}
+
+func newTestPartTokens() partTokens {
+	return partTokens{
+		Input:     0,
+		Output:    0,
+		Reasoning: 0,
+		Cache: cacheStats{
+			Read:  0,
+			Write: 0,
+		},
+	}
+}
+
+func newTestToolState() toolState {
+	return toolState{
+		Status: "",
+		Input:  nil,
+		Title:  "",
+		Output: "",
+		Error:  "",
+	}
+}
+
+func newTestPart() part {
+	return part{
+		Type:   "",
+		Text:   "",
+		Tool:   "",
+		State:  nil,
+		Cost:   0,
+		Tokens: newTestPartTokens(),
+	}
+}
+
+func newTestStreamEvent() streamEvent {
+	return streamEvent{
+		Type:      "",
+		Timestamp: 0,
+		SessionID: "",
+		Part:      newTestPart(),
+	}
+}
+
+func newTestJSONPrettyWriter() *jsonPrettyWriter {
+	return &jsonPrettyWriter{
+		prefix:       "",
+		w:            nil,
+		buf:          nil,
+		currentText:  strings.Builder{},
+		sessionID:    "",
+		coord:        nil,
+		currentAgent: "",
+		stepCounter:  0,
+		startTime:    time.Time{},
+	}
+}
+
+func newBufferedTestJSONPrettyWriter(w io.Writer, prefix string) *jsonPrettyWriter {
+	writer := newTestJSONPrettyWriter()
+	writer.w = w
+	writer.prefix = prefix
+	writer.startTime = time.Now()
+	return writer
+}
 
 func TestExtractModelFromArgs(t *testing.T) {
 	cases := []struct {
@@ -43,64 +361,71 @@ func TestExtractModelFromArgs(t *testing.T) {
 
 func TestEnsureImplicitAgentModel(t *testing.T) {
 	t.Run("addsModelFromCoordinator", func(t *testing.T) {
-		flowDag := &dag{Nodes: map[string]*dagNode{"retrospective": {}}}
-		metadata := &GoalMetadata{Models: map[string]any{"coordinator": "claude-opus-4"}}
+		flowDag := newTestDag("retrospective")
+		metadata := newTestGoalMetadata()
+		metadata.Models = map[string]any{"coordinator": "claude-opus-4"}
 
-		ensureImplicitAgentModel(flowDag, metadata, "retrospective")
+		ensureImplicitAgentModel(flowDag, &metadata, "retrospective")
 
 		assert.Equal(t, "claude-opus-4", metadata.Models["retrospective"])
 	})
 
 	t.Run("doesNotOverrideExisting", func(t *testing.T) {
-		flowDag := &dag{Nodes: map[string]*dagNode{"retrospective": {}}}
-		metadata := &GoalMetadata{Models: map[string]any{
+		flowDag := newTestDag("retrospective")
+		metadata := newTestGoalMetadata()
+		metadata.Models = map[string]any{
 			"coordinator":   "claude-opus-4",
 			"retrospective": "gpt-4",
-		}}
+		}
 
-		ensureImplicitAgentModel(flowDag, metadata, "retrospective")
+		ensureImplicitAgentModel(flowDag, &metadata, "retrospective")
 
 		assert.Equal(t, "gpt-4", metadata.Models["retrospective"])
 	})
 
 	t.Run("agentNotInDag", func(t *testing.T) {
-		flowDag := &dag{Nodes: map[string]*dagNode{}}
-		metadata := &GoalMetadata{Models: map[string]any{"coordinator": "claude-opus-4"}}
+		flowDag := newTestDag()
+		metadata := newTestGoalMetadata()
+		metadata.Models = map[string]any{"coordinator": "claude-opus-4"}
 
-		ensureImplicitAgentModel(flowDag, metadata, "retrospective")
+		ensureImplicitAgentModel(flowDag, &metadata, "retrospective")
 
 		_, exists := metadata.Models["retrospective"]
 		assert.False(t, exists)
 	})
 
 	t.Run("noCoordinatorModel", func(t *testing.T) {
-		flowDag := &dag{Nodes: map[string]*dagNode{"retrospective": {}}}
-		metadata := &GoalMetadata{Models: map[string]any{}}
+		flowDag := newTestDag("retrospective")
+		metadata := newTestGoalMetadata()
+		metadata.Models = map[string]any{}
 
-		ensureImplicitAgentModel(flowDag, metadata, "retrospective")
+		ensureImplicitAgentModel(flowDag, &metadata, "retrospective")
 
 		_, exists := metadata.Models["retrospective"]
 		assert.False(t, exists)
 	})
 
 	t.Run("nilModelsMap", func(t *testing.T) {
-		flowDag := &dag{Nodes: map[string]*dagNode{"retrospective": {}}}
-		metadata := &GoalMetadata{}
+		flowDag := newTestDag("retrospective")
+		metadata := newTestGoalMetadata()
 
-		ensureImplicitAgentModel(flowDag, metadata, "retrospective")
+		ensureImplicitAgentModel(flowDag, &metadata, "retrospective")
 
 		assert.NotNil(t, metadata.Models)
 	})
 }
 
 func TestAddRetrospectiveRedirectMessage(t *testing.T) {
-	wfState := &state.Workflow{
-		Messages: []state.Message{
-			{ID: 1, FromAgent: "dev", ToAgent: "coordinator", Body: "done", Read: true},
-		},
-	}
+	wfState := newTestWorkflow()
+	message := newTestMessage()
+	message.ID = 1
+	message.FromAgent = "dev"
+	message.ToAgent = "coordinator"
+	message.Body = "done"
+	message.Read = true
+	wfState.Messages = []state.Message{message}
 
-	addRetrospectiveRedirectMessage(wfState, "coordinator")
+	addRetrospectiveRedirectMessage(&wfState, "coordinator")
 
 	require.Len(t, wfState.Messages, 2)
 	msg := wfState.Messages[1]
@@ -112,13 +437,16 @@ func TestAddRetrospectiveRedirectMessage(t *testing.T) {
 }
 
 func TestAddProjectCriticCouncilRedirectMessage(t *testing.T) {
-	wfState := &state.Workflow{
-		Messages: []state.Message{
-			{ID: 1, FromAgent: "dev", ToAgent: "coordinator", Body: "done", Read: true},
-		},
-	}
+	wfState := newTestWorkflow()
+	message := newTestMessage()
+	message.ID = 1
+	message.FromAgent = "dev"
+	message.ToAgent = "coordinator"
+	message.Body = "done"
+	message.Read = true
+	wfState.Messages = []state.Message{message}
 
-	addProjectCriticCouncilRedirectMessages(wfState, "", "coordinator", GoalMetadata{})
+	addProjectCriticCouncilRedirectMessages(&wfState, "", "coordinator", newTestGoalMetadata().Models)
 
 	require.Len(t, wfState.Messages, 2)
 	msg := wfState.Messages[1]
@@ -130,13 +458,13 @@ func TestAddProjectCriticCouncilRedirectMessage(t *testing.T) {
 }
 
 func TestAddProjectCriticCouncilRedirectMessageFansOutToCouncilModels(t *testing.T) {
-	wfState := &state.Workflow{}
+	wfState := newTestWorkflow()
+	metadata := newTestGoalMetadata()
+	metadata.Models = map[string]any{
+		"project-critic-council": []any{"model-a", "model-b"},
+	}
 
-	addProjectCriticCouncilRedirectMessages(wfState, t.TempDir(), "coordinator", GoalMetadata{
-		Models: map[string]any{
-			"project-critic-council": []any{"model-a", "model-b"},
-		},
-	})
+	addProjectCriticCouncilRedirectMessages(&wfState, t.TempDir(), "coordinator", metadata.Models)
 
 	require.Len(t, wfState.Messages, 2)
 	assert.Equal(t, "project-critic-council:model-a", wfState.Messages[0].ToAgent)
@@ -145,75 +473,110 @@ func TestAddProjectCriticCouncilRedirectMessageFansOutToCouncilModels(t *testing
 
 func TestHasUnreadMessageForAgent(t *testing.T) {
 	assert.False(t, hasUnreadMessageForAgent(nil, "retrospective"))
-	assert.False(t, hasUnreadMessageForAgent([]state.Message{{ToAgent: "retrospective", Read: true}}, "retrospective"))
-	assert.True(t, hasUnreadMessageForAgent([]state.Message{{ToAgent: "project-critic-council:model1", Read: false}}, "project-critic-council"))
+	readMessage := newTestMessage()
+	readMessage.ToAgent = "retrospective"
+	readMessage.Read = true
+	unreadMessage := newTestMessage()
+	unreadMessage.ToAgent = "project-critic-council:model1"
+	unreadMessage.Read = false
+	assert.False(t, hasUnreadMessageForAgent([]state.Message{readMessage}, "retrospective"))
+	assert.True(t, hasUnreadMessageForAgent([]state.Message{unreadMessage}, "project-critic-council"))
 }
 
 func TestBlockCompletionOnPendingTodos(t *testing.T) {
 	t.Run("noPendingTodos", func(t *testing.T) {
 		dir := t.TempDir()
-		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 		require.NoError(t, err)
 
-		cfg := multiModelConfig{coord: coord}
-		newState := state.Workflow{Status: state.StatusComplete}
-		wfState := state.Workflow{
-			Todos: []state.TodoItem{
-				{Content: "done", Status: "completed"},
-				{Content: "cancelled", Status: "cancelled"},
-			},
-		}
+		cfg := newTestMultiModelConfig()
+		cfg.coord = coord
+		wfState := newTestWorkflow()
+		wfState.Status = state.StatusComplete
+		doneTodo := newTestTodoItem()
+		doneTodo.Content = "done"
+		doneTodo.Status = "completed"
+		cancelledTodo := newTestTodoItem()
+		cancelledTodo.Content = "cancelled"
+		cancelledTodo.Status = "cancelled"
+		wfState.Todos = []state.TodoItem{doneTodo, cancelledTodo}
 
-		result := blockCompletionOnPendingTodos(cfg, newState, wfState)
+		result := blockCompletionOnPendingTodos(&cfg, &wfState)
 		assert.Nil(t, result)
 	})
 
 	t.Run("hasPendingTodos", func(t *testing.T) {
 		dir := t.TempDir()
-		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 		require.NoError(t, err)
 
-		cfg := multiModelConfig{coord: coord, agent: "coordinator", paddedsgai: "sgai"}
-		newState := state.Workflow{Status: state.StatusComplete}
-		wfState := state.Workflow{
-			Todos: []state.TodoItem{
-				{Content: "done", Status: "completed"},
-				{Content: "pending task", Status: "pending"},
-			},
-		}
+		cfg := newTestMultiModelConfig()
+		cfg.coord = coord
+		cfg.agent = "go-developer"
+		cfg.paddedsgai = "sgai"
+		newState := newTestWorkflow()
+		newState.Status = state.StatusComplete
+		doneTodo := newTestTodoItem()
+		doneTodo.Content = "done"
+		doneTodo.Status = "completed"
+		pendingTodo := newTestTodoItem()
+		pendingTodo.Content = "pending task"
+		pendingTodo.Status = "pending"
+		newState.Todos = []state.TodoItem{doneTodo, pendingTodo}
 
-		result := blockCompletionOnPendingTodos(cfg, newState, wfState)
+		result := blockCompletionOnPendingTodos(&cfg, &newState)
+		require.NotNil(t, result)
+		assert.Equal(t, state.StatusWorking, result.Status)
+	})
+
+	t.Run("coordinatorUsesPendingProjectTodosFromNewState", func(t *testing.T) {
+		dir := t.TempDir()
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
+		require.NoError(t, err)
+
+		cfg := newTestMultiModelConfig()
+		cfg.coord = coord
+		cfg.agent = "coordinator"
+		cfg.paddedsgai = "sgai"
+		newState := updated(newTestWorkflow(), func(workflow *state.Workflow) {
+			workflow.Status = state.StatusComplete
+			workflow.ProjectTodos = []state.TodoItem{updated(newTestTodoItem(), func(todo *state.TodoItem) {
+				todo.Content = "project task"
+				todo.Status = "pending"
+				todo.Priority = "high"
+			})}
+		})
+		result := blockCompletionOnPendingTodos(&cfg, &newState)
 		require.NotNil(t, result)
 		assert.Equal(t, state.StatusWorking, result.Status)
 	})
 }
 
 func TestCopyCompletionArtifactsToRetrospective(t *testing.T) {
-	t.Run("noRetrospectiveDir", func(_ *testing.T) {
-		cfg := multiModelConfig{retrospectiveDir: ""}
-		copyCompletionArtifactsToRetrospective(cfg)
+	t.Run("noRetrospectiveDir", func(t *testing.T) {
+		cfg := newTestMultiModelConfig()
+		require.NoError(t, copyCompletionArtifactsToRetrospective(&cfg))
 	})
 
 	t.Run("withRetrospectiveDir", func(t *testing.T) {
 		dir := t.TempDir()
 		retrospectiveDir := filepath.Join(dir, "retrospective")
-		require.NoError(t, os.MkdirAll(retrospectiveDir, 0755))
+		require.NoError(t, os.MkdirAll(retrospectiveDir, 0o755))
 
 		goalPath := filepath.Join(dir, "GOAL.md")
-		require.NoError(t, os.WriteFile(goalPath, []byte("# Goal"), 0644))
+		require.NoError(t, os.WriteFile(goalPath, []byte("# Goal"), 0o644))
 
 		sgaiDir := filepath.Join(dir, ".sgai")
-		require.NoError(t, os.MkdirAll(sgaiDir, 0755))
+		require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 		pmPath := filepath.Join(sgaiDir, "PROJECT_MANAGEMENT.md")
-		require.NoError(t, os.WriteFile(pmPath, []byte("# PM"), 0644))
+		require.NoError(t, os.WriteFile(pmPath, []byte("# PM"), 0o644))
 
-		cfg := multiModelConfig{
-			dir:              dir,
-			goalPath:         goalPath,
-			retrospectiveDir: retrospectiveDir,
-		}
+		cfg := newTestMultiModelConfig()
+		cfg.dir = dir
+		cfg.goalPath = goalPath
+		cfg.retrospectiveDir = retrospectiveDir
 
-		copyCompletionArtifactsToRetrospective(cfg)
+		require.NoError(t, copyCompletionArtifactsToRetrospective(&cfg))
 
 		goalCopy, errGoal := os.ReadFile(filepath.Join(retrospectiveDir, "GOAL.md"))
 		require.NoError(t, errGoal)
@@ -229,9 +592,10 @@ func TestTryReloadGoalMetadata(t *testing.T) {
 	t.Run("fileNotExists", func(t *testing.T) {
 		dir := t.TempDir()
 		goalPath := filepath.Join(dir, "GOAL.md")
-		current := GoalMetadata{Flow: "coordinator -> dev"}
+		current := newTestGoalMetadata()
+		current.Flow = "coordinator -> dev"
 
-		result, err := tryReloadGoalMetadata(goalPath, current, &dag{Nodes: map[string]*dagNode{}})
+		result, err := tryReloadGoalMetadata(goalPath, &current, newTestDag())
 		require.NoError(t, err)
 		assert.Equal(t, "coordinator -> dev", result.Flow)
 	})
@@ -240,9 +604,10 @@ func TestTryReloadGoalMetadata(t *testing.T) {
 		dir := t.TempDir()
 		goalPath := filepath.Join(dir, "GOAL.md")
 		content := "---\nflow: coordinator -> dev\nretrospective: \"true\"\n---\n# Goal"
-		require.NoError(t, os.WriteFile(goalPath, []byte(content), 0644))
+		require.NoError(t, os.WriteFile(goalPath, []byte(content), 0o644))
 
-		result, err := tryReloadGoalMetadata(goalPath, GoalMetadata{}, &dag{Nodes: map[string]*dagNode{}})
+		metadata := newTestGoalMetadata()
+		result, err := tryReloadGoalMetadata(goalPath, &metadata, newTestDag())
 		require.NoError(t, err)
 		assert.Equal(t, "coordinator -> dev", result.Flow)
 	})
@@ -251,53 +616,62 @@ func TestTryReloadGoalMetadata(t *testing.T) {
 		dir := t.TempDir()
 		goalPath := filepath.Join(dir, "GOAL.md")
 		content := "---\n  bad yaml: [unclosed\n---\n# Goal"
-		require.NoError(t, os.WriteFile(goalPath, []byte(content), 0644))
+		require.NoError(t, os.WriteFile(goalPath, []byte(content), 0o644))
 
-		_, err := tryReloadGoalMetadata(goalPath, GoalMetadata{}, &dag{Nodes: map[string]*dagNode{}})
-		assert.Error(t, err)
+		metadata := newTestGoalMetadata()
+		_, err := tryReloadGoalMetadata(goalPath, &metadata, newTestDag())
+		require.Error(t, err)
 	})
 }
 
 func TestBlockCompletionOnRetrospective(t *testing.T) {
 	t.Run("retrospectiveDisabled", func(t *testing.T) {
-		cfg := multiModelConfig{flowDag: &dag{Nodes: map[string]*dagNode{"retrospective": {}}}}
-		metadata := GoalMetadata{Retrospective: "false"}
-		result := blockCompletionOnRetrospective(cfg, state.Workflow{}, metadata)
+		cfg := newTestMultiModelConfig()
+		cfg.flowDag = newTestDag("retrospective")
+		metadata := newTestGoalMetadata()
+		metadata.Retrospective = "false"
+		workflow := newTestWorkflow()
+		result := blockCompletionOnRetrospective(&cfg, &workflow, &metadata)
 		assert.Nil(t, result)
 	})
 
 	t.Run("noRetrospectiveInDag", func(t *testing.T) {
-		cfg := multiModelConfig{flowDag: &dag{Nodes: map[string]*dagNode{}}}
-		metadata := GoalMetadata{Retrospective: "true"}
-		result := blockCompletionOnRetrospective(cfg, state.Workflow{}, metadata)
+		cfg := newTestMultiModelConfig()
+		cfg.flowDag = newTestDag()
+		metadata := newTestGoalMetadata()
+		metadata.Retrospective = "true"
+		workflow := newTestWorkflow()
+		result := blockCompletionOnRetrospective(&cfg, &workflow, &metadata)
 		assert.Nil(t, result)
 	})
 
 	t.Run("retrospectiveAlreadyRan", func(t *testing.T) {
-		cfg := multiModelConfig{flowDag: &dag{Nodes: map[string]*dagNode{"retrospective": {}}}}
-		metadata := GoalMetadata{Retrospective: "true"}
-		newState := state.Workflow{VisitCounts: map[string]int{"retrospective": 1}}
-		result := blockCompletionOnRetrospective(cfg, newState, metadata)
+		cfg := newTestMultiModelConfig()
+		cfg.flowDag = newTestDag("retrospective")
+		metadata := newTestGoalMetadata()
+		metadata.Retrospective = "true"
+		newState := newTestWorkflow()
+		newState.VisitCounts = map[string]int{"retrospective": 1}
+		result := blockCompletionOnRetrospective(&cfg, &newState, &metadata)
 		assert.Nil(t, result)
 	})
 
 	t.Run("blocksCompletion", func(t *testing.T) {
 		dir := t.TempDir()
-		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 		require.NoError(t, err)
 
-		cfg := multiModelConfig{
-			coord:      coord,
-			agent:      "coordinator",
-			paddedsgai: "sgai",
-			flowDag:    &dag{Nodes: map[string]*dagNode{"retrospective": {}}},
-		}
-		metadata := GoalMetadata{Retrospective: "true"}
-		newState := state.Workflow{
-			Status:      state.StatusComplete,
-			VisitCounts: map[string]int{},
-		}
-		result := blockCompletionOnRetrospective(cfg, newState, metadata)
+		cfg := newTestMultiModelConfig()
+		cfg.coord = coord
+		cfg.agent = "coordinator"
+		cfg.paddedsgai = "sgai"
+		cfg.flowDag = newTestDag("retrospective")
+		metadata := newTestGoalMetadata()
+		metadata.Retrospective = "true"
+		newState := newTestWorkflow()
+		newState.Status = state.StatusComplete
+		newState.VisitCounts = map[string]int{}
+		result := blockCompletionOnRetrospective(&cfg, &newState, &metadata)
 		require.NotNil(t, result)
 		assert.Equal(t, state.StatusAgentDone, result.Status)
 	})
@@ -305,46 +679,52 @@ func TestBlockCompletionOnRetrospective(t *testing.T) {
 
 func TestBlockCompletionOnProjectCriticCouncil(t *testing.T) {
 	t.Run("retrospectiveDisabled", func(t *testing.T) {
-		cfg := multiModelConfig{flowDag: &dag{Nodes: map[string]*dagNode{"project-critic-council": {}}}}
-		metadata := GoalMetadata{Retrospective: "false"}
-		result := blockCompletionOnProjectCriticCouncil(cfg, state.Workflow{}, metadata)
+		cfg := newTestMultiModelConfig()
+		cfg.flowDag = newTestDag("project-critic-council")
+		metadata := newTestGoalMetadata()
+		metadata.Retrospective = "false"
+		workflow := newTestWorkflow()
+		result := blockCompletionOnProjectCriticCouncil(&cfg, &workflow, &metadata)
 		assert.Nil(t, result)
 	})
 
 	t.Run("noCouncilInDag", func(t *testing.T) {
-		cfg := multiModelConfig{flowDag: &dag{Nodes: map[string]*dagNode{}}}
-		metadata := GoalMetadata{Retrospective: "true"}
-		result := blockCompletionOnProjectCriticCouncil(cfg, state.Workflow{}, metadata)
+		cfg := newTestMultiModelConfig()
+		cfg.flowDag = newTestDag()
+		metadata := newTestGoalMetadata()
+		metadata.Retrospective = "true"
+		workflow := newTestWorkflow()
+		result := blockCompletionOnProjectCriticCouncil(&cfg, &workflow, &metadata)
 		assert.Nil(t, result)
 	})
 
 	t.Run("councilAlreadyRan", func(t *testing.T) {
-		cfg := multiModelConfig{flowDag: &dag{Nodes: map[string]*dagNode{"project-critic-council": {}}}}
-		metadata := GoalMetadata{Retrospective: "true"}
-		newState := state.Workflow{VisitCounts: map[string]int{"project-critic-council": 1}}
-		result := blockCompletionOnProjectCriticCouncil(cfg, newState, metadata)
+		cfg := newTestMultiModelConfig()
+		cfg.flowDag = newTestDag("project-critic-council")
+		metadata := newTestGoalMetadata()
+		metadata.Retrospective = "true"
+		newState := newTestWorkflow()
+		newState.VisitCounts = map[string]int{"project-critic-council": 1}
+		result := blockCompletionOnProjectCriticCouncil(&cfg, &newState, &metadata)
 		assert.Nil(t, result)
 	})
 
 	t.Run("blocksCompletion", func(t *testing.T) {
 		dir := t.TempDir()
-		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 		require.NoError(t, err)
 
-		cfg := multiModelConfig{
-			coord:      coord,
-			agent:      "coordinator",
-			paddedsgai: "sgai",
-			flowDag: &dag{Nodes: map[string]*dagNode{
-				"project-critic-council": {},
-			}},
-		}
-		metadata := GoalMetadata{Retrospective: "true"}
-		newState := state.Workflow{
-			Status:      state.StatusComplete,
-			VisitCounts: map[string]int{},
-		}
-		result := blockCompletionOnProjectCriticCouncil(cfg, newState, metadata)
+		cfg := newTestMultiModelConfig()
+		cfg.coord = coord
+		cfg.agent = "coordinator"
+		cfg.paddedsgai = "sgai"
+		cfg.flowDag = newTestDag("project-critic-council")
+		metadata := newTestGoalMetadata()
+		metadata.Retrospective = "true"
+		newState := newTestWorkflow()
+		newState.Status = state.StatusComplete
+		newState.VisitCounts = map[string]int{}
+		result := blockCompletionOnProjectCriticCouncil(&cfg, &newState, &metadata)
 		require.NotNil(t, result)
 		assert.Equal(t, state.StatusAgentDone, result.Status)
 		require.Len(t, result.Messages, 1)
@@ -353,30 +733,25 @@ func TestBlockCompletionOnProjectCriticCouncil(t *testing.T) {
 
 	t.Run("fansOutToCouncilModels", func(t *testing.T) {
 		dir := t.TempDir()
-		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 		require.NoError(t, err)
 
-		cfg := multiModelConfig{
-			coord:      coord,
-			dir:        dir,
-			agent:      "coordinator",
-			paddedsgai: "sgai",
-			flowDag: &dag{Nodes: map[string]*dagNode{
-				"project-critic-council": {},
-			}},
+		cfg := newTestMultiModelConfig()
+		cfg.coord = coord
+		cfg.dir = dir
+		cfg.agent = "coordinator"
+		cfg.paddedsgai = "sgai"
+		cfg.flowDag = newTestDag("project-critic-council")
+		metadata := newTestGoalMetadata()
+		metadata.Retrospective = "true"
+		metadata.Models = map[string]any{
+			"project-critic-council": []any{"model-a", "model-b"},
 		}
-		metadata := GoalMetadata{
-			Retrospective: "true",
-			Models: map[string]any{
-				"project-critic-council": []any{"model-a", "model-b"},
-			},
-		}
-		newState := state.Workflow{
-			Status:      state.StatusComplete,
-			VisitCounts: map[string]int{},
-		}
+		newState := newTestWorkflow()
+		newState.Status = state.StatusComplete
+		newState.VisitCounts = map[string]int{}
 
-		result := blockCompletionOnProjectCriticCouncil(cfg, newState, metadata)
+		result := blockCompletionOnProjectCriticCouncil(&cfg, &newState, &metadata)
 		require.NotNil(t, result)
 		assert.Equal(t, state.StatusAgentDone, result.Status)
 		require.Len(t, result.Messages, 2)
@@ -386,28 +761,26 @@ func TestBlockCompletionOnProjectCriticCouncil(t *testing.T) {
 
 	t.Run("doesNotDuplicateUnreadCouncilMessage", func(t *testing.T) {
 		dir := t.TempDir()
-		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 		require.NoError(t, err)
 
-		cfg := multiModelConfig{
-			coord:      coord,
-			agent:      "coordinator",
-			paddedsgai: "sgai",
-			flowDag: &dag{Nodes: map[string]*dagNode{
-				"project-critic-council": {},
-			}},
-		}
-		newState := state.Workflow{
-			Status:      state.StatusComplete,
-			VisitCounts: map[string]int{},
-			Messages: []state.Message{{
-				ID:      1,
-				ToAgent: "project-critic-council",
-				Read:    false,
-			}},
-		}
+		cfg := newTestMultiModelConfig()
+		cfg.coord = coord
+		cfg.agent = "coordinator"
+		cfg.paddedsgai = "sgai"
+		cfg.flowDag = newTestDag("project-critic-council")
+		newState := newTestWorkflow()
+		newState.Status = state.StatusComplete
+		newState.VisitCounts = map[string]int{}
+		message := newTestMessage()
+		message.ID = 1
+		message.ToAgent = "project-critic-council"
+		message.Read = false
+		newState.Messages = []state.Message{message}
 
-		result := blockCompletionOnProjectCriticCouncil(cfg, newState, GoalMetadata{Retrospective: "true"})
+		metadata := newTestGoalMetadata()
+		metadata.Retrospective = "true"
+		result := blockCompletionOnProjectCriticCouncil(&cfg, &newState, &metadata)
 		require.NotNil(t, result)
 		assert.Len(t, result.Messages, 1)
 	})
@@ -415,9 +788,10 @@ func TestBlockCompletionOnProjectCriticCouncil(t *testing.T) {
 
 func TestBlockCompletionOnGateScript(t *testing.T) {
 	t.Run("noGateScript", func(t *testing.T) {
-		cfg := multiModelConfig{}
-		metadata := GoalMetadata{}
-		result := blockCompletionOnGateScript(t.Context(), cfg, state.Workflow{}, metadata)
+		cfg := newTestMultiModelConfig()
+		metadata := newTestGoalMetadata()
+		workflow := newTestWorkflow()
+		result := blockCompletionOnGateScript(t.Context(), &cfg, &workflow, &metadata)
 		assert.Nil(t, result)
 	})
 }
@@ -425,124 +799,150 @@ func TestBlockCompletionOnGateScript(t *testing.T) {
 func TestHandleCompleteStatus(t *testing.T) {
 	t.Run("nonCoordinatorAgent", func(t *testing.T) {
 		dir := t.TempDir()
-		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 		require.NoError(t, err)
 
-		cfg := multiModelConfig{
-			coord:      coord,
-			agent:      "developer",
-			paddedsgai: "sgai",
-			flowDag:    &dag{Nodes: map[string]*dagNode{}},
-		}
+		cfg := newTestMultiModelConfig()
+		cfg.coord = coord
+		cfg.agent = "developer"
+		cfg.paddedsgai = "sgai"
+		cfg.flowDag = newTestDag()
 
-		newState := state.Workflow{Status: state.StatusComplete}
-		result := handleCompleteStatus(t.Context(), cfg, newState, state.Workflow{}, GoalMetadata{})
+		newState := newTestWorkflow()
+		newState.Status = state.StatusComplete
+		metadata := newTestGoalMetadata()
+		result := handleCompleteStatus(t.Context(), &cfg, &newState, &metadata)
 		assert.Equal(t, state.StatusAgentDone, result.Status)
 	})
 
 	t.Run("coordinatorNoPendingTodos", func(t *testing.T) {
 		dir := t.TempDir()
-		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 		require.NoError(t, err)
 
-		cfg := multiModelConfig{
-			coord:      coord,
-			agent:      "coordinator",
-			paddedsgai: "sgai",
-			flowDag:    &dag{Nodes: map[string]*dagNode{}},
-		}
+		cfg := newTestMultiModelConfig()
+		cfg.coord = coord
+		cfg.agent = "coordinator"
+		cfg.paddedsgai = "sgai"
+		cfg.flowDag = newTestDag()
 
-		newState := state.Workflow{Status: state.StatusComplete}
-		wfState := state.Workflow{}
-		metadata := GoalMetadata{Retrospective: "false"}
+		newState := newTestWorkflow()
+		newState.Status = state.StatusComplete
+		metadata := newTestGoalMetadata()
+		metadata.Retrospective = "false"
 
-		result := handleCompleteStatus(t.Context(), cfg, newState, wfState, metadata)
+		result := handleCompleteStatus(t.Context(), &cfg, &newState, &metadata)
 		assert.Equal(t, state.StatusComplete, result.Status)
 	})
 
 	t.Run("blockedByPendingTodos", func(t *testing.T) {
 		dir := t.TempDir()
-		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 		require.NoError(t, err)
 
-		cfg := multiModelConfig{
-			coord:      coord,
-			agent:      "coordinator",
-			paddedsgai: "sgai",
-			flowDag:    &dag{Nodes: map[string]*dagNode{}},
-		}
+		cfg := newTestMultiModelConfig()
+		cfg.coord = coord
+		cfg.agent = "coordinator"
+		cfg.paddedsgai = "sgai"
+		cfg.flowDag = newTestDag()
 
-		newState := state.Workflow{Status: state.StatusComplete}
-		wfState := state.Workflow{
-			Todos: []state.TodoItem{{Content: "unfinished", Status: "pending", Priority: "high"}},
-		}
+		newState := newTestWorkflow()
+		newState.Status = state.StatusComplete
+		todo := newTestTodoItem()
+		todo.Content = "unfinished"
+		todo.Status = "pending"
+		todo.Priority = "high"
+		newState.ProjectTodos = []state.TodoItem{todo}
 
-		result := handleCompleteStatus(t.Context(), cfg, newState, wfState, GoalMetadata{Retrospective: "false"})
+		metadata := newTestGoalMetadata()
+		metadata.Retrospective = "false"
+		result := handleCompleteStatus(t.Context(), &cfg, &newState, &metadata)
+		assert.Equal(t, state.StatusWorking, result.Status)
+	})
+
+	t.Run("blockedByPendingProjectTodosFromReturnedState", func(t *testing.T) {
+		dir := t.TempDir()
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
+		require.NoError(t, err)
+
+		cfg := newTestMultiModelConfig()
+		cfg.coord = coord
+		cfg.agent = "coordinator"
+		cfg.paddedsgai = "sgai"
+		cfg.flowDag = newTestDag()
+
+		newState := updated(newTestWorkflow(), func(workflow *state.Workflow) {
+			workflow.Status = state.StatusComplete
+			workflow.ProjectTodos = []state.TodoItem{updated(newTestTodoItem(), func(todo *state.TodoItem) {
+				todo.Content = "project task"
+				todo.Status = "pending"
+				todo.Priority = "high"
+			})}
+		})
+		metadata := newTestGoalMetadata()
+		metadata.Retrospective = "false"
+		result := handleCompleteStatus(t.Context(), &cfg, &newState, &metadata)
 		assert.Equal(t, state.StatusWorking, result.Status)
 	})
 
 	t.Run("blockedByGateScript", func(t *testing.T) {
 		dir := t.TempDir()
-		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 		require.NoError(t, err)
 
-		cfg := multiModelConfig{
-			coord:      coord,
-			agent:      "coordinator",
-			paddedsgai: "sgai",
-			dir:        dir,
-			flowDag:    &dag{Nodes: map[string]*dagNode{}},
-		}
+		cfg := newTestMultiModelConfig()
+		cfg.coord = coord
+		cfg.agent = "coordinator"
+		cfg.paddedsgai = "sgai"
+		cfg.dir = dir
+		cfg.flowDag = newTestDag()
 
-		newState := state.Workflow{Status: state.StatusComplete}
-		wfState := state.Workflow{}
-		metadata := GoalMetadata{
-			CompletionGateScript: "false",
-			Retrospective:        "false",
-		}
+		newState := newTestWorkflow()
+		newState.Status = state.StatusComplete
+		metadata := newTestGoalMetadata()
+		metadata.CompletionGateScript = "false"
+		metadata.Retrospective = "false"
 
-		result := handleCompleteStatus(t.Context(), cfg, newState, wfState, metadata)
+		result := handleCompleteStatus(t.Context(), &cfg, &newState, &metadata)
 		assert.Equal(t, state.StatusWorking, result.Status)
 	})
 
 	t.Run("blockedByRetrospective", func(t *testing.T) {
 		dir := t.TempDir()
-		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 		require.NoError(t, err)
 
-		cfg := multiModelConfig{
-			coord:      coord,
-			agent:      "coordinator",
-			paddedsgai: "sgai",
-			flowDag: &dag{Nodes: map[string]*dagNode{
-				"retrospective": {},
-			}},
-		}
+		cfg := newTestMultiModelConfig()
+		cfg.coord = coord
+		cfg.agent = "coordinator"
+		cfg.paddedsgai = "sgai"
+		cfg.flowDag = newTestDag("retrospective")
 
-		newState := state.Workflow{Status: state.StatusComplete, VisitCounts: map[string]int{}}
-		wfState := state.Workflow{}
+		newState := newTestWorkflow()
+		newState.Status = state.StatusComplete
+		newState.VisitCounts = map[string]int{}
 
-		result := handleCompleteStatus(t.Context(), cfg, newState, wfState, GoalMetadata{})
+		metadata := newTestGoalMetadata()
+		result := handleCompleteStatus(t.Context(), &cfg, &newState, &metadata)
 		assert.Equal(t, state.StatusAgentDone, result.Status)
 	})
 
 	t.Run("blockedByProjectCriticCouncilBeforeRetrospective", func(t *testing.T) {
 		dir := t.TempDir()
-		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 		require.NoError(t, err)
 
-		cfg := multiModelConfig{
-			coord:      coord,
-			agent:      "coordinator",
-			paddedsgai: "sgai",
-			flowDag: &dag{Nodes: map[string]*dagNode{
-				"project-critic-council": {},
-				"retrospective":          {},
-			}},
-		}
+		cfg := newTestMultiModelConfig()
+		cfg.coord = coord
+		cfg.agent = "coordinator"
+		cfg.paddedsgai = "sgai"
+		cfg.flowDag = newTestDag("project-critic-council", "retrospective")
 
-		newState := state.Workflow{Status: state.StatusComplete, VisitCounts: map[string]int{}}
-		result := handleCompleteStatus(t.Context(), cfg, newState, state.Workflow{}, GoalMetadata{})
+		newState := newTestWorkflow()
+		newState.Status = state.StatusComplete
+		newState.VisitCounts = map[string]int{}
+		metadata := newTestGoalMetadata()
+		result := handleCompleteStatus(t.Context(), &cfg, &newState, &metadata)
 		assert.Equal(t, state.StatusAgentDone, result.Status)
 		require.Len(t, result.Messages, 1)
 		assert.Equal(t, "project-critic-council", result.Messages[0].ToAgent)
@@ -552,41 +952,46 @@ func TestHandleCompleteStatus(t *testing.T) {
 func TestRedirectToPendingMessageAgent(t *testing.T) {
 	t.Run("noMessages", func(t *testing.T) {
 		dir := t.TempDir()
-		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 		require.NoError(t, err)
 
-		wfState := state.Workflow{}
-		result := redirectToPendingMessageAgent(&wfState, coord, "sgai")
+		wfState := newTestWorkflow()
+		result, errRedirect := redirectToPendingMessageAgent(&wfState, coord, "sgai")
+		require.NoError(t, errRedirect)
 		assert.False(t, result)
 	})
 
 	t.Run("allMessagesRead", func(t *testing.T) {
 		dir := t.TempDir()
-		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 		require.NoError(t, err)
 
-		wfState := state.Workflow{
-			Messages: []state.Message{
-				{ID: 1, ToAgent: "dev", Read: true},
-			},
-		}
-		result := redirectToPendingMessageAgent(&wfState, coord, "sgai")
+		wfState := newTestWorkflow()
+		message := newTestMessage()
+		message.ID = 1
+		message.ToAgent = "dev"
+		message.Read = true
+		wfState.Messages = []state.Message{message}
+		result, errRedirect := redirectToPendingMessageAgent(&wfState, coord, "sgai")
+		require.NoError(t, errRedirect)
 		assert.False(t, result)
 	})
 
 	t.Run("unreadMessageRedirects", func(t *testing.T) {
 		dir := t.TempDir()
 		statePath := filepath.Join(dir, "state.json")
-		coord, err := state.NewCoordinatorWith(statePath, state.Workflow{})
+		coord, err := state.NewCoordinatorWith(statePath, newTestWorkflow())
 		require.NoError(t, err)
 
-		wfState := state.Workflow{
-			VisitCounts: map[string]int{},
-			Messages: []state.Message{
-				{ID: 1, ToAgent: "developer", Read: false},
-			},
-		}
-		result := redirectToPendingMessageAgent(&wfState, coord, "sgai")
+		wfState := newTestWorkflow()
+		wfState.VisitCounts = map[string]int{}
+		message := newTestMessage()
+		message.ID = 1
+		message.ToAgent = "developer"
+		message.Read = false
+		wfState.Messages = []state.Message{message}
+		result, errRedirect := redirectToPendingMessageAgent(&wfState, coord, "sgai")
+		require.NoError(t, errRedirect)
 		assert.True(t, result)
 		assert.Equal(t, "developer", wfState.CurrentAgent)
 		assert.Equal(t, state.StatusWorking, wfState.Status)
@@ -625,91 +1030,95 @@ func TestBuildAgentArgsVariants(t *testing.T) {
 
 func TestBuildAgentMessageWithPendingMessages(t *testing.T) {
 	dag := buildTestDag(map[string][]string{"coordinator": {"builder"}}, []string{"coordinator"})
-	cfg := multiModelConfig{
-		dir:     "/tmp/test",
-		agent:   "builder",
-		flowDag: dag,
-	}
-	wfState := state.Workflow{
-		Messages: []state.Message{
-			{ID: 1, FromAgent: "coordinator", ToAgent: "builder", Body: "Do work", Read: false},
-		},
-		VisitCounts: map[string]int{"builder": 1},
-		Todos: []state.TodoItem{
-			{Content: "task 1", Status: "pending", Priority: "high"},
-		},
-		CurrentAgent: "builder",
-	}
-	metadata := GoalMetadata{}
+	cfg := newTestMultiModelConfig()
+	cfg.dir = "/tmp/test"
+	cfg.agent = "builder"
+	cfg.flowDag = dag
+	wfState := newTestWorkflow()
+	message := newTestMessage()
+	message.ID = 1
+	message.FromAgent = "coordinator"
+	message.ToAgent = "builder"
+	message.Body = "Do work"
+	message.Read = false
+	wfState.Messages = []state.Message{message}
+	wfState.VisitCounts = map[string]int{"builder": 1}
+	todo := newTestTodoItem()
+	todo.Content = "task 1"
+	todo.Status = "pending"
+	todo.Priority = "high"
+	wfState.Todos = []state.TodoItem{todo}
+	wfState.CurrentAgent = "builder"
+	metadata := newTestGoalMetadata()
 
-	msg := buildAgentMessage(cfg, wfState, metadata)
+	msg := buildAgentMessage(&cfg, &wfState, &metadata)
 	assert.Contains(t, msg, "PENDING MESSAGE")
 	assert.Contains(t, msg, "pending TODO items")
 }
 
 func TestBuildAgentMessageOutboxPendingMessages(t *testing.T) {
 	dag := buildTestDag(map[string][]string{"coordinator": {"builder"}}, []string{"coordinator"})
-	cfg := multiModelConfig{
-		dir:     "/tmp/test",
-		agent:   "builder",
-		flowDag: dag,
-	}
-	wfState := state.Workflow{
-		Messages: []state.Message{
-			{ID: 1, FromAgent: "builder", ToAgent: "reviewer", Body: "Review please", Read: false},
-		},
-		VisitCounts: map[string]int{"builder": 1},
-	}
-	metadata := GoalMetadata{}
+	cfg := newTestMultiModelConfig()
+	cfg.dir = "/tmp/test"
+	cfg.agent = "builder"
+	cfg.flowDag = dag
+	wfState := newTestWorkflow()
+	message := newTestMessage()
+	message.ID = 1
+	message.FromAgent = "builder"
+	message.ToAgent = "reviewer"
+	message.Body = "Review please"
+	message.Read = false
+	wfState.Messages = []state.Message{message}
+	wfState.VisitCounts = map[string]int{"builder": 1}
+	metadata := newTestGoalMetadata()
 
-	msg := buildAgentMessage(cfg, wfState, metadata)
+	msg := buildAgentMessage(&cfg, &wfState, &metadata)
 	assert.Contains(t, msg, "yield control")
 }
 
 func TestBuildAgentMessageWithMultiModel(t *testing.T) {
 	dag := buildTestDag(map[string][]string{"coordinator": {"builder"}}, []string{"coordinator"})
-	cfg := multiModelConfig{
-		dir:     "/tmp/test",
-		agent:   "builder",
-		flowDag: dag,
-	}
-	wfState := state.Workflow{
-		Messages:     []state.Message{},
-		VisitCounts:  map[string]int{"builder": 1},
-		CurrentModel: "model-1",
-	}
-	metadata := GoalMetadata{
-		Models: map[string]any{
-			"builder": []any{"model-1", "model-2"},
-		},
+	cfg := newTestMultiModelConfig()
+	cfg.dir = "/tmp/test"
+	cfg.agent = "builder"
+	cfg.flowDag = dag
+	wfState := newTestWorkflow()
+	wfState.Messages = []state.Message{}
+	wfState.VisitCounts = map[string]int{"builder": 1}
+	wfState.CurrentModel = "model-1"
+	metadata := newTestGoalMetadata()
+	metadata.Models = map[string]any{
+		"builder": []any{"model-1", "model-2"},
 	}
 
-	msg := buildAgentMessage(cfg, wfState, metadata)
+	msg := buildAgentMessage(&cfg, &wfState, &metadata)
 	assert.NotEmpty(t, msg)
 }
 
 func TestBuildAgentMessageWithModelSpecificPendingMessages(t *testing.T) {
 	dag := buildTestDag(map[string][]string{"coordinator": {"project-critic-council"}}, []string{"coordinator"})
-	cfg := multiModelConfig{
-		dir:     "/tmp/test",
-		agent:   "project-critic-council",
-		flowDag: dag,
-	}
-	wfState := state.Workflow{
-		Messages: []state.Message{
-			{ID: 1, FromAgent: "coordinator", ToAgent: "project-critic-council:model-2", Body: "Please review", Read: false},
-		},
-		VisitCounts:  map[string]int{"project-critic-council": 1},
-		CurrentAgent: "project-critic-council",
-		CurrentModel: "project-critic-council:model-2",
-	}
-	metadata := GoalMetadata{
-		Models: map[string]any{
-			"project-critic-council": []any{"model-1", "model-2"},
-		},
+	cfg := newTestMultiModelConfig()
+	cfg.dir = "/tmp/test"
+	cfg.agent = "project-critic-council"
+	cfg.flowDag = dag
+	wfState := newTestWorkflow()
+	message := newTestMessage()
+	message.ID = 1
+	message.FromAgent = "coordinator"
+	message.ToAgent = "project-critic-council:model-2"
+	message.Body = "Please review"
+	message.Read = false
+	wfState.Messages = []state.Message{message}
+	wfState.VisitCounts = map[string]int{"project-critic-council": 1}
+	wfState.CurrentAgent = "project-critic-council"
+	wfState.CurrentModel = "project-critic-council:model-2"
+	metadata := newTestGoalMetadata()
+	metadata.Models = map[string]any{
+		"project-critic-council": []any{"model-1", "model-2"},
 	}
 
-	msg := buildAgentMessage(cfg, wfState, metadata)
+	msg := buildAgentMessage(&cfg, &wfState, &metadata)
 	assert.Contains(t, msg, "PENDING MESSAGE")
 }
 
@@ -717,13 +1126,13 @@ func TestInitializeWorkspaceDirAlreadyExists(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0o755))
 	err := initializeWorkspaceDir(dir)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 }
 
 func TestInitializeWorkspaceDirFreshSetup(t *testing.T) {
 	dir := t.TempDir()
 	err := initializeWorkspaceDir(dir)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.DirExists(t, filepath.Join(dir, ".sgai"))
 }
 
@@ -837,7 +1246,7 @@ func TestInitializeWorkspaceDirRejectsGitFileOutsideBoundary(t *testing.T) {
 
 	err := initializeWorkspaceDir(dir)
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "escapes repository metadata boundary")
+	require.ErrorContains(t, err, "escapes repository metadata boundary")
 	_, errStat := os.Stat(filepath.Join(hostileGitDir, "info", "exclude"))
 	assert.True(t, os.IsNotExist(errStat))
 }
@@ -851,7 +1260,7 @@ func TestInitializeWorkspaceDirRejectsForgedGitWorktreeMetadata(t *testing.T) {
 
 	err := initializeWorkspaceDir(workspaceDir)
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "repository metadata boundary")
+	require.ErrorContains(t, err, "repository metadata boundary")
 	_, errStat := os.Stat(filepath.Join(gitDir, "info", "exclude"))
 	assert.True(t, os.IsNotExist(errStat))
 }
@@ -865,7 +1274,7 @@ func TestInitializeWorkspaceDirRejectsSelfConsistentForgedGitWorktreeMetadata(t 
 
 	err := initializeWorkspaceDir(workspaceDir)
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "repository metadata boundary")
+	require.ErrorContains(t, err, "repository metadata boundary")
 	_, errStat := os.Stat(filepath.Join(gitDir, "info", "exclude"))
 	assert.True(t, os.IsNotExist(errStat))
 }
@@ -885,7 +1294,7 @@ func TestInitializeWorkspaceDirRejectsGitFileSymlinkEscape(t *testing.T) {
 
 	err := initializeWorkspaceDir(workspaceDir)
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "escapes repository metadata boundary")
+	require.ErrorContains(t, err, "escapes repository metadata boundary")
 	_, errStat := os.Stat(filepath.Join(hostileGitDir, "info", "exclude"))
 	assert.True(t, os.IsNotExist(errStat))
 }
@@ -903,7 +1312,7 @@ func TestInitializeWorkspaceDirRejectsSymlinkedGitEntry(t *testing.T) {
 
 	err := initializeWorkspaceDir(workspaceDir)
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "symlinked .git entry")
+	require.ErrorContains(t, err, "symlinked .git entry")
 	_, errStat := os.Stat(filepath.Join(hostileGitDir, "info", "exclude"))
 	assert.True(t, os.IsNotExist(errStat))
 }
@@ -921,7 +1330,7 @@ func TestInitializeWorkspaceDirRejectsSymlinkedGitInfoDir(t *testing.T) {
 
 	err := initializeWorkspaceDir(workspaceDir)
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "symlinked path is not allowed")
+	require.ErrorContains(t, err, "symlinked path is not allowed")
 	_, errStat := os.Stat(filepath.Join(hostileInfoDir, "exclude"))
 	assert.True(t, os.IsNotExist(errStat))
 }
@@ -941,7 +1350,7 @@ func TestInitializeWorkspaceDirRejectsSymlinkedGitExcludeFile(t *testing.T) {
 
 	err := initializeWorkspaceDir(workspaceDir)
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "symlinked path is not allowed")
+	require.ErrorContains(t, err, "symlinked path is not allowed")
 	content, errRead := os.ReadFile(hostileExcludePath)
 	require.NoError(t, errRead)
 	assert.Equal(t, "node_modules\n", string(content))
@@ -977,9 +1386,13 @@ func TestIsFalsishVariants(t *testing.T) {
 }
 
 func TestRetrospectiveEnabledVariants(t *testing.T) {
-	assert.True(t, retrospectiveEnabled(GoalMetadata{}))
-	assert.False(t, retrospectiveEnabled(GoalMetadata{Retrospective: "false"}))
-	assert.True(t, retrospectiveEnabled(GoalMetadata{Retrospective: "true"}))
+	assert.True(t, retrospectiveEnabled(newTestGoalMetadata().Retrospective))
+	metadataFalse := newTestGoalMetadata()
+	metadataFalse.Retrospective = "false"
+	assert.False(t, retrospectiveEnabled(metadataFalse.Retrospective))
+	metadataTrue := newTestGoalMetadata()
+	metadataTrue.Retrospective = "true"
+	assert.True(t, retrospectiveEnabled(metadataTrue.Retrospective))
 }
 
 func TestFormatElapsedOutput(t *testing.T) {
@@ -1012,27 +1425,33 @@ func TestResolveBaseAgentWithAlias(t *testing.T) {
 
 func TestFindFirstPendingMessageAgentVariants(t *testing.T) {
 	t.Run("noMessages", func(t *testing.T) {
-		assert.Empty(t, findFirstPendingMessageAgent(state.Workflow{}))
+		assert.Empty(t, findFirstPendingMessageAgent(newTestWorkflow().Messages))
 	})
 
 	t.Run("allRead", func(t *testing.T) {
-		wf := state.Workflow{Messages: []state.Message{{ToAgent: "builder", Read: true}}}
-		assert.Empty(t, findFirstPendingMessageAgent(wf))
+		wf := newTestWorkflow()
+		message := newTestMessage()
+		message.ToAgent = "builder"
+		message.Read = true
+		wf.Messages = []state.Message{message}
+		assert.Empty(t, findFirstPendingMessageAgent(wf.Messages))
 	})
 
 	t.Run("unreadForAgent", func(t *testing.T) {
-		wf := state.Workflow{
-			Messages:     []state.Message{{ToAgent: "builder", Read: false}},
-			CurrentAgent: "coordinator",
-		}
-		assert.Equal(t, "builder", findFirstPendingMessageAgent(wf))
+		wf := newTestWorkflow()
+		message := newTestMessage()
+		message.ToAgent = "builder"
+		message.Read = false
+		wf.Messages = []state.Message{message}
+		wf.CurrentAgent = "coordinator"
+		assert.Equal(t, "builder", findFirstPendingMessageAgent(wf.Messages))
 	})
 }
 
 func TestValidateModelsPartial(t *testing.T) {
 	t.Run("emptyModels", func(t *testing.T) {
 		err := validateModels(nil)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 	})
 
 	t.Run("singleValidModel", func(t *testing.T) {
@@ -1041,7 +1460,7 @@ func TestValidateModelsPartial(t *testing.T) {
 		}
 		models := map[string]any{"coordinator": "opencode/claude-opus-4-6"}
 		err := validateModels(models)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 	})
 
 	t.Run("invalidModel", func(t *testing.T) {
@@ -1050,7 +1469,7 @@ func TestValidateModelsPartial(t *testing.T) {
 		}
 		models := map[string]any{"coordinator": "totally-fake-model-xyz"}
 		err := validateModels(models)
-		assert.Error(t, err)
+		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid model")
 	})
 
@@ -1060,7 +1479,7 @@ func TestValidateModelsPartial(t *testing.T) {
 		}
 		models := map[string]any{"coordinator": []any{"opencode/claude-opus-4-6", "opencode/claude-sonnet-4-6"}}
 		err := validateModels(models)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 	})
 
 	t.Run("listWithInvalidModel", func(t *testing.T) {
@@ -1069,7 +1488,7 @@ func TestValidateModelsPartial(t *testing.T) {
 		}
 		models := map[string]any{"coordinator": []any{"opencode/claude-opus-4-6", "fake-model-abc"}}
 		err := validateModels(models)
-		assert.Error(t, err)
+		require.Error(t, err)
 	})
 }
 
@@ -1079,16 +1498,32 @@ func TestSaveState(t *testing.T) {
 	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 	statePath := filepath.Join(sgaiDir, "state.json")
 
-	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{
-		Status: state.StatusWorking,
-	})
+	initialState := newTestWorkflow()
+	initialState.Status = state.StatusWorking
+	coord, errCoord := state.NewCoordinatorWith(statePath, initialState)
 	require.NoError(t, errCoord)
 
-	wf := state.Workflow{Status: state.StatusComplete, Task: "done"}
-	saveState(coord, wf)
+	wf := newTestWorkflow()
+	wf.Status = state.StatusComplete
+	wf.Task = "done"
+	require.NoError(t, saveState(coord, &wf))
 
 	updated := coord.State()
 	assert.Equal(t, state.StatusComplete, updated.Status)
+}
+
+func TestSaveStateReturnsErrorOnPersistFailure(t *testing.T) {
+	dir := t.TempDir()
+	blockingPath := filepath.Join(dir, "blocking-file")
+	require.NoError(t, os.WriteFile(blockingPath, []byte("x"), 0o644))
+
+	coord := state.NewCoordinatorEmpty(filepath.Join(blockingPath, "state.json"))
+	wf := newTestWorkflow()
+	wf.Status = state.StatusComplete
+
+	errSave := saveState(coord, &wf)
+	require.Error(t, errSave)
+	assert.Contains(t, errSave.Error(), "state")
 }
 
 func TestCopyLayerSubfolder(t *testing.T) {
@@ -1168,7 +1603,7 @@ func TestCopyFileAtomicSuccessPath(t *testing.T) {
 	dir := t.TempDir()
 	srcPath := filepath.Join(dir, "source.txt")
 	dstPath := filepath.Join(dir, "subdir", "dest.txt")
-	require.NoError(t, os.WriteFile(srcPath, []byte("hello world"), 0644))
+	require.NoError(t, os.WriteFile(srcPath, []byte("hello world"), 0o644))
 	require.NoError(t, copyFileAtomic(srcPath, dstPath))
 	data, errRead := os.ReadFile(dstPath)
 	require.NoError(t, errRead)
@@ -1178,18 +1613,18 @@ func TestCopyFileAtomicSuccessPath(t *testing.T) {
 func TestCopyFileAtomicMissingSrcError(t *testing.T) {
 	dir := t.TempDir()
 	err := copyFileAtomic(filepath.Join(dir, "nonexistent"), filepath.Join(dir, "dest"))
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestCopyFinalStateToRetrospectiveWithFiles(t *testing.T) {
 	dir := t.TempDir()
 	retroDir := filepath.Join(dir, "retro")
 	sgaiDir := filepath.Join(dir, ".sgai")
-	require.NoError(t, os.MkdirAll(sgaiDir, 0755))
-	require.NoError(t, os.MkdirAll(retroDir, 0755))
+	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
+	require.NoError(t, os.MkdirAll(retroDir, 0o755))
 
-	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "state.json"), []byte(`{"status":"complete"}`), 0644))
-	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "PROJECT_MANAGEMENT.md"), []byte("# PM"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "state.json"), []byte(`{"status":"complete"}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "PROJECT_MANAGEMENT.md"), []byte("# PM"), 0o644))
 
 	require.NoError(t, copyFinalStateToRetrospective(dir, retroDir))
 
@@ -1205,14 +1640,14 @@ func TestCopyFinalStateToRetrospectiveWithFiles(t *testing.T) {
 func TestCopyFinalStateToRetrospectiveNoFilesDoesNotFail(t *testing.T) {
 	dir := t.TempDir()
 	retroDir := filepath.Join(dir, "retro")
-	require.NoError(t, os.MkdirAll(retroDir, 0755))
+	require.NoError(t, os.MkdirAll(retroDir, 0o755))
 	require.NoError(t, copyFinalStateToRetrospective(dir, retroDir))
 }
 
 func TestInitializeJJTest(t *testing.T) {
 	dir := t.TempDir()
 	err := initializeJJ(dir)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 }
 
 func TestIsExistingDirectory(t *testing.T) {
@@ -1224,7 +1659,8 @@ func TestIsExistingDirectory(t *testing.T) {
 		{
 			name: "existingDirectory",
 			setupFunc: func(t *testing.T, path string) {
-				require.NoError(t, os.MkdirAll(path, 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(path, 0o755))
 			},
 			expected: true,
 		},
@@ -1237,9 +1673,10 @@ func TestIsExistingDirectory(t *testing.T) {
 		{
 			name: "existingFile",
 			setupFunc: func(t *testing.T, path string) {
+				t.Helper()
 				dir := filepath.Dir(path)
-				require.NoError(t, os.MkdirAll(dir, 0755))
-				require.NoError(t, os.WriteFile(path, []byte("content"), 0644))
+				require.NoError(t, os.MkdirAll(dir, 0o755))
+				require.NoError(t, os.WriteFile(path, []byte("content"), 0o644))
 			},
 			expected: false,
 		},
@@ -1351,19 +1788,23 @@ models:
   "agent1": "model1"
 ---
 # Goal`,
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, m GoalMetadata) {
+				t.Helper()
 				assert.Equal(t, "Canonical Goal Title", m.Title)
 				assert.Contains(t, m.Flow, "agent1")
 				assert.Equal(t, "model1", m.Models["agent1"])
 			},
 		},
 		{
-			name:    "noFrontmatter",
-			content: "# Just a goal",
-			wantErr: false,
+			name:        "noFrontmatter",
+			content:     "# Just a goal",
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, m GoalMetadata) {
-				assert.Equal(t, "", m.Flow)
+				t.Helper()
+				assert.Empty(t, m.Flow)
 			},
 		},
 		{
@@ -1373,6 +1814,7 @@ flow: "test"
 # no closing`,
 			wantErr:     true,
 			errContains: "no closing",
+			validate:    nil,
 		},
 		{
 			name: "invalidYAML",
@@ -1382,15 +1824,18 @@ flow: [invalid yaml
 # Goal`,
 			wantErr:     true,
 			errContains: "failed to parse",
+			validate:    nil,
 		},
 		{
 			name: "emptyFrontmatter",
 			content: `---
 ---
 # Goal`,
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, m GoalMetadata) {
-				assert.Equal(t, "", m.Flow)
+				t.Helper()
+				assert.Empty(t, m.Flow)
 			},
 		},
 		{
@@ -1400,8 +1845,10 @@ flow: "test"
 retrospective: "true"
 ---
 # Goal`,
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, m GoalMetadata) {
+				t.Helper()
 				assert.Equal(t, "true", m.Retrospective)
 			},
 		},
@@ -1451,30 +1898,42 @@ func TestRetrospectiveEnabled(t *testing.T) {
 		expected bool
 	}{
 		{
-			name:     "trueString",
-			metadata: GoalMetadata{Retrospective: "true"},
+			name: "trueString",
+			metadata: func() GoalMetadata {
+				metadata := newTestGoalMetadata()
+				metadata.Retrospective = "true"
+				return metadata
+			}(),
 			expected: true,
 		},
 		{
-			name:     "falseString",
-			metadata: GoalMetadata{Retrospective: "false"},
+			name: "falseString",
+			metadata: func() GoalMetadata {
+				metadata := newTestGoalMetadata()
+				metadata.Retrospective = "false"
+				return metadata
+			}(),
 			expected: false,
 		},
 		{
 			name:     "emptyString",
-			metadata: GoalMetadata{Retrospective: ""},
+			metadata: newTestGoalMetadata(),
 			expected: true,
 		},
 		{
-			name:     "yesString",
-			metadata: GoalMetadata{Retrospective: "yes"},
+			name: "yesString",
+			metadata: func() GoalMetadata {
+				metadata := newTestGoalMetadata()
+				metadata.Retrospective = "yes"
+				return metadata
+			}(),
 			expected: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := retrospectiveEnabled(tt.metadata)
+			result := retrospectiveEnabled(tt.metadata.Retrospective)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -1487,36 +1946,52 @@ func TestFindFirstPendingMessageAgent(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "noMessages",
-			workflow: state.Workflow{Messages: []state.Message{}},
+			name: "noMessages",
+			workflow: func() state.Workflow {
+				workflow := newTestWorkflow()
+				workflow.Messages = []state.Message{}
+				return workflow
+			}(),
 			expected: "",
 		},
 		{
 			name: "allRead",
-			workflow: state.Workflow{
-				Messages: []state.Message{
-					{ToAgent: "agent1", Read: true},
-					{ToAgent: "agent2", Read: true},
-				},
-			},
+			workflow: func() state.Workflow {
+				workflow := newTestWorkflow()
+				messageOne := newTestMessage()
+				messageOne.ToAgent = "agent1"
+				messageOne.Read = true
+				messageTwo := newTestMessage()
+				messageTwo.ToAgent = "agent2"
+				messageTwo.Read = true
+				workflow.Messages = []state.Message{messageOne, messageTwo}
+				return workflow
+			}(),
 			expected: "",
 		},
 		{
 			name: "firstUnread",
-			workflow: state.Workflow{
-				Messages: []state.Message{
-					{ToAgent: "agent1", Read: true},
-					{ToAgent: "agent2", Read: false},
-					{ToAgent: "agent3", Read: false},
-				},
-			},
+			workflow: func() state.Workflow {
+				workflow := newTestWorkflow()
+				messageOne := newTestMessage()
+				messageOne.ToAgent = "agent1"
+				messageOne.Read = true
+				messageTwo := newTestMessage()
+				messageTwo.ToAgent = "agent2"
+				messageTwo.Read = false
+				messageThree := newTestMessage()
+				messageThree.ToAgent = "agent3"
+				messageThree.Read = false
+				workflow.Messages = []state.Message{messageOne, messageTwo, messageThree}
+				return workflow
+			}(),
 			expected: "agent2",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := findFirstPendingMessageAgent(tt.workflow)
+			result := findFirstPendingMessageAgent(tt.workflow.Messages)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -1707,32 +2182,46 @@ func TestNextMessageID(t *testing.T) {
 		{
 			name: "singleMessage",
 			messages: []state.Message{
-				{ID: 1},
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ID = 1
+				}),
 			},
 			expected: 2,
 		},
 		{
 			name: "multipleMessages",
 			messages: []state.Message{
-				{ID: 1},
-				{ID: 2},
-				{ID: 3},
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ID = 1
+				}),
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ID = 2
+				}),
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ID = 3
+				}),
 			},
 			expected: 4,
 		},
 		{
 			name: "nonSequential",
 			messages: []state.Message{
-				{ID: 1},
-				{ID: 5},
-				{ID: 3},
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ID = 1
+				}),
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ID = 5
+				}),
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ID = 3
+				}),
 			},
 			expected: 6,
 		},
 		{
 			name: "zeroID",
 			messages: []state.Message{
-				{ID: 0},
+				newTestMessage(),
 			},
 			expected: 1,
 		},
@@ -1747,11 +2236,10 @@ func TestNextMessageID(t *testing.T) {
 }
 
 func TestAddEnvironmentMessage(t *testing.T) {
-	wf := &state.Workflow{
-		Messages: []state.Message{},
-	}
+	wf := newTestWorkflow()
+	wf.Messages = []state.Message{}
 
-	addEnvironmentMessage(wf, "agent1", "test message")
+	addEnvironmentMessage(&wf, "agent1", "test message")
 
 	assert.Len(t, wf.Messages, 1)
 	assert.Equal(t, 1, wf.Messages[0].ID)
@@ -1761,7 +2249,7 @@ func TestAddEnvironmentMessage(t *testing.T) {
 	assert.False(t, wf.Messages[0].Read)
 	assert.NotEmpty(t, wf.Messages[0].CreatedAt)
 
-	addEnvironmentMessage(wf, "agent2", "another message")
+	addEnvironmentMessage(&wf, "agent2", "another message")
 
 	assert.Len(t, wf.Messages, 2)
 	assert.Equal(t, 2, wf.Messages[1].ID)
@@ -1784,7 +2272,9 @@ func TestHasMessagesForModel(t *testing.T) {
 		{
 			name: "messageForModel",
 			messages: []state.Message{
-				{ToAgent: "agent1:model1", Read: false},
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "agent1:model1"
+				}),
 			},
 			modelID:  "agent1:model1",
 			expected: true,
@@ -1792,7 +2282,9 @@ func TestHasMessagesForModel(t *testing.T) {
 		{
 			name: "messageForAgentOnly",
 			messages: []state.Message{
-				{ToAgent: "agent1", Read: false},
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "agent1"
+				}),
 			},
 			modelID:  "agent1:model1",
 			expected: true,
@@ -1800,7 +2292,10 @@ func TestHasMessagesForModel(t *testing.T) {
 		{
 			name: "messageAlreadyRead",
 			messages: []state.Message{
-				{ToAgent: "agent1:model1", Read: true},
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "agent1:model1"
+					message.Read = true
+				}),
 			},
 			modelID:  "agent1:model1",
 			expected: false,
@@ -1808,7 +2303,9 @@ func TestHasMessagesForModel(t *testing.T) {
 		{
 			name: "messageForDifferentAgent",
 			messages: []state.Message{
-				{ToAgent: "agent2:model1", Read: false},
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "agent2:model1"
+				}),
 			},
 			modelID:  "agent1:model1",
 			expected: false,
@@ -1816,8 +2313,13 @@ func TestHasMessagesForModel(t *testing.T) {
 		{
 			name: "mixedMessages",
 			messages: []state.Message{
-				{ToAgent: "agent1:model1", Read: true},
-				{ToAgent: "agent1:model2", Read: false},
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "agent1:model1"
+					message.Read = true
+				}),
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "agent1:model2"
+				}),
 			},
 			modelID:  "agent1:model1",
 			expected: false,
@@ -1850,7 +2352,9 @@ func TestHasPendingMessagesForAnyModel(t *testing.T) {
 		{
 			name: "messageForFirstModel",
 			messages: []state.Message{
-				{ToAgent: "agent1:model1", Read: false},
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "agent1:model1"
+				}),
 			},
 			models:   []string{"model1", "model2"},
 			agent:    "agent1",
@@ -1859,7 +2363,9 @@ func TestHasPendingMessagesForAnyModel(t *testing.T) {
 		{
 			name: "messageForSecondModel",
 			messages: []state.Message{
-				{ToAgent: "agent1:model2", Read: false},
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "agent1:model2"
+				}),
 			},
 			models:   []string{"model1", "model2"},
 			agent:    "agent1",
@@ -1868,8 +2374,14 @@ func TestHasPendingMessagesForAnyModel(t *testing.T) {
 		{
 			name: "allMessagesRead",
 			messages: []state.Message{
-				{ToAgent: "agent1:model1", Read: true},
-				{ToAgent: "agent1:model2", Read: true},
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "agent1:model1"
+					message.Read = true
+				}),
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "agent1:model2"
+					message.Read = true
+				}),
 			},
 			models:   []string{"model1", "model2"},
 			agent:    "agent1",
@@ -1878,7 +2390,9 @@ func TestHasPendingMessagesForAnyModel(t *testing.T) {
 		{
 			name: "messageForDifferentAgent",
 			messages: []state.Message{
-				{ToAgent: "agent2:model1", Read: false},
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "agent2:model1"
+				}),
 			},
 			models:   []string{"model1", "model2"},
 			agent:    "agent1",
@@ -1912,6 +2426,7 @@ func TestSyncModelStatuses(t *testing.T) {
 				"agent1:model1": "model-working",
 				"agent1:model2": "model-working",
 			},
+			expectedDeleted: 0,
 		},
 		{
 			name: "addNewModels",
@@ -1924,6 +2439,7 @@ func TestSyncModelStatuses(t *testing.T) {
 				"agent1:model1": "model-working",
 				"agent1:model2": "model-working",
 			},
+			expectedDeleted: 0,
 		},
 		{
 			name: "removeOldModels",
@@ -1936,6 +2452,7 @@ func TestSyncModelStatuses(t *testing.T) {
 			expectedStatus: map[string]string{
 				"agent1:model1": "model-working",
 			},
+			expectedDeleted: 0,
 		},
 		{
 			name: "preserveOtherAgentStatuses",
@@ -1949,6 +2466,7 @@ func TestSyncModelStatuses(t *testing.T) {
 				"agent1:model1": "model-working",
 				"agent2:model1": "model-done",
 			},
+			expectedDeleted: 0,
 		},
 	}
 
@@ -1961,15 +2479,14 @@ func TestSyncModelStatuses(t *testing.T) {
 }
 
 func TestCleanupModelStatuses(t *testing.T) {
-	wf := &state.Workflow{
-		ModelStatuses: map[string]string{
-			"agent1/model1": "model-working",
-			"agent1/model2": "model-done",
-		},
-		CurrentModel: "agent1/model1",
+	wf := newTestWorkflow()
+	wf.ModelStatuses = map[string]string{
+		"agent1/model1": "model-working",
+		"agent1/model2": "model-done",
 	}
+	wf.CurrentModel = "agent1/model1"
 
-	cleanupModelStatuses(wf)
+	cleanupModelStatuses(&wf)
 
 	assert.Nil(t, wf.ModelStatuses)
 	assert.Empty(t, wf.CurrentModel)
@@ -2273,16 +2790,18 @@ func TestUpdateProjectManagementWithRetrospectiveDir(t *testing.T) {
 		expectedNotContain []string
 	}{
 		{
-			name:             "newFileNoExistingContent",
-			existingContent:  "",
-			retrospectiveDir: ".sgai/retrospectives/2026-03-05-10-00.abc1",
-			expectedContains: []string{"---", "Retrospective Session: .sgai/retrospectives/2026-03-05-10-00.abc1"},
+			name:               "newFileNoExistingContent",
+			existingContent:    "",
+			retrospectiveDir:   ".sgai/retrospectives/2026-03-05-10-00.abc1",
+			expectedContains:   []string{"---", "Retrospective Session: .sgai/retrospectives/2026-03-05-10-00.abc1"},
+			expectedNotContain: nil,
 		},
 		{
-			name:             "existingContentWithoutHeader",
-			existingContent:  "## Some existing content\n\nHello world\n",
-			retrospectiveDir: ".sgai/retrospectives/2026-03-05-10-00.abc1",
-			expectedContains: []string{"---", "Retrospective Session:", "## Some existing content"},
+			name:               "existingContentWithoutHeader",
+			existingContent:    "## Some existing content\n\nHello world\n",
+			retrospectiveDir:   ".sgai/retrospectives/2026-03-05-10-00.abc1",
+			expectedContains:   []string{"---", "Retrospective Session:", "## Some existing content"},
+			expectedNotContain: nil,
 		},
 		{
 			name:               "replaceExistingRetrospectiveHeader",
@@ -2299,8 +2818,8 @@ func TestUpdateProjectManagementWithRetrospectiveDir(t *testing.T) {
 			pmPath := filepath.Join(tmpDir, ".sgai", "PROJECT_MANAGEMENT.md")
 
 			if tt.existingContent != "" {
-				require.NoError(t, os.MkdirAll(filepath.Dir(pmPath), 0755))
-				require.NoError(t, os.WriteFile(pmPath, []byte(tt.existingContent), 0644))
+				require.NoError(t, os.MkdirAll(filepath.Dir(pmPath), 0o755))
+				require.NoError(t, os.WriteFile(pmPath, []byte(tt.existingContent), 0o644))
 			}
 
 			err := updateProjectManagementWithRetrospectiveDir(pmPath, tt.retrospectiveDir)
@@ -2327,43 +2846,51 @@ func TestExtractRetrospectiveDirFromProjectManagement(t *testing.T) {
 		wantErrContains string
 	}{
 		{
-			name:     "validHeader",
-			content:  "---\nRetrospective Session: .sgai/retrospectives/2026-03-05-10-00.abc1\n---\n\n## Content\n",
-			expected: ".sgai/retrospectives/2026-03-05-10-00.abc1",
+			name:            "validHeader",
+			content:         "---\nRetrospective Session: .sgai/retrospectives/2026-03-05-10-00.abc1\n---\n\n## Content\n",
+			expected:        ".sgai/retrospectives/2026-03-05-10-00.abc1",
+			wantErrContains: "",
 		},
 		{
 			name:            "emptyRetrospectiveSession",
 			content:         "---\nRetrospective Session: \n---\n",
+			expected:        "",
 			wantErrContains: "empty Retrospective Session in PROJECT_MANAGEMENT.md",
 		},
 		{
 			name:            "noHeader",
 			content:         "## No header here\n",
+			expected:        "",
 			wantErrContains: "missing frontmatter header in PROJECT_MANAGEMENT.md",
 		},
 		{
 			name:            "emptyFile",
 			content:         "",
+			expected:        "",
 			wantErrContains: "missing frontmatter header in PROJECT_MANAGEMENT.md",
 		},
 		{
 			name:            "headerWithoutRetrospectiveSession",
 			content:         "---\nTitle: Some Title\n---\n\n## Content\n",
+			expected:        "",
 			wantErrContains: "missing Retrospective Session in PROJECT_MANAGEMENT.md",
 		},
 		{
 			name:            "missingClosingFrontmatterDelimiter",
 			content:         "---\nRetrospective Session: .sgai/retrospectives/2026-03-05-10-00.abc1\n## Content\n",
+			expected:        "",
 			wantErrContains: "missing closing frontmatter delimiter in PROJECT_MANAGEMENT.md",
 		},
 		{
 			name:            "malformedClosingFrontmatterDelimiter",
 			content:         "---\nRetrospective Session: .sgai/retrospectives/2026-03-05-10-00.abc1\n----\n",
+			expected:        "",
 			wantErrContains: "missing closing frontmatter delimiter in PROJECT_MANAGEMENT.md",
 		},
 		{
 			name:            "nonExistentFile",
 			content:         "",
+			expected:        "",
 			wantErrContains: "read PROJECT_MANAGEMENT.md",
 		},
 	}
@@ -2375,12 +2902,12 @@ func TestExtractRetrospectiveDirFromProjectManagement(t *testing.T) {
 
 			if tt.name == "nonExistentFile" {
 				result, errExtract := extractRetrospectiveDirFromProjectManagement(filepath.Join(tmpDir, "nonexistent.md"))
-				assert.Equal(t, "", result)
+				assert.Empty(t, result)
 				require.ErrorContains(t, errExtract, tt.wantErrContains)
 				return
 			}
 
-			require.NoError(t, os.WriteFile(pmPath, []byte(tt.content), 0644))
+			require.NoError(t, os.WriteFile(pmPath, []byte(tt.content), 0o644))
 			result, errExtract := extractRetrospectiveDirFromProjectManagement(pmPath)
 			assert.Equal(t, tt.expected, result)
 			if tt.wantErrContains == "" {
@@ -2399,40 +2926,55 @@ func TestCanResumeWorkflow(t *testing.T) {
 		expected bool
 	}{
 		{
-			name:     "workingStatus",
-			wfState:  state.Workflow{Status: state.StatusWorking},
+			name: "workingStatus",
+			wfState: updated(newTestWorkflow(), func(wfState *state.Workflow) {
+				wfState.Status = state.StatusWorking
+			}),
 			expected: true,
 		},
 		{
-			name:     "agentDoneStatus",
-			wfState:  state.Workflow{Status: state.StatusAgentDone},
+			name: "agentDoneStatus",
+			wfState: updated(newTestWorkflow(), func(wfState *state.Workflow) {
+				wfState.Status = state.StatusAgentDone
+			}),
 			expected: true,
 		},
 		{
-			name:     "humanMessagePending",
-			wfState:  state.Workflow{HumanMessage: "question"},
+			name: "humanMessagePending",
+			wfState: updated(newTestWorkflow(), func(wfState *state.Workflow) {
+				wfState.HumanMessage = "question"
+			}),
 			expected: true,
 		},
 		{
-			name:     "multiChoiceQuestionPending",
-			wfState:  state.Workflow{MultiChoiceQuestion: &state.MultiChoiceQuestion{Questions: []state.QuestionItem{{Question: "test"}}}},
+			name: "multiChoiceQuestionPending",
+			wfState: updated(newTestWorkflow(), func(wfState *state.Workflow) {
+				wfState.MultiChoiceQuestion = &state.MultiChoiceQuestion{
+					Questions: []state.QuestionItem{updated(newTestQuestionItem(), func(question *state.QuestionItem) {
+						question.Question = "test"
+					})},
+					IsWorkGate: false,
+				}
+			}),
 			expected: true,
 		},
 		{
-			name:     "completeStatus",
-			wfState:  state.Workflow{Status: state.StatusComplete},
+			name: "completeStatus",
+			wfState: updated(newTestWorkflow(), func(wfState *state.Workflow) {
+				wfState.Status = state.StatusComplete
+			}),
 			expected: false,
 		},
 		{
 			name:     "emptyStatus",
-			wfState:  state.Workflow{Status: ""},
+			wfState:  newTestWorkflow(),
 			expected: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := canResumeWorkflow(tt.wfState)
+			result := canResumeWorkflow(&tt.wfState)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -2444,7 +2986,7 @@ func TestCopyFileAtomic(t *testing.T) {
 		srcPath := filepath.Join(tmpDir, "source.txt")
 		dstPath := filepath.Join(tmpDir, "dest", "copied.txt")
 
-		require.NoError(t, os.WriteFile(srcPath, []byte("hello world"), 0644))
+		require.NoError(t, os.WriteFile(srcPath, []byte("hello world"), 0o644))
 
 		err := copyFileAtomic(srcPath, dstPath)
 		require.NoError(t, err)
@@ -2457,7 +2999,7 @@ func TestCopyFileAtomic(t *testing.T) {
 	t.Run("sourceDoesNotExist", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		err := copyFileAtomic(filepath.Join(tmpDir, "nonexistent"), filepath.Join(tmpDir, "dest"))
-		assert.Error(t, err)
+		require.Error(t, err)
 	})
 }
 
@@ -2465,13 +3007,13 @@ func TestCopyFinalStateToRetrospective(t *testing.T) {
 	t.Run("copiesBothFiles", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		sgaiDir := filepath.Join(tmpDir, ".sgai")
-		require.NoError(t, os.MkdirAll(sgaiDir, 0755))
+		require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 
-		require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "state.json"), []byte(`{"status":"complete"}`), 0644))
-		require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "PROJECT_MANAGEMENT.md"), []byte("## PM Content"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "state.json"), []byte(`{"status":"complete"}`), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "PROJECT_MANAGEMENT.md"), []byte("## PM Content"), 0o644))
 
 		retroDir := filepath.Join(tmpDir, "retro")
-		require.NoError(t, os.MkdirAll(retroDir, 0755))
+		require.NoError(t, os.MkdirAll(retroDir, 0o755))
 
 		err := copyFinalStateToRetrospective(tmpDir, retroDir)
 		require.NoError(t, err)
@@ -2488,7 +3030,7 @@ func TestCopyFinalStateToRetrospective(t *testing.T) {
 	t.Run("missingFilesNoError", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		retroDir := filepath.Join(tmpDir, "retro")
-		require.NoError(t, os.MkdirAll(retroDir, 0755))
+		require.NoError(t, os.MkdirAll(retroDir, 0o755))
 
 		err := copyFinalStateToRetrospective(tmpDir, retroDir)
 		require.NoError(t, err)
@@ -2506,11 +3048,11 @@ func TestApplyLayerFolderOverlay(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		srcSkillDir := filepath.Join(tmpDir, "sgai", "skills", "my-skill")
-		require.NoError(t, os.MkdirAll(srcSkillDir, 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(srcSkillDir, "SKILL.md"), []byte("# Skill Content"), 0644))
+		require.NoError(t, os.MkdirAll(srcSkillDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcSkillDir, "SKILL.md"), []byte("# Skill Content"), 0o644))
 
 		dstDir := filepath.Join(tmpDir, ".sgai")
-		require.NoError(t, os.MkdirAll(dstDir, 0755))
+		require.NoError(t, os.MkdirAll(dstDir, 0o755))
 
 		err := applyLayerFolderOverlay(tmpDir)
 		require.NoError(t, err)
@@ -2524,13 +3066,13 @@ func TestApplyLayerFolderOverlay(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		srcAgentDir := filepath.Join(tmpDir, "sgai", "agent")
-		require.NoError(t, os.MkdirAll(srcAgentDir, 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(srcAgentDir, "coordinator.md"), []byte("SHOULD NOT COPY"), 0644))
-		require.NoError(t, os.WriteFile(filepath.Join(srcAgentDir, "developer.md"), []byte("SHOULD COPY"), 0644))
+		require.NoError(t, os.MkdirAll(srcAgentDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcAgentDir, "coordinator.md"), []byte("SHOULD NOT COPY"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(srcAgentDir, "developer.md"), []byte("SHOULD COPY"), 0o644))
 
 		dstAgentDir := filepath.Join(tmpDir, ".sgai", "agent")
-		require.NoError(t, os.MkdirAll(dstAgentDir, 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(dstAgentDir, "coordinator.md"), []byte("ORIGINAL"), 0644))
+		require.NoError(t, os.MkdirAll(dstAgentDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dstAgentDir, "coordinator.md"), []byte("ORIGINAL"), 0o644))
 
 		err := applyLayerFolderOverlay(tmpDir)
 		require.NoError(t, err)
@@ -2554,39 +3096,64 @@ func TestAgentHasUnreadOutgoingMessages(t *testing.T) {
 		expected     bool
 	}{
 		{
-			name:      "noMessages",
-			messages:  []state.Message{},
-			agentName: "test-agent",
-			expected:  false,
+			name:         "noMessages",
+			messages:     []state.Message{},
+			agentName:    "test-agent",
+			currentModel: "",
+			expected:     false,
 		},
 		{
 			name: "hasUnreadOutgoing",
 			messages: []state.Message{
-				{ID: 1, FromAgent: "test-agent", ToAgent: "coordinator", Body: "hello", Read: false},
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ID = 1
+					message.FromAgent = "test-agent"
+					message.ToAgent = "coordinator"
+					message.Body = "hello"
+				}),
 			},
-			agentName: "test-agent",
-			expected:  true,
+			agentName:    "test-agent",
+			currentModel: "",
+			expected:     true,
 		},
 		{
 			name: "allOutgoingRead",
 			messages: []state.Message{
-				{ID: 1, FromAgent: "test-agent", ToAgent: "coordinator", Body: "hello", Read: true},
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ID = 1
+					message.FromAgent = "test-agent"
+					message.ToAgent = "coordinator"
+					message.Body = "hello"
+					message.Read = true
+				}),
 			},
-			agentName: "test-agent",
-			expected:  false,
+			agentName:    "test-agent",
+			currentModel: "",
+			expected:     false,
 		},
 		{
 			name: "unreadFromOtherAgent",
 			messages: []state.Message{
-				{ID: 1, FromAgent: "other-agent", ToAgent: "coordinator", Body: "hello", Read: false},
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ID = 1
+					message.FromAgent = "other-agent"
+					message.ToAgent = "coordinator"
+					message.Body = "hello"
+				}),
 			},
-			agentName: "test-agent",
-			expected:  false,
+			agentName:    "test-agent",
+			currentModel: "",
+			expected:     false,
 		},
 		{
 			name: "unreadFromCurrentModel",
 			messages: []state.Message{
-				{ID: 1, FromAgent: "project-critic-council:model-a", ToAgent: "coordinator", Body: "hello", Read: false},
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ID = 1
+					message.FromAgent = "project-critic-council:model-a"
+					message.ToAgent = "coordinator"
+					message.Body = "hello"
+				}),
 			},
 			agentName:    "project-critic-council",
 			currentModel: "project-critic-council:model-a",
@@ -2596,8 +3163,11 @@ func TestAgentHasUnreadOutgoingMessages(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			wf := state.Workflow{Messages: tt.messages, CurrentModel: tt.currentModel}
-			result := agentHasUnreadOutgoingMessages(wf, tt.agentName)
+			wf := updated(newTestWorkflow(), func(wf *state.Workflow) {
+				wf.Messages = tt.messages
+				wf.CurrentModel = tt.currentModel
+			})
+			result := agentHasUnreadOutgoingMessages(&wf, tt.agentName)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -2616,83 +3186,94 @@ func TestBuildAgentMessage(t *testing.T) {
 	}{
 		{
 			name: "withPendingMessages",
-			cfg: multiModelConfig{
-				agent:   "agent1",
-				flowDag: dag,
-				dir:     t.TempDir(),
-			},
-			wfState: state.Workflow{
-				Status:      state.StatusWorking,
-				VisitCounts: map[string]int{"agent1": 1},
-				Messages: []state.Message{
-					{ID: 1, FromAgent: "coordinator", ToAgent: "agent1", Body: "do work", Read: false},
-				},
-			},
-			metadata:     GoalMetadata{},
+			cfg: updated(newTestMultiModelConfig(), func(cfg *multiModelConfig) {
+				cfg.agent = "agent1"
+				cfg.flowDag = dag
+				cfg.dir = t.TempDir()
+			}),
+			wfState: updated(newTestWorkflow(), func(wfState *state.Workflow) {
+				wfState.Status = state.StatusWorking
+				wfState.VisitCounts = map[string]int{"agent1": 1}
+				wfState.Messages = []state.Message{updated(newTestMessage(), func(message *state.Message) {
+					message.ID = 1
+					message.FromAgent = "coordinator"
+					message.ToAgent = "agent1"
+					message.Body = "do work"
+				})}
+			}),
+			metadata:     newTestGoalMetadata(),
 			wantContains: []string{"YOU HAVE 1 PENDING MESSAGE(S)"},
 		},
 		{
 			name: "withPendingTodos",
-			cfg: multiModelConfig{
-				agent:   "agent1",
-				flowDag: dag,
-				dir:     t.TempDir(),
-			},
-			wfState: state.Workflow{
-				Status:      state.StatusWorking,
-				VisitCounts: map[string]int{"agent1": 1},
-				Messages:    []state.Message{},
-				Todos: []state.TodoItem{
-					{Content: "pending task", Status: "pending", Priority: "high"},
-				},
-			},
-			metadata:     GoalMetadata{},
+			cfg: updated(newTestMultiModelConfig(), func(cfg *multiModelConfig) {
+				cfg.agent = "agent1"
+				cfg.flowDag = dag
+				cfg.dir = t.TempDir()
+			}),
+			wfState: updated(newTestWorkflow(), func(wfState *state.Workflow) {
+				wfState.Status = state.StatusWorking
+				wfState.VisitCounts = map[string]int{"agent1": 1}
+				wfState.Messages = []state.Message{}
+				wfState.Todos = []state.TodoItem{updated(newTestTodoItem(), func(todo *state.TodoItem) {
+					todo.Content = "pending task"
+					todo.Status = "pending"
+					todo.Priority = "high"
+				})}
+			}),
+			metadata:     newTestGoalMetadata(),
 			wantContains: []string{"1 pending TODO items"},
 		},
 		{
 			name: "withUnreadOutboxMessages",
-			cfg: multiModelConfig{
-				agent:   "agent1",
-				flowDag: dag,
-				dir:     t.TempDir(),
-			},
-			wfState: state.Workflow{
-				Status:      state.StatusWorking,
-				VisitCounts: map[string]int{"agent1": 1},
-				Messages: []state.Message{
-					{ID: 1, FromAgent: "agent1", ToAgent: "agent2", Body: "review this", Read: false},
-				},
-			},
-			metadata:     GoalMetadata{},
+			cfg: updated(newTestMultiModelConfig(), func(cfg *multiModelConfig) {
+				cfg.agent = "agent1"
+				cfg.flowDag = dag
+				cfg.dir = t.TempDir()
+			}),
+			wfState: updated(newTestWorkflow(), func(wfState *state.Workflow) {
+				wfState.Status = state.StatusWorking
+				wfState.VisitCounts = map[string]int{"agent1": 1}
+				wfState.Messages = []state.Message{updated(newTestMessage(), func(message *state.Message) {
+					message.ID = 1
+					message.FromAgent = "agent1"
+					message.ToAgent = "agent2"
+					message.Body = "review this"
+				})}
+			}),
+			metadata:     newTestGoalMetadata(),
 			wantContains: []string{"messages that haven't been read yet"},
 		},
 		{
 			name: "withUnreadOutboxMessagesFromCurrentModel",
-			cfg: multiModelConfig{
-				agent:   "project-critic-council",
-				flowDag: dag,
-				dir:     t.TempDir(),
-			},
-			wfState: state.Workflow{
-				Status:       state.StatusWorking,
-				VisitCounts:  map[string]int{"project-critic-council": 1},
-				CurrentModel: "project-critic-council:model-a",
-				Messages: []state.Message{
-					{ID: 1, FromAgent: "project-critic-council:model-a", ToAgent: "coordinator", Body: "review this", Read: false},
-				},
-			},
-			metadata: GoalMetadata{
-				Models: map[string]any{
+			cfg: updated(newTestMultiModelConfig(), func(cfg *multiModelConfig) {
+				cfg.agent = "project-critic-council"
+				cfg.flowDag = dag
+				cfg.dir = t.TempDir()
+			}),
+			wfState: updated(newTestWorkflow(), func(wfState *state.Workflow) {
+				wfState.Status = state.StatusWorking
+				wfState.VisitCounts = map[string]int{"project-critic-council": 1}
+				wfState.CurrentModel = "project-critic-council:model-a"
+				wfState.Messages = []state.Message{updated(newTestMessage(), func(message *state.Message) {
+					message.ID = 1
+					message.FromAgent = "project-critic-council:model-a"
+					message.ToAgent = "coordinator"
+					message.Body = "review this"
+				})}
+			}),
+			metadata: updated(newTestGoalMetadata(), func(metadata *GoalMetadata) {
+				metadata.Models = map[string]any{
 					"project-critic-council": []any{"model-a", "model-b"},
-				},
-			},
+				}
+			}),
 			wantContains: []string{"messages that haven't been read yet"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := buildAgentMessage(tt.cfg, tt.wfState, tt.metadata)
+			result := buildAgentMessage(&tt.cfg, &tt.wfState, &tt.metadata)
 			for _, expected := range tt.wantContains {
 				assert.Contains(t, result, expected)
 			}
@@ -2704,17 +3285,17 @@ func TestBuildAgentEnv(t *testing.T) {
 	t.Setenv("SGAI_SHOULD_BE_FILTERED", "1")
 	t.Setenv("OPENCODE_CONFIG_DIR", "/tmp/should-not-leak")
 
-	cfg := multiModelConfig{
-		agent:  "test-agent",
-		dir:    "/tmp/test-workspace",
-		mcpURL: "http://127.0.0.1:9999/mcp",
-	}
+	cfg := updated(newTestMultiModelConfig(), func(cfg *multiModelConfig) {
+		cfg.agent = "test-agent"
+		cfg.dir = "/tmp/test-workspace"
+		cfg.mcpURL = "http://127.0.0.1:9999/mcp"
+	})
 
-	env, errBuildAgentEnv := buildAgentEnv(cfg, "")
+	env, errBuildAgentEnv := buildAgentEnv(&cfg, "")
 	require.NoError(t, errBuildAgentEnv)
 	envMap := envEntriesToMap(env)
 
-	assert.Equal(t, filepath.Join("/tmp/test-workspace", ".sgai"), envMap["OPENCODE_CONFIG_DIR"])
+	assert.Equal(t, "/tmp/test-workspace/.sgai", envMap["OPENCODE_CONFIG_DIR"])
 	assert.NotEmpty(t, envMap["SGAI_BIN_PATH"])
 	assert.Equal(t, "http://127.0.0.1:9999/mcp", envMap["SGAI_MCP_URL"])
 	assert.NotContains(t, envMap, "SGAI_SHOULD_BE_FILTERED")
@@ -2724,7 +3305,7 @@ func TestBuildAgentEnv(t *testing.T) {
 func TestBuildAgentEnvUsesCurrentExecutableForSGAIBinPath(t *testing.T) {
 	fakeBinDir := t.TempDir()
 	fakeSGAIPath := filepath.Join(fakeBinDir, "sgai")
-	require.NoError(t, os.WriteFile(fakeSGAIPath, []byte("#!/bin/sh\nexit 0\n"), 0755))
+	require.NoError(t, os.WriteFile(fakeSGAIPath, []byte("#!/bin/sh\nexit 0\n"), 0o755))
 
 	t.Setenv("PATH", fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("SGAI_BIN_PATH", "/tmp/should-not-leak")
@@ -2732,13 +3313,13 @@ func TestBuildAgentEnvUsesCurrentExecutableForSGAIBinPath(t *testing.T) {
 	executablePath, errExecutable := os.Executable()
 	require.NoError(t, errExecutable)
 
-	cfg := multiModelConfig{
-		agent:  "test-agent",
-		dir:    "/tmp/test-workspace",
-		mcpURL: "http://127.0.0.1:9999/mcp",
-	}
+	cfg := updated(newTestMultiModelConfig(), func(cfg *multiModelConfig) {
+		cfg.agent = "test-agent"
+		cfg.dir = "/tmp/test-workspace"
+		cfg.mcpURL = "http://127.0.0.1:9999/mcp"
+	})
 
-	env, errBuildAgentEnv := buildAgentEnv(cfg, "")
+	env, errBuildAgentEnv := buildAgentEnv(&cfg, "")
 	require.NoError(t, errBuildAgentEnv)
 	envMap := envEntriesToMap(env)
 
@@ -2747,12 +3328,12 @@ func TestBuildAgentEnvUsesCurrentExecutableForSGAIBinPath(t *testing.T) {
 }
 
 func TestBuildAgentEnvWithModel(t *testing.T) {
-	cfg := multiModelConfig{
-		agent: "test-agent",
-		dir:   "/tmp/test-workspace",
-	}
+	cfg := updated(newTestMultiModelConfig(), func(cfg *multiModelConfig) {
+		cfg.agent = "test-agent"
+		cfg.dir = "/tmp/test-workspace"
+	})
 
-	env, errBuildAgentEnv := buildAgentEnv(cfg, "anthropic/claude-opus-4-6 (max)")
+	env, errBuildAgentEnv := buildAgentEnv(&cfg, "anthropic/claude-opus-4-6 (max)")
 	require.NoError(t, errBuildAgentEnv)
 	identityValues := envEntriesToMap(env)
 
@@ -2774,14 +3355,11 @@ func envEntriesToMap(env []string) map[string]string {
 func TestExecuteAgentProcessPreservesVariantInAgentIdentity(t *testing.T) {
 	tmpDir := t.TempDir()
 	binDir := filepath.Join(tmpDir, "bin")
-	require.NoError(t, os.MkdirAll(binDir, 0755))
+	require.NoError(t, os.MkdirAll(binDir, 0o755))
 
 	scriptPath := filepath.Join(binDir, "opencode")
-	script := strings.Join([]string{
-		"#!/bin/sh",
-		"printf '%s' \"$SGAI_AGENT_IDENTITY\" > \"$CAPTURE_FILE\"",
-	}, "\n")
-	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0755))
+	script := "#!/bin/sh" + "\n" + "printf '%s' \"$SGAI_AGENT_IDENTITY\" > \"$CAPTURE_FILE\""
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
 
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -2807,15 +3385,16 @@ func TestExecuteAgentProcessPreservesVariantInAgentIdentity(t *testing.T) {
 			capturePath := filepath.Join(tmpDir, tt.name+".txt")
 			t.Setenv("CAPTURE_FILE", capturePath)
 
-			cfg := multiModelConfig{
-				agent:  "test-agent",
-				dir:    tmpDir,
-				mcpURL: "http://127.0.0.1:7777/mcp",
-				coord:  state.NewCoordinatorEmpty(filepath.Join(tmpDir, tt.name+"-state.json")),
-			}
+			cfg := updated(newTestMultiModelConfig(), func(cfg *multiModelConfig) {
+				cfg.agent = "test-agent"
+				cfg.dir = tmpDir
+				cfg.mcpURL = "http://127.0.0.1:7777/mcp"
+				cfg.coord = state.NewCoordinatorEmpty(filepath.Join(tmpDir, tt.name+"-state.json"))
+			})
 
 			agentArgs := buildAgentArgs(cfg.agent, cfg.agent, tt.modelSpec, "")
-			_, _, errExec := executeAgentProcess(context.Background(), cfg, agentArgs, "", "[test]", newRingWriter(), state.Workflow{})
+			workflow := newTestWorkflow()
+			_, _, errExec := executeAgentProcess(context.Background(), &cfg, agentArgs, "", "[test]", newRingWriter(), &workflow)
 			require.Nil(t, errExec)
 
 			identity, err := os.ReadFile(capturePath)
@@ -2843,7 +3422,9 @@ func TestMarkCurrentAgentInSequence(t *testing.T) {
 		{
 			name: "sameAgentAsLast",
 			initialSeq: []state.AgentSequenceEntry{
-				{Agent: "agent1", IsCurrent: false},
+				updated(newTestAgentSequenceEntry(), func(entry *state.AgentSequenceEntry) {
+					entry.Agent = "agent1"
+				}),
 			},
 			currentAgent: "agent1",
 			expectedLen:  1,
@@ -2852,7 +3433,10 @@ func TestMarkCurrentAgentInSequence(t *testing.T) {
 		{
 			name: "differentAgent",
 			initialSeq: []state.AgentSequenceEntry{
-				{Agent: "agent1", IsCurrent: true},
+				updated(newTestAgentSequenceEntry(), func(entry *state.AgentSequenceEntry) {
+					entry.Agent = "agent1"
+					entry.IsCurrent = true
+				}),
 			},
 			currentAgent: "agent2",
 			expectedLen:  2,
@@ -2862,8 +3446,9 @@ func TestMarkCurrentAgentInSequence(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			wf := &state.Workflow{AgentSequence: tt.initialSeq}
-			markCurrentAgentInSequence(wf, tt.currentAgent)
+			wf := newTestWorkflow()
+			wf.AgentSequence = tt.initialSeq
+			markCurrentAgentInSequence(&wf, tt.currentAgent)
 			assert.Len(t, wf.AgentSequence, tt.expectedLen)
 			last := wf.AgentSequence[len(wf.AgentSequence)-1]
 			assert.Equal(t, tt.expectedLast, last.Agent)
@@ -2873,11 +3458,10 @@ func TestMarkCurrentAgentInSequence(t *testing.T) {
 }
 
 func TestAddAgentHandoffProgress(t *testing.T) {
-	wf := &state.Workflow{
-		Progress: []state.ProgressEntry{},
-	}
+	wf := newTestWorkflow()
+	wf.Progress = []state.ProgressEntry{}
 
-	addAgentHandoffProgress(wf, "backend-developer")
+	addAgentHandoffProgress(&wf, "backend-developer")
 
 	assert.Len(t, wf.Progress, 1)
 	assert.Equal(t, "sgai", wf.Progress[0].Agent)
@@ -2893,8 +3477,8 @@ func TestShouldLogAgent(t *testing.T) {
 	t.Run("trueWhenLogIsTrue", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		agentDir := filepath.Join(tmpDir, ".sgai", "agent")
-		require.NoError(t, os.MkdirAll(agentDir, 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(agentDir, "test-agent.md"), []byte("---\nlog: true\n---\n# Agent"), 0644))
+		require.NoError(t, os.MkdirAll(agentDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(agentDir, "test-agent.md"), []byte("---\nlog: true\n---\n# Agent"), 0o644))
 
 		assert.True(t, shouldLogAgent(tmpDir, "test-agent"))
 	})
@@ -2902,8 +3486,8 @@ func TestShouldLogAgent(t *testing.T) {
 	t.Run("falseWhenLogIsFalse", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		agentDir := filepath.Join(tmpDir, ".sgai", "agent")
-		require.NoError(t, os.MkdirAll(agentDir, 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(agentDir, "test-agent.md"), []byte("---\nlog: false\n---\n# Agent"), 0644))
+		require.NoError(t, os.MkdirAll(agentDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(agentDir, "test-agent.md"), []byte("---\nlog: false\n---\n# Agent"), 0o644))
 
 		assert.False(t, shouldLogAgent(tmpDir, "test-agent"))
 	})
@@ -2919,9 +3503,9 @@ func TestParseAgentSnippets(t *testing.T) {
 	t.Run("agentWithSnippets", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		agentDir := filepath.Join(tmpDir, ".sgai", "agent")
-		require.NoError(t, os.MkdirAll(agentDir, 0755))
+		require.NoError(t, os.MkdirAll(agentDir, 0o755))
 		content := "---\nlog: true\nsnippets:\n  - go/http-server\n  - go/json-encode\n---\n# Agent"
-		require.NoError(t, os.WriteFile(filepath.Join(agentDir, "developer.md"), []byte(content), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(agentDir, "developer.md"), []byte(content), 0o644))
 
 		result := parseAgentSnippets(tmpDir, "developer")
 		assert.Equal(t, []string{"go/http-server", "go/json-encode"}, result)
@@ -2932,8 +3516,8 @@ func TestParseAgentFileMetadata(t *testing.T) {
 	t.Run("noFrontmatter", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		agentDir := filepath.Join(tmpDir, ".sgai", "agent")
-		require.NoError(t, os.MkdirAll(agentDir, 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(agentDir, "test.md"), []byte("# No frontmatter"), 0644))
+		require.NoError(t, os.MkdirAll(agentDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(agentDir, "test.md"), []byte("# No frontmatter"), 0o644))
 
 		_, ok := parseAgentFileMetadata(tmpDir, "test")
 		assert.False(t, ok)
@@ -2943,12 +3527,12 @@ func TestParseAgentFileMetadata(t *testing.T) {
 func TestValidateModels(t *testing.T) {
 	t.Run("emptyModels", func(t *testing.T) {
 		err := validateModels(map[string]any{})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 	})
 
 	t.Run("nilModels", func(t *testing.T) {
 		err := validateModels(nil)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 	})
 }
 
@@ -2961,10 +3545,13 @@ func TestReadNewestForkGoal(t *testing.T) {
 	t.Run("forkWithGoal", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		forkDir := filepath.Join(tmpDir, "fork1")
-		require.NoError(t, os.MkdirAll(forkDir, 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(forkDir, "GOAL.md"), []byte("# Fork Goal"), 0644))
+		require.NoError(t, os.MkdirAll(forkDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(forkDir, "GOAL.md"), []byte("# Fork Goal"), 0o644))
 
-		forks := []workspaceInfo{{Directory: forkDir, DirName: "fork1"}}
+		forks := []workspaceInfo{updated(newTestWorkspaceInfo(), func(info *workspaceInfo) {
+			info.Directory = forkDir
+			info.DirName = "fork1"
+		})}
 		result := readNewestForkGoal(forks)
 		assert.Equal(t, "# Fork Goal", result)
 	})
@@ -2972,10 +3559,13 @@ func TestReadNewestForkGoal(t *testing.T) {
 	t.Run("forkWithEmptyGoal", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		forkDir := filepath.Join(tmpDir, "fork1")
-		require.NoError(t, os.MkdirAll(forkDir, 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(forkDir, "GOAL.md"), []byte("   "), 0644))
+		require.NoError(t, os.MkdirAll(forkDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(forkDir, "GOAL.md"), []byte("   "), 0o644))
 
-		forks := []workspaceInfo{{Directory: forkDir, DirName: "fork1"}}
+		forks := []workspaceInfo{updated(newTestWorkspaceInfo(), func(info *workspaceInfo) {
+			info.Directory = forkDir
+			info.DirName = "fork1"
+		})}
 		result := readNewestForkGoal(forks)
 		assert.Empty(t, result)
 	})
@@ -2984,16 +3574,22 @@ func TestReadNewestForkGoal(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		fork1Dir := filepath.Join(tmpDir, "fork1")
-		require.NoError(t, os.MkdirAll(fork1Dir, 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(fork1Dir, "GOAL.md"), []byte("# Old Goal"), 0644))
+		require.NoError(t, os.MkdirAll(fork1Dir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(fork1Dir, "GOAL.md"), []byte("# Old Goal"), 0o644))
 
 		fork2Dir := filepath.Join(tmpDir, "fork2")
-		require.NoError(t, os.MkdirAll(fork2Dir, 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(fork2Dir, "GOAL.md"), []byte("# New Goal"), 0644))
+		require.NoError(t, os.MkdirAll(fork2Dir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(fork2Dir, "GOAL.md"), []byte("# New Goal"), 0o644))
 
 		forks := []workspaceInfo{
-			{Directory: fork1Dir, DirName: "fork1"},
-			{Directory: fork2Dir, DirName: "fork2"},
+			updated(newTestWorkspaceInfo(), func(info *workspaceInfo) {
+				info.Directory = fork1Dir
+				info.DirName = "fork1"
+			}),
+			updated(newTestWorkspaceInfo(), func(info *workspaceInfo) {
+				info.Directory = fork2Dir
+				info.DirName = "fork2"
+			}),
 		}
 		result := readNewestForkGoal(forks)
 		assert.NotEmpty(t, result)
@@ -3017,16 +3613,18 @@ content`,
 			expectedYAML: "key: value\n",
 		},
 		{
-			name:     "noFrontmatter",
-			content:  "just content",
-			expectOK: false,
+			name:         "noFrontmatter",
+			content:      "just content",
+			expectOK:     false,
+			expectedYAML: "",
 		},
 		{
 			name: "unclosedFrontmatter",
 			content: `---
 key: value
 content`,
-			expectOK: false,
+			expectOK:     false,
+			expectedYAML: "",
 		},
 		{
 			name: "emptyFrontmatter",
@@ -3051,7 +3649,8 @@ content`,
 			content: `---key: value
 ---
 content`,
-			expectOK: false,
+			expectOK:     false,
+			expectedYAML: "",
 		},
 		{
 			name: "quotedDelimiterSubstringInsideFrontmatterValue",
@@ -3080,7 +3679,7 @@ content`,
 			yamlContent, ok := splitFrontmatter([]byte(tt.content))
 			assert.Equal(t, tt.expectOK, ok)
 			if tt.expectOK {
-				assert.Equal(t, tt.expectedYAML, string(yamlContent))
+				assert.YAMLEq(t, tt.expectedYAML, string(yamlContent))
 			}
 		})
 	}
@@ -3471,85 +4070,95 @@ func TestFormatElapsed(t *testing.T) {
 func TestCountPendingTodos(t *testing.T) {
 	tests := []struct {
 		name     string
-		wfState  state.Workflow
-		agent    string
+		todos    []state.TodoItem
 		expected int
 	}{
 		{
-			name:     "coordinatorReturnsZero",
-			wfState:  state.Workflow{},
-			agent:    "coordinator",
-			expected: 0,
-		},
-		{
-			name: "emptyTodos",
-			wfState: state.Workflow{
-				Todos: []state.TodoItem{},
-			},
-			agent:    "agent1",
+			name:     "emptyTodos",
+			todos:    []state.TodoItem{},
 			expected: 0,
 		},
 		{
 			name: "pendingTodo",
-			wfState: state.Workflow{
-				Todos: []state.TodoItem{
-					{Content: "Task 1", Status: "pending"},
-				},
-			},
-			agent:    "agent1",
+			todos: []state.TodoItem{updated(newTestTodoItem(), func(todo *state.TodoItem) {
+				todo.Content = "Task 1"
+				todo.Status = "pending"
+			})},
 			expected: 1,
 		},
 		{
 			name: "inProgressTodo",
-			wfState: state.Workflow{
-				Todos: []state.TodoItem{
-					{Content: "Task 1", Status: "in_progress"},
-				},
-			},
-			agent:    "agent1",
+			todos: []state.TodoItem{updated(newTestTodoItem(), func(todo *state.TodoItem) {
+				todo.Content = "Task 1"
+				todo.Status = "in_progress"
+			})},
 			expected: 1,
 		},
 		{
 			name: "completedTodo",
-			wfState: state.Workflow{
-				Todos: []state.TodoItem{
-					{Content: "Task 1", Status: "completed"},
-				},
-			},
-			agent:    "agent1",
+			todos: []state.TodoItem{updated(newTestTodoItem(), func(todo *state.TodoItem) {
+				todo.Content = "Task 1"
+				todo.Status = "completed"
+			})},
 			expected: 0,
 		},
 		{
 			name: "cancelledTodo",
-			wfState: state.Workflow{
-				Todos: []state.TodoItem{
-					{Content: "Task 1", Status: "cancelled"},
-				},
-			},
-			agent:    "agent1",
+			todos: []state.TodoItem{updated(newTestTodoItem(), func(todo *state.TodoItem) {
+				todo.Content = "Task 1"
+				todo.Status = "cancelled"
+			})},
 			expected: 0,
 		},
 		{
 			name: "mixedTodos",
-			wfState: state.Workflow{
-				Todos: []state.TodoItem{
-					{Content: "Task 1", Status: "pending"},
-					{Content: "Task 2", Status: "completed"},
-					{Content: "Task 3", Status: "in_progress"},
-					{Content: "Task 4", Status: "cancelled"},
-				},
+			todos: []state.TodoItem{
+				updated(newTestTodoItem(), func(todo *state.TodoItem) {
+					todo.Content = "Task 1"
+					todo.Status = "pending"
+				}),
+				updated(newTestTodoItem(), func(todo *state.TodoItem) {
+					todo.Content = "Task 2"
+					todo.Status = "completed"
+				}),
+				updated(newTestTodoItem(), func(todo *state.TodoItem) {
+					todo.Content = "Task 3"
+					todo.Status = "in_progress"
+				}),
+				updated(newTestTodoItem(), func(todo *state.TodoItem) {
+					todo.Content = "Task 4"
+					todo.Status = "cancelled"
+				}),
 			},
-			agent:    "agent1",
 			expected: 2,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := countPendingTodos(tt.wfState, tt.agent)
+			result := countPendingTodos(tt.todos)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestTodosForAgent(t *testing.T) {
+	wfState := updated(newTestWorkflow(), func(workflow *state.Workflow) {
+		workflow.Todos = []state.TodoItem{updated(newTestTodoItem(), func(todo *state.TodoItem) {
+			todo.Content = "agent task"
+		})}
+		workflow.ProjectTodos = []state.TodoItem{updated(newTestTodoItem(), func(todo *state.TodoItem) {
+			todo.Content = "project task"
+		})}
+	})
+
+	t.Run("coordinatorUsesProjectTodos", func(t *testing.T) {
+		assert.Equal(t, wfState.ProjectTodos, todosForAgent(&wfState, "coordinator"))
+	})
+
+	t.Run("agentUsesAgentTodos", func(t *testing.T) {
+		assert.Equal(t, wfState.Todos, todosForAgent(&wfState, "go-developer"))
+	})
 }
 
 func TestFormatCompletionGateScriptFailureMessage(t *testing.T) {
@@ -3603,7 +4212,8 @@ func TestInitVisitCounts(t *testing.T) {
 }
 
 func TestGenerateRetrospectiveDirName(t *testing.T) {
-	result := generateRetrospectiveDirName()
+	result, errName := generateRetrospectiveDirName()
+	require.NoError(t, errName)
 
 	assert.Len(t, result, 21)
 
@@ -3660,19 +4270,20 @@ func TestDotSGAILinePresent(t *testing.T) {
 
 func TestJSONPrettyWriterWrite(t *testing.T) {
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:    " [test] ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " [test] ")
 
-	event := streamEvent{Type: "text", Part: part{Text: "hello world"}}
+	event := updated(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "text"
+		event.Part = updated(newTestPart(), func(part *part) {
+			part.Text = "hello world"
+		})
+	})
 	data, err := json.Marshal(event)
 	require.NoError(t, err)
 	data = append(data, '\n')
 
 	n, errWrite := w.Write(data)
-	assert.NoError(t, errWrite)
+	require.NoError(t, errWrite)
 	assert.Equal(t, len(data), n)
 
 	w.Flush()
@@ -3681,13 +4292,14 @@ func TestJSONPrettyWriterWrite(t *testing.T) {
 
 func TestJSONPrettyWriterProcessEventText(t *testing.T) {
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:    " ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
 
-	w.processEvent(streamEvent{Type: "text", Part: part{Text: "some text"}})
+	w.processEvent(updatedPtr(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "text"
+		event.Part = updated(newTestPart(), func(part *part) {
+			part.Text = "some text"
+		})
+	}))
 	assert.Equal(t, "some text", w.currentText.String())
 
 	w.Flush()
@@ -3696,22 +4308,19 @@ func TestJSONPrettyWriterProcessEventText(t *testing.T) {
 
 func TestJSONPrettyWriterProcessEventToolPending(t *testing.T) {
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:    " ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
 
-	w.processEvent(streamEvent{
-		Type: "tool",
-		Part: part{
-			Tool: "mcp_bash",
-			State: &toolState{
-				Status: "pending",
-				Input:  map[string]any{"command": "ls"},
-			},
-		},
-	})
+	w.processEvent(updatedPtr(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "tool"
+		event.Part = updated(newTestPart(), func(part *part) {
+			part.Tool = "mcp_bash"
+			state := updated(newTestToolState(), func(toolState *toolState) {
+				toolState.Status = "pending"
+				toolState.Input = map[string]any{"command": "ls"}
+			})
+			part.State = &state
+		})
+	}))
 
 	output := buf.String()
 	assert.Contains(t, output, "mcp_bash")
@@ -3719,22 +4328,19 @@ func TestJSONPrettyWriterProcessEventToolPending(t *testing.T) {
 
 func TestJSONPrettyWriterProcessEventToolRunning(t *testing.T) {
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:    " ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
 
-	w.processEvent(streamEvent{
-		Type: "tool",
-		Part: part{
-			Tool: "mcp_read",
-			State: &toolState{
-				Status: "running",
-				Input:  map[string]any{"filePath": "/some/path"},
-			},
-		},
-	})
+	w.processEvent(updatedPtr(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "tool"
+		event.Part = updated(newTestPart(), func(part *part) {
+			part.Tool = "mcp_read"
+			state := updated(newTestToolState(), func(toolState *toolState) {
+				toolState.Status = "running"
+				toolState.Input = map[string]any{"filePath": "/some/path"}
+			})
+			part.State = &state
+		})
+	}))
 
 	output := buf.String()
 	assert.Contains(t, output, "mcp_read")
@@ -3743,23 +4349,20 @@ func TestJSONPrettyWriterProcessEventToolRunning(t *testing.T) {
 
 func TestJSONPrettyWriterProcessEventToolCompleted(t *testing.T) {
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:    " ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
 
-	w.processEvent(streamEvent{
-		Type: "tool",
-		Part: part{
-			Tool: "mcp_bash",
-			State: &toolState{
-				Status: "completed",
-				Input:  map[string]any{"command": "echo hello"},
-				Output: "hello\nworld",
-			},
-		},
-	})
+	w.processEvent(updatedPtr(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "tool"
+		event.Part = updated(newTestPart(), func(part *part) {
+			part.Tool = "mcp_bash"
+			state := updated(newTestToolState(), func(toolState *toolState) {
+				toolState.Status = "completed"
+				toolState.Input = map[string]any{"command": "echo hello"}
+				toolState.Output = "hello\nworld"
+			})
+			part.State = &state
+		})
+	}))
 
 	output := buf.String()
 	assert.Contains(t, output, "mcp_bash")
@@ -3768,24 +4371,21 @@ func TestJSONPrettyWriterProcessEventToolCompleted(t *testing.T) {
 
 func TestJSONPrettyWriterProcessEventToolCompletedTodo(t *testing.T) {
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:    " ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
 
 	todos := `[{"content":"task1","status":"completed","priority":"high"},{"content":"task2","status":"pending","priority":"medium"}]`
-	w.processEvent(streamEvent{
-		Type: "tool",
-		Part: part{
-			Tool: "todowrite",
-			State: &toolState{
-				Status: "completed",
-				Input:  map[string]any{},
-				Output: todos,
-			},
-		},
-	})
+	w.processEvent(updatedPtr(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "tool"
+		event.Part = updated(newTestPart(), func(part *part) {
+			part.Tool = "todowrite"
+			state := updated(newTestToolState(), func(toolState *toolState) {
+				toolState.Status = "completed"
+				toolState.Input = map[string]any{}
+				toolState.Output = todos
+			})
+			part.State = &state
+		})
+	}))
 
 	output := buf.String()
 	assert.Contains(t, output, "●")
@@ -3796,29 +4396,26 @@ func TestJSONPrettyWriterProcessEventToolCompletedTodo(t *testing.T) {
 
 func TestJSONPrettyWriterProcessEventToolCompletedTodoUpdatesWorkflowState(t *testing.T) {
 	dir := t.TempDir()
-	coord, errCoord := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+	coord, errCoord := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 	require.NoError(t, errCoord)
 
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:       " ",
-		w:            &buf,
-		startTime:    time.Now(),
-		coord:        coord,
-		currentAgent: "test-agent",
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
+	w.coord = coord
+	w.currentAgent = "test-agent"
 
-	w.processEvent(streamEvent{
-		Type: "tool",
-		Part: part{
-			Tool: "todowrite",
-			State: &toolState{
-				Status: "completed",
-				Input:  map[string]any{},
-				Output: `[{"id":"todo-1","content":"trace state","status":"in_progress","priority":"high"}]`,
-			},
-		},
-	})
+	w.processEvent(updatedPtr(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "tool"
+		event.Part = updated(newTestPart(), func(part *part) {
+			part.Tool = "todowrite"
+			state := updated(newTestToolState(), func(toolState *toolState) {
+				toolState.Status = "completed"
+				toolState.Input = map[string]any{}
+				toolState.Output = `[{"id":"todo-1","content":"trace state","status":"in_progress","priority":"high"}]`
+			})
+			part.State = &state
+		})
+	}))
 
 	wfState := coord.State()
 	require.Len(t, wfState.Todos, 1)
@@ -3830,23 +4427,20 @@ func TestJSONPrettyWriterProcessEventToolCompletedTodoUpdatesWorkflowState(t *te
 
 func TestJSONPrettyWriterProcessEventToolError(t *testing.T) {
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:    " ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
 
-	w.processEvent(streamEvent{
-		Type: "tool",
-		Part: part{
-			Tool: "mcp_bash",
-			State: &toolState{
-				Status: "error",
-				Input:  map[string]any{},
-				Error:  "permission denied",
-			},
-		},
-	})
+	w.processEvent(updatedPtr(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "tool"
+		event.Part = updated(newTestPart(), func(part *part) {
+			part.Tool = "mcp_bash"
+			state := updated(newTestToolState(), func(toolState *toolState) {
+				toolState.Status = "error"
+				toolState.Input = map[string]any{}
+				toolState.Error = "permission denied"
+			})
+			part.State = &state
+		})
+	}))
 
 	output := buf.String()
 	assert.Contains(t, output, "ERROR:")
@@ -3855,14 +4449,12 @@ func TestJSONPrettyWriterProcessEventToolError(t *testing.T) {
 
 func TestJSONPrettyWriterProcessEventStepStart(t *testing.T) {
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:    " ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
 
 	w.currentText.WriteString("buffered text")
-	w.processEvent(streamEvent{Type: "step_start"})
+	w.processEvent(updatedPtr(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "step_start"
+	}))
 
 	assert.Equal(t, 1, w.stepCounter)
 	assert.Contains(t, buf.String(), "buffered text")
@@ -3870,47 +4462,44 @@ func TestJSONPrettyWriterProcessEventStepStart(t *testing.T) {
 
 func TestJSONPrettyWriterProcessEventReasoning(t *testing.T) {
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:    " ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
 
-	w.processEvent(streamEvent{Type: "reasoning", Part: part{Text: "thinking about it"}})
+	w.processEvent(updatedPtr(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "reasoning"
+		event.Part = updated(newTestPart(), func(part *part) {
+			part.Text = "thinking about it"
+		})
+	}))
 	assert.Contains(t, buf.String(), "[thinking]")
 }
 
 func TestJSONPrettyWriterProcessEventUnknownType(t *testing.T) {
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:    " ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
 
-	w.processEvent(streamEvent{Type: "custom_event"})
+	w.processEvent(updatedPtr(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "custom_event"
+	}))
 	assert.Contains(t, buf.String(), "[custom_event]")
 }
 
 func TestJSONPrettyWriterSessionIDCapture(t *testing.T) {
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:    " ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
 
-	w.processEvent(streamEvent{Type: "text", SessionID: "sess-123", Part: part{Text: "hi"}})
+	w.processEvent(updatedPtr(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "text"
+		event.SessionID = "sess-123"
+		event.Part = updated(newTestPart(), func(part *part) {
+			part.Text = "hi"
+		})
+	}))
 	assert.Equal(t, "sess-123", w.sessionID)
 }
 
 func TestJSONPrettyWriterFlushEmpty(t *testing.T) {
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:    " ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
 
 	w.Flush()
 	assert.Empty(t, buf.String())
@@ -3918,14 +4507,20 @@ func TestJSONPrettyWriterFlushEmpty(t *testing.T) {
 
 func TestJSONPrettyWriterProcessBufferMultipleEvents(t *testing.T) {
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:    " ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
 
-	event1, _ := json.Marshal(streamEvent{Type: "text", Part: part{Text: "hello"}})
-	event2, _ := json.Marshal(streamEvent{Type: "text", Part: part{Text: " world"}})
+	event1, _ := json.Marshal(updated(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "text"
+		event.Part = updated(newTestPart(), func(part *part) {
+			part.Text = "hello"
+		})
+	}))
+	event2, _ := json.Marshal(updated(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "text"
+		event.Part = updated(newTestPart(), func(part *part) {
+			part.Text = " world"
+		})
+	}))
 	data := string(event1) + "\n" + string(event2) + "\n"
 
 	_, _ = w.Write([]byte(data))
@@ -3936,13 +4531,14 @@ func TestJSONPrettyWriterProcessBufferMultipleEvents(t *testing.T) {
 
 func TestJSONPrettyWriterProcessBufferPartialLine(t *testing.T) {
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:    " ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
 
-	event, _ := json.Marshal(streamEvent{Type: "text", Part: part{Text: "partial"}})
+	event, _ := json.Marshal(updated(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "text"
+		event.Part = updated(newTestPart(), func(part *part) {
+			part.Text = "partial"
+		})
+	}))
 	data := string(event)
 
 	_, _ = w.Write([]byte(data[:10]))
@@ -3955,26 +4551,24 @@ func TestJSONPrettyWriterProcessBufferPartialLine(t *testing.T) {
 
 func TestJSONPrettyWriterRecordStepCost(t *testing.T) {
 	dir := t.TempDir()
-	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:       " ",
-		w:            &buf,
-		startTime:    time.Now(),
-		coord:        coord,
-		currentAgent: "test-agent",
-		stepCounter:  1,
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
+	w.coord = coord
+	w.currentAgent = "test-agent"
+	w.stepCounter = 1
 
-	w.recordStepCost(part{
-		Cost: 0.05,
-		Tokens: partTokens{
-			Input:  100,
-			Output: 50,
-		},
-	}, time.Now().UnixMilli())
+	w.recordStepCost(updatedPtr(newTestPart(), func(part *part) {
+		part.Cost = 0.05
+		part.Tokens = updated(newTestPartTokens(), func(tokens *partTokens) {
+			tokens.Input = 100
+			tokens.Output = 50
+		})
+	}),
+
+		time.Now().UnixMilli())
 
 	wfState := coord.State()
 	assert.InDelta(t, 0.05, wfState.Cost.TotalCost, 0.001)
@@ -3989,31 +4583,26 @@ func TestJSONPrettyWriterRecordStepCost(t *testing.T) {
 
 func TestJSONPrettyWriterRecordStepCostTracksDollarBreakdown(t *testing.T) {
 	dir := t.TempDir()
-	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:       " ",
-		w:            &buf,
-		startTime:    time.Now(),
-		coord:        coord,
-		currentAgent: "test-agent",
-		stepCounter:  1,
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
+	w.coord = coord
+	w.currentAgent = "test-agent"
+	w.stepCounter = 1
 
-	w.recordStepCost(part{
-		Cost: 1.2,
-		Tokens: partTokens{
-			Input:     40,
-			Output:    20,
-			Reasoning: 10,
-			Cache: cacheStats{
-				Read:  20,
-				Write: 10,
-			},
-		},
-	}, time.Now().UnixMilli())
+	w.recordStepCost(updatedPtr(newTestPart(), func(part *part) {
+		part.Cost = 1.2
+		part.Tokens = updated(newTestPartTokens(), func(tokens *partTokens) {
+			tokens.Input = 40
+			tokens.Output = 20
+			tokens.Reasoning = 10
+			tokens.Cache = cacheStats{Read: 20, Write: 10}
+		})
+	}),
+
+		time.Now().UnixMilli())
 
 	wfState := coord.State()
 	assert.InDelta(t, 0.48, wfState.Cost.Dollars.Input, 0.0001)
@@ -4029,22 +4618,34 @@ func TestJSONPrettyWriterRecordStepCostTracksDollarBreakdown(t *testing.T) {
 
 func TestJSONPrettyWriterRecordStepCostMultipleSteps(t *testing.T) {
 	dir := t.TempDir()
-	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:       " ",
-		w:            &buf,
-		startTime:    time.Now(),
-		coord:        coord,
-		currentAgent: "test-agent",
-		stepCounter:  1,
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
+	w.coord = coord
+	w.currentAgent = "test-agent"
+	w.stepCounter = 1
 
-	w.recordStepCost(part{Cost: 0.01, Tokens: partTokens{Input: 10, Output: 5}}, time.Now().UnixMilli())
+	w.recordStepCost(updatedPtr(newTestPart(), func(part *part) {
+		part.Cost = 0.01
+		part.Tokens = updated(newTestPartTokens(), func(tokens *partTokens) {
+			tokens.Input = 10
+			tokens.Output = 5
+		})
+	}),
+
+		time.Now().UnixMilli())
 	w.stepCounter++
-	w.recordStepCost(part{Cost: 0.02, Tokens: partTokens{Input: 20, Output: 10}}, time.Now().UnixMilli())
+	w.recordStepCost(updatedPtr(newTestPart(), func(part *part) {
+		part.Cost = 0.02
+		part.Tokens = updated(newTestPartTokens(), func(tokens *partTokens) {
+			tokens.Input = 20
+			tokens.Output = 10
+		})
+	}),
+
+		time.Now().UnixMilli())
 
 	wfState := coord.State()
 	assert.InDelta(t, 0.03, wfState.Cost.TotalCost, 0.001)
@@ -4053,71 +4654,71 @@ func TestJSONPrettyWriterRecordStepCostMultipleSteps(t *testing.T) {
 
 func TestJSONPrettyWriterRecordStepCostNilCoord(_ *testing.T) {
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:       " ",
-		w:            &buf,
-		startTime:    time.Now(),
-		coord:        nil,
-		currentAgent: "test-agent",
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
+	w.currentAgent = "test-agent"
 
-	w.recordStepCost(part{Cost: 0.05}, time.Now().UnixMilli())
+	w.recordStepCost(updatedPtr(newTestPart(), func(part *part) {
+		part.Cost = 0.05
+	}),
+
+		time.Now().UnixMilli())
 }
 
 func TestJSONPrettyWriterRecordStepCostEmptyAgent(t *testing.T) {
 	dir := t.TempDir()
-	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:       " ",
-		w:            &buf,
-		startTime:    time.Now(),
-		coord:        coord,
-		currentAgent: "",
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
+	w.coord = coord
 
-	w.recordStepCost(part{Cost: 0.05}, time.Now().UnixMilli())
+	w.recordStepCost(updatedPtr(newTestPart(), func(part *part) {
+		part.Cost = 0.05
+	}),
+
+		time.Now().UnixMilli())
 	wfState := coord.State()
 	assert.InDelta(t, 0.0, wfState.Cost.TotalCost, 0.001)
 }
 
 func TestJSONPrettyWriterRecordStepCostZeroValues(t *testing.T) {
 	dir := t.TempDir()
-	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:       " ",
-		w:            &buf,
-		startTime:    time.Now(),
-		coord:        coord,
-		currentAgent: "agent",
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
+	w.coord = coord
+	w.currentAgent = "agent"
 
-	w.recordStepCost(part{Cost: 0, Tokens: partTokens{}}, time.Now().UnixMilli())
+	w.recordStepCost(updatedPtr(newTestPart(), func(part *part) {
+		part.Tokens = newTestPartTokens()
+	}),
+
+		time.Now().UnixMilli())
 	wfState := coord.State()
 	assert.InDelta(t, 0.0, wfState.Cost.TotalCost, 0.001)
 }
 
 func TestJSONPrettyWriterRecordStepCostCachedTokensWithoutCost(t *testing.T) {
 	dir := t.TempDir()
-	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:       " ",
-		w:            &buf,
-		startTime:    time.Now(),
-		coord:        coord,
-		currentAgent: "agent",
-		stepCounter:  3,
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
+	w.coord = coord
+	w.currentAgent = "agent"
+	w.stepCounter = 3
 
-	w.recordStepCost(part{Tokens: partTokens{Cache: cacheStats{Read: 200, Write: 50}}}, time.Now().UnixMilli())
+	w.recordStepCost(updatedPtr(newTestPart(), func(part *part) {
+		part.Tokens = updated(newTestPartTokens(), func(tokens *partTokens) {
+			tokens.Cache = cacheStats{Read: 200, Write: 50}
+		})
+	}),
+
+		time.Now().UnixMilli())
 
 	wfState := coord.State()
 	assert.Equal(t, 200, wfState.Cost.TotalTokens.CacheRead)
@@ -4130,20 +4731,22 @@ func TestJSONPrettyWriterRecordStepCostCachedTokensWithoutCost(t *testing.T) {
 
 func TestJSONPrettyWriterRecordStepCostReasoningTokensWithoutCost(t *testing.T) {
 	dir := t.TempDir()
-	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:       " ",
-		w:            &buf,
-		startTime:    time.Now(),
-		coord:        coord,
-		currentAgent: "agent",
-		stepCounter:  4,
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
+	w.coord = coord
+	w.currentAgent = "agent"
+	w.stepCounter = 4
 
-	w.recordStepCost(part{Tokens: partTokens{Reasoning: 125}}, time.Now().UnixMilli())
+	w.recordStepCost(updatedPtr(newTestPart(), func(part *part) {
+		part.Tokens = updated(newTestPartTokens(), func(tokens *partTokens) {
+			tokens.Reasoning = 125
+		})
+	}),
+
+		time.Now().UnixMilli())
 
 	wfState := coord.State()
 	assert.Equal(t, 125, wfState.Cost.TotalTokens.Reasoning)
@@ -4154,11 +4757,7 @@ func TestJSONPrettyWriterRecordStepCostReasoningTokensWithoutCost(t *testing.T) 
 
 func TestJSONPrettyWriterFormatTodoOutput(t *testing.T) {
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:    " ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
 
 	todos := `[{"content":"write tests","status":"in_progress","priority":"high"},{"content":"fix bug","status":"completed","priority":"medium"},{"content":"deploy","status":"cancelled","priority":"low"}]`
 	w.formatTodoOutput(todos)
@@ -4174,11 +4773,7 @@ func TestJSONPrettyWriterFormatTodoOutput(t *testing.T) {
 
 func TestJSONPrettyWriterFormatTodoOutputInvalidJSON(t *testing.T) {
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:    " ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
 
 	w.formatTodoOutput("not json at all")
 
@@ -4189,11 +4784,7 @@ func TestJSONPrettyWriterFormatTodoOutputInvalidJSON(t *testing.T) {
 
 func TestJSONPrettyWriterFormatTodoOutputWithPrefix(t *testing.T) {
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:    " ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
 
 	todos := "Updated todos\n" + `[{"content":"task","status":"pending","priority":"high"}]`
 	w.formatTodoOutput(todos)
@@ -4205,28 +4796,27 @@ func TestJSONPrettyWriterFormatTodoOutputWithPrefix(t *testing.T) {
 
 func TestJSONPrettyWriterProcessEventStepFinish(t *testing.T) {
 	dir := t.TempDir()
-	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:       " ",
-		w:            &buf,
-		startTime:    time.Now(),
-		coord:        coord,
-		currentAgent: "test-agent",
-		stepCounter:  1,
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
+	w.coord = coord
+	w.currentAgent = "test-agent"
+	w.stepCounter = 1
 
 	w.currentText.WriteString("some text")
-	w.processEvent(streamEvent{
-		Type:      "step_finish",
-		Timestamp: time.Now().UnixMilli(),
-		Part: part{
-			Cost:   0.1,
-			Tokens: partTokens{Input: 500, Output: 200},
-		},
-	})
+	w.processEvent(updatedPtr(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "step_finish"
+		event.Timestamp = time.Now().UnixMilli()
+		event.Part = updated(newTestPart(), func(part *part) {
+			part.Cost = 0.1
+			part.Tokens = updated(newTestPartTokens(), func(tokens *partTokens) {
+				tokens.Input = 500
+				tokens.Output = 200
+			})
+		})
+	}))
 
 	assert.Contains(t, buf.String(), "some text")
 	wfState := coord.State()
@@ -4235,35 +4825,30 @@ func TestJSONPrettyWriterProcessEventStepFinish(t *testing.T) {
 
 func TestJSONPrettyWriterProcessEventHyphenatedStepEvents(t *testing.T) {
 	dir := t.TempDir()
-	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), state.Workflow{})
+	coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:       " ",
-		w:            &buf,
-		startTime:    time.Now(),
-		coord:        coord,
-		currentAgent: "test-agent",
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
+	w.coord = coord
+	w.currentAgent = "test-agent"
 
-	w.processEvent(streamEvent{Type: "step-start"})
-	w.processEvent(streamEvent{
-		Type:      "step-finish",
-		Timestamp: time.Now().UnixMilli(),
-		Part: part{
-			Cost: 0.2,
-			Tokens: partTokens{
-				Input:     120,
-				Output:    30,
-				Reasoning: 10,
-				Cache: cacheStats{
-					Read:  40,
-					Write: 5,
-				},
-			},
-		},
-	})
+	w.processEvent(updatedPtr(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "step-start"
+	}))
+	w.processEvent(updatedPtr(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "step-finish"
+		event.Timestamp = time.Now().UnixMilli()
+		event.Part = updated(newTestPart(), func(part *part) {
+			part.Cost = 0.2
+			part.Tokens = updated(newTestPartTokens(), func(tokens *partTokens) {
+				tokens.Input = 120
+				tokens.Output = 30
+				tokens.Reasoning = 10
+				tokens.Cache = cacheStats{Read: 40, Write: 5}
+			})
+		})
+	}))
 
 	wfState := coord.State()
 	require.Len(t, wfState.Cost.ByAgent, 1)
@@ -4279,19 +4864,14 @@ func TestJSONPrettyWriterProcessEventHyphenatedStepEvents(t *testing.T) {
 
 func TestJSONPrettyWriterToolNilState(t *testing.T) {
 	var buf bytes.Buffer
-	w := &jsonPrettyWriter{
-		prefix:    " ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newBufferedTestJSONPrettyWriter(&buf, " ")
 
-	w.processEvent(streamEvent{
-		Type: "tool",
-		Part: part{
-			Tool:  "mcp_bash",
-			State: nil,
-		},
-	})
+	w.processEvent(updatedPtr(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "tool"
+		event.Part = updated(newTestPart(), func(part *part) {
+			part.Tool = "mcp_bash"
+		})
+	}))
 
 	assert.Empty(t, buf.String())
 }
@@ -4305,7 +4885,7 @@ func TestPrefixWriter(t *testing.T) {
 	}
 
 	n, err := w.Write([]byte("hello\nworld\n"))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, 12, n)
 
 	output := buf.String()
@@ -4330,16 +4910,16 @@ func TestPrefixWriterSingleLine(t *testing.T) {
 	assert.Contains(t, buf.String(), "single line")
 }
 
-func TestCopyCompletionArtifactsToRetrospectiveNoDir(_ *testing.T) {
-	cfg := multiModelConfig{retrospectiveDir: ""}
-	copyCompletionArtifactsToRetrospective(cfg)
+func TestCopyCompletionArtifactsToRetrospectiveNoDir(t *testing.T) {
+	cfg := newTestMultiModelConfig()
+	require.NoError(t, copyCompletionArtifactsToRetrospective(&cfg))
 }
 
 func TestInitializeWorkspaceDirExisting(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0o755))
 	err := initializeWorkspaceDir(dir)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 }
 
 func TestCopyFileAtomicSuccess(t *testing.T) {
@@ -4347,7 +4927,7 @@ func TestCopyFileAtomicSuccess(t *testing.T) {
 	dstDir := t.TempDir()
 	srcFile := filepath.Join(srcDir, "source.txt")
 	dstFile := filepath.Join(dstDir, "dest.txt")
-	require.NoError(t, os.WriteFile(srcFile, []byte("hello world"), 0644))
+	require.NoError(t, os.WriteFile(srcFile, []byte("hello world"), 0o644))
 	err := copyFileAtomic(srcFile, dstFile)
 	require.NoError(t, err)
 	data, errRead := os.ReadFile(dstFile)
@@ -4357,7 +4937,7 @@ func TestCopyFileAtomicSuccess(t *testing.T) {
 
 func TestCopyFileAtomicMissingSource(t *testing.T) {
 	err := copyFileAtomic("/nonexistent/source.txt", filepath.Join(t.TempDir(), "dest.txt"))
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestCopyFileAtomicCreatesDir(t *testing.T) {
@@ -4365,7 +4945,7 @@ func TestCopyFileAtomicCreatesDir(t *testing.T) {
 	dstDir := t.TempDir()
 	srcFile := filepath.Join(srcDir, "source.txt")
 	dstFile := filepath.Join(dstDir, "subdir", "dest.txt")
-	require.NoError(t, os.WriteFile(srcFile, []byte("nested"), 0644))
+	require.NoError(t, os.WriteFile(srcFile, []byte("nested"), 0o644))
 	err := copyFileAtomic(srcFile, dstFile)
 	require.NoError(t, err)
 	data, errRead := os.ReadFile(dstFile)
@@ -4377,7 +4957,7 @@ func TestCopyFinalStateToRetrospectiveNoFilesNewBatch(t *testing.T) {
 	dir := t.TempDir()
 	retroDir := t.TempDir()
 	err := copyFinalStateToRetrospective(dir, retroDir)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 }
 
 func TestRunCompletionGateScriptSuccess(t *testing.T) {
@@ -4390,18 +4970,18 @@ func TestRunCompletionGateScriptSuccess(t *testing.T) {
 func TestRunCompletionGateScriptFailure(t *testing.T) {
 	dir := t.TempDir()
 	_, err := runCompletionGateScript(context.Background(), dir, "exit 1")
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestSaveStateCoord(t *testing.T) {
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
-	require.NoError(t, os.MkdirAll(sgaiDir, 0755))
+	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 	stateFile := filepath.Join(sgaiDir, "state.json")
-	coord, errCoord := state.NewCoordinatorWith(stateFile, state.Workflow{})
+	coord, errCoord := state.NewCoordinatorWith(stateFile, newTestWorkflow())
 	require.NoError(t, errCoord)
 	wf := coord.State()
-	saveState(coord, wf)
+	require.NoError(t, saveState(coord, &wf))
 	assert.FileExists(t, stateFile)
 }
 
@@ -4421,7 +5001,7 @@ func TestOpenRetrospectiveLogsSuccess(t *testing.T) {
 
 func TestOpenRetrospectiveLogsInvalidDir(t *testing.T) {
 	_, _, err := openRetrospectiveLogs("/nonexistent/path/to/retro")
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestOpenRetrospectiveLogsWritable(t *testing.T) {
@@ -4433,23 +5013,39 @@ func TestOpenRetrospectiveLogsWritable(t *testing.T) {
 		_ = stderrLog.Close()
 	})
 	_, errWrite := stdoutLog.Write([]byte("stdout test\n"))
-	assert.NoError(t, errWrite)
+	require.NoError(t, errWrite)
 	_, errWrite2 := stderrLog.Write([]byte("stderr test\n"))
-	assert.NoError(t, errWrite2)
+	require.NoError(t, errWrite2)
 }
 
 func TestHandleCompleteStatusCoordinatorNoBlockers(t *testing.T) {
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
-	require.NoError(t, os.MkdirAll(sgaiDir, 0755))
+	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 	statePath := filepath.Join(sgaiDir, "state.json")
-	coord, errCoord := state.NewCoordinatorWith(statePath, state.Workflow{})
+	coord, errCoord := state.NewCoordinatorWith(statePath, newTestWorkflow())
 	require.NoError(t, errCoord)
 
-	d := &dag{Nodes: map[string]*dagNode{}}
-	cfg := multiModelConfig{paddedsgai: "test", coord: coord, dir: dir, agent: "coordinator", flowDag: d, goalPath: filepath.Join(dir, "GOAL.md")}
-	require.NoError(t, os.WriteFile(cfg.goalPath, []byte("# Goal"), 0644))
-	result := handleCompleteStatus(context.Background(), cfg, state.Workflow{Status: state.StatusComplete}, state.Workflow{}, GoalMetadata{})
+	d := newTestDag()
+	cfg := updated(newTestMultiModelConfig(), func(cfg *multiModelConfig) {
+		cfg.paddedsgai = "test"
+		cfg.coord = coord
+		cfg.dir = dir
+		cfg.agent = "coordinator"
+		cfg.flowDag = d
+		cfg.goalPath = filepath.Join(dir, "GOAL.md")
+	})
+	require.NoError(t, os.WriteFile(cfg.goalPath, []byte("# Goal"), 0o644))
+	metadata := newTestGoalMetadata()
+	result := handleCompleteStatus(
+		context.Background(),
+		&cfg,
+		updatedPtr(newTestWorkflow(), func(wfState *state.Workflow) {
+			wfState.Status = state.StatusComplete
+		}),
+
+		&metadata,
+	)
 	assert.Equal(t, state.StatusComplete, result.Status)
 }
 
@@ -4471,16 +5067,16 @@ func TestTerminateProcessGroupOnCancelWithContext(t *testing.T) {
 
 func TestExportSessionMissingBinary(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0o755))
 	err := exportSession(dir, "session-1", filepath.Join(dir, "output.json"))
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestRunCompletionGateScriptCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err := runCompletionGateScript(ctx, t.TempDir(), "echo hello")
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestFormatCompletionGateScriptFailureMessageContent(t *testing.T) {
@@ -4492,10 +5088,10 @@ func TestFormatCompletionGateScriptFailureMessageContent(t *testing.T) {
 func TestParseAgentFileMetadataValidFile(t *testing.T) {
 	dir := t.TempDir()
 	agentDir := filepath.Join(dir, ".sgai", "agent")
-	require.NoError(t, os.MkdirAll(agentDir, 0755))
+	require.NoError(t, os.MkdirAll(agentDir, 0o755))
 	agentFile := filepath.Join(agentDir, "test-agent.md")
 	content := "---\nlog: true\nsnippets:\n  - go\n---\n# Test Agent\nAgent instructions here"
-	require.NoError(t, os.WriteFile(agentFile, []byte(content), 0644))
+	require.NoError(t, os.WriteFile(agentFile, []byte(content), 0o644))
 
 	meta, ok := parseAgentFileMetadata(dir, "test-agent")
 	assert.True(t, ok)
@@ -4511,8 +5107,8 @@ func TestParseAgentFileMetadataMissing(t *testing.T) {
 func TestParseAgentFileMetadataNoFrontmatter(t *testing.T) {
 	dir := t.TempDir()
 	agentDir := filepath.Join(dir, ".sgai", "agent")
-	require.NoError(t, os.MkdirAll(agentDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "test.md"), []byte("no frontmatter"), 0644))
+	require.NoError(t, os.MkdirAll(agentDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "test.md"), []byte("no frontmatter"), 0o644))
 
 	_, ok := parseAgentFileMetadata(dir, "test")
 	assert.False(t, ok)
@@ -4526,8 +5122,8 @@ func TestShouldLogAgentDefault(t *testing.T) {
 func TestShouldLogAgentExplicit(t *testing.T) {
 	dir := t.TempDir()
 	agentDir := filepath.Join(dir, ".sgai", "agent")
-	require.NoError(t, os.MkdirAll(agentDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "quiet.md"), []byte("---\nlog: false\n---\n"), 0644))
+	require.NoError(t, os.MkdirAll(agentDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "quiet.md"), []byte("---\nlog: false\n---\n"), 0o644))
 
 	result := shouldLogAgent(dir, "quiet")
 	assert.False(t, result)
@@ -4541,8 +5137,8 @@ func TestParseAgentSnippetsEmpty(t *testing.T) {
 func TestParseAgentSnippetsPopulated(t *testing.T) {
 	dir := t.TempDir()
 	agentDir := filepath.Join(dir, ".sgai", "agent")
-	require.NoError(t, os.MkdirAll(agentDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "dev.md"), []byte("---\nsnippets:\n  - go\n  - react\n---\n"), 0644))
+	require.NoError(t, os.MkdirAll(agentDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "dev.md"), []byte("---\nsnippets:\n  - go\n  - react\n---\n"), 0o644))
 
 	result := parseAgentSnippets(dir, "dev")
 	assert.Equal(t, []string{"go", "react"}, result)
@@ -4551,36 +5147,44 @@ func TestParseAgentSnippetsPopulated(t *testing.T) {
 func TestBlockCompletionOnGateScriptPassingScript(t *testing.T) {
 	dir := t.TempDir()
 	sp := filepath.Join(dir, ".sgai", "state.json")
-	require.NoError(t, os.MkdirAll(filepath.Dir(sp), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Dir(sp), 0o755))
 	coord := state.NewCoordinatorEmpty(sp)
 
-	cfg := multiModelConfig{
-		paddedsgai: "sgai",
-		agent:      "test",
-		dir:        dir,
-		coord:      coord,
-	}
-	metadata := GoalMetadata{CompletionGateScript: "true"}
-	wfState := state.Workflow{Status: state.StatusComplete}
-	result := blockCompletionOnGateScript(context.Background(), cfg, wfState, metadata)
+	cfg := updated(newTestMultiModelConfig(), func(cfg *multiModelConfig) {
+		cfg.paddedsgai = "sgai"
+		cfg.agent = "test"
+		cfg.dir = dir
+		cfg.coord = coord
+	})
+	metadata := updated(newTestGoalMetadata(), func(metadata *GoalMetadata) {
+		metadata.CompletionGateScript = "true"
+	})
+	wfState := updated(newTestWorkflow(), func(wfState *state.Workflow) {
+		wfState.Status = state.StatusComplete
+	})
+	result := blockCompletionOnGateScript(context.Background(), &cfg, &wfState, &metadata)
 	assert.Nil(t, result)
 }
 
 func TestBlockCompletionOnGateScriptFailingScript(t *testing.T) {
 	dir := t.TempDir()
 	sp := filepath.Join(dir, ".sgai", "state.json")
-	require.NoError(t, os.MkdirAll(filepath.Dir(sp), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Dir(sp), 0o755))
 	coord := state.NewCoordinatorEmpty(sp)
 
-	cfg := multiModelConfig{
-		paddedsgai: "sgai",
-		agent:      "test",
-		dir:        dir,
-		coord:      coord,
-	}
-	metadata := GoalMetadata{CompletionGateScript: "false"}
-	wfState := state.Workflow{Status: state.StatusComplete}
-	result := blockCompletionOnGateScript(context.Background(), cfg, wfState, metadata)
+	cfg := updated(newTestMultiModelConfig(), func(cfg *multiModelConfig) {
+		cfg.paddedsgai = "sgai"
+		cfg.agent = "test"
+		cfg.dir = dir
+		cfg.coord = coord
+	})
+	metadata := updated(newTestGoalMetadata(), func(metadata *GoalMetadata) {
+		metadata.CompletionGateScript = "false"
+	})
+	wfState := updated(newTestWorkflow(), func(wfState *state.Workflow) {
+		wfState.Status = state.StatusComplete
+	})
+	result := blockCompletionOnGateScript(context.Background(), &cfg, &wfState, &metadata)
 	require.NotNil(t, result)
 	assert.Equal(t, state.StatusWorking, result.Status)
 }
@@ -4589,30 +5193,30 @@ func TestCopyCompletionArtifactsWithPM(t *testing.T) {
 	dir := t.TempDir()
 	retroDir := t.TempDir()
 	goalPath := filepath.Join(dir, "GOAL.md")
-	require.NoError(t, os.WriteFile(goalPath, []byte("# Goal"), 0644))
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, ".sgai", "PROJECT_MANAGEMENT.md"), []byte("# PM"), 0644))
+	require.NoError(t, os.WriteFile(goalPath, []byte("# Goal"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".sgai", "PROJECT_MANAGEMENT.md"), []byte("# PM"), 0o644))
 
-	cfg := multiModelConfig{
-		dir:              dir,
-		goalPath:         goalPath,
-		retrospectiveDir: retroDir,
-	}
-	copyCompletionArtifactsToRetrospective(cfg)
+	cfg := updated(newTestMultiModelConfig(), func(cfg *multiModelConfig) {
+		cfg.dir = dir
+		cfg.goalPath = goalPath
+		cfg.retrospectiveDir = retroDir
+	})
+	require.NoError(t, copyCompletionArtifactsToRetrospective(&cfg))
 
 	_, errGoal := os.Stat(filepath.Join(retroDir, "GOAL.md"))
-	assert.NoError(t, errGoal)
+	require.NoError(t, errGoal)
 	_, errPM := os.Stat(filepath.Join(retroDir, "PROJECT_MANAGEMENT.md"))
-	assert.NoError(t, errPM)
+	require.NoError(t, errPM)
 }
 
 func TestHandleWorkingLoopReset(t *testing.T) {
-	cfg := multiModelConfig{
-		paddedsgai: "sgai",
-		agent:      "test",
-	}
+	cfg := updated(newTestMultiModelConfig(), func(cfg *multiModelConfig) {
+		cfg.paddedsgai = "sgai"
+		cfg.agent = "test"
+	})
 	sessionID := "session-1"
-	result := handleWorkingLoop(cfg, &sessionID, maxConsecutiveWorkingIterations-1)
+	result := handleWorkingLoop(&cfg, &sessionID, maxConsecutiveWorkingIterations-1)
 	assert.Equal(t, 0, result)
 	assert.Empty(t, sessionID)
 }
@@ -4620,11 +5224,14 @@ func TestHandleWorkingLoopReset(t *testing.T) {
 func TestSaveStatePersistence(t *testing.T) {
 	dir := t.TempDir()
 	sp := filepath.Join(dir, ".sgai", "state.json")
-	require.NoError(t, os.MkdirAll(filepath.Dir(sp), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Dir(sp), 0o755))
 	coord := state.NewCoordinatorEmpty(sp)
 
-	wf := state.Workflow{Status: state.StatusWorking, Task: "testing"}
-	saveState(coord, wf)
+	wf := updated(newTestWorkflow(), func(wfState *state.Workflow) {
+		wfState.Status = state.StatusWorking
+		wfState.Task = "testing"
+	})
+	require.NoError(t, saveState(coord, &wf))
 
 	loaded := coord.State()
 	assert.Equal(t, state.StatusWorking, loaded.Status)
@@ -4633,7 +5240,7 @@ func TestSaveStatePersistence(t *testing.T) {
 
 func TestCopyFileAtomicMissingSrc(t *testing.T) {
 	err := copyFileAtomic("/nonexistent/source.txt", filepath.Join(t.TempDir(), "dest.txt"))
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestCopyFinalStateToRetrospectiveNoFiles(t *testing.T) {
@@ -4646,17 +5253,17 @@ func TestCopyFinalStateToRetrospectiveNoFiles(t *testing.T) {
 func TestApplyLayerFolderOverlayNoLayerDir(t *testing.T) {
 	dir := t.TempDir()
 	err := applyLayerFolderOverlay(dir)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 }
 
 func TestApplyLayerFolderOverlayWithFiles(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai", "skills"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai", "skills"), 0o755))
 	layerDir := filepath.Join(dir, "sgai", "skills", "my-skill")
-	require.NoError(t, os.MkdirAll(layerDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(layerDir, "SKILL.md"), []byte("# My Skill"), 0644))
+	require.NoError(t, os.MkdirAll(layerDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(layerDir, "SKILL.md"), []byte("# My Skill"), 0o644))
 	err := applyLayerFolderOverlay(dir)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	content, errRead := os.ReadFile(filepath.Join(dir, ".sgai", "skills", "my-skill", "SKILL.md"))
 	require.NoError(t, errRead)
 	assert.Equal(t, "# My Skill", string(content))
@@ -4664,13 +5271,13 @@ func TestApplyLayerFolderOverlayWithFiles(t *testing.T) {
 
 func TestApplyLayerFolderOverlayProtectedCoordinator(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai", "agent"), 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, ".sgai", "agent", "coordinator.md"), []byte("# Original"), 0644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai", "agent"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".sgai", "agent", "coordinator.md"), []byte("# Original"), 0o644))
 	layerDir := filepath.Join(dir, "sgai", "agent")
-	require.NoError(t, os.MkdirAll(layerDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(layerDir, "coordinator.md"), []byte("# Overlay"), 0644))
+	require.NoError(t, os.MkdirAll(layerDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(layerDir, "coordinator.md"), []byte("# Overlay"), 0o644))
 	err := applyLayerFolderOverlay(dir)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	content, errRead := os.ReadFile(filepath.Join(dir, ".sgai", "agent", "coordinator.md"))
 	require.NoError(t, errRead)
 	assert.Equal(t, "# Original", string(content))
@@ -4680,11 +5287,11 @@ func TestCopyLayerSubfolderWithProtected(t *testing.T) {
 	dir := t.TempDir()
 	srcDir := filepath.Join(dir, "src", "agent")
 	dstDir := filepath.Join(dir, "dst", "agent")
-	require.NoError(t, os.MkdirAll(srcDir, 0755))
-	require.NoError(t, os.MkdirAll(dstDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "coordinator.md"), []byte("# Override"), 0644))
-	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "builder.md"), []byte("# Builder"), 0644))
-	require.NoError(t, os.WriteFile(filepath.Join(dstDir, "coordinator.md"), []byte("# Original"), 0644))
+	require.NoError(t, os.MkdirAll(srcDir, 0o755))
+	require.NoError(t, os.MkdirAll(dstDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "coordinator.md"), []byte("# Override"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "builder.md"), []byte("# Builder"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dstDir, "coordinator.md"), []byte("# Original"), 0o644))
 	err := copyLayerSubfolder(dir, srcDir, dstDir, "agent")
 	require.NoError(t, err)
 	coordContent, errReadCoord := os.ReadFile(filepath.Join(dstDir, "coordinator.md"))
@@ -4711,7 +5318,7 @@ func TestCopyLayerSubfolderRejectsSymlinkedDestination(t *testing.T) {
 
 	err := copyLayerSubfolder(workspaceDir, srcDir, filepath.Join(workspaceDir, ".sgai", "skills"), "skills")
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "symlinked path is not allowed")
+	require.ErrorContains(t, err, "symlinked path is not allowed")
 	assert.NoFileExists(t, filepath.Join(externalDir, "demo", "SKILL.md"))
 }
 
@@ -4733,7 +5340,7 @@ func TestCopyLayerSubfolderRejectsSymlinkedDestinationFile(t *testing.T) {
 
 	err := copyLayerSubfolder(workspaceDir, srcDir, filepath.Join(workspaceDir, ".sgai", "skills"), "skills")
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "symlinked path is not allowed")
+	require.ErrorContains(t, err, "symlinked path is not allowed")
 
 	content, errRead := os.ReadFile(externalFile)
 	require.NoError(t, errRead)
@@ -4756,8 +5363,8 @@ func TestCopyLayerSubfolderRejectsSymlinkedSourceSubfolder(t *testing.T) {
 
 	err := copyLayerSubfolder(workspaceDir, filepath.Join(workspaceDir, "sgai", "skills"), filepath.Join(workspaceDir, ".sgai", "skills"), "skills")
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "overlay source path")
-	assert.ErrorContains(t, err, "symlinked path is not allowed")
+	require.ErrorContains(t, err, "overlay source path")
+	require.ErrorContains(t, err, "symlinked path is not allowed")
 	assert.NoDirExists(t, filepath.Join(workspaceDir, ".sgai", "skills", "demo"))
 }
 
@@ -4778,17 +5385,17 @@ func TestCopyLayerSubfolderRejectsSymlinkedSourceFile(t *testing.T) {
 
 	err := copyLayerSubfolder(workspaceDir, srcDir, dstDir, "skills")
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "overlay source path")
-	assert.ErrorContains(t, err, "symlinked path is not allowed")
+	require.ErrorContains(t, err, "overlay source path")
+	require.ErrorContains(t, err, "symlinked path is not allowed")
 	assert.NoFileExists(t, filepath.Join(dstDir, "demo", "SKILL.md"))
 }
 
 func TestInitializeJJForkWorkspace(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".jj"), 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, ".jj", "repo"), []byte("/some/other/path"), 0644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".jj"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".jj", "repo"), []byte("/some/other/path"), 0o644))
 	err := initializeJJ(dir)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 }
 
 func readSkeletonFileForTest(t *testing.T, relPath string) string {
@@ -4828,7 +5435,7 @@ func TestCopyFileAtomicCreatesDstDir(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src.txt")
 	dst := filepath.Join(dir, "subdir", "nested", "dst.txt")
-	require.NoError(t, os.WriteFile(src, []byte("content"), 0644))
+	require.NoError(t, os.WriteFile(src, []byte("content"), 0o644))
 	require.NoError(t, copyFileAtomic(src, dst))
 	data, err := os.ReadFile(dst)
 	require.NoError(t, err)
@@ -4838,15 +5445,15 @@ func TestCopyFileAtomicCreatesDstDir(t *testing.T) {
 func TestCopyFinalStateToRetrospectiveSuccess(t *testing.T) {
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
-	require.NoError(t, os.MkdirAll(sgaiDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "state.json"), []byte(`{"status":"complete"}`), 0644))
-	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "PROJECT_MANAGEMENT.md"), []byte("# PM"), 0644))
+	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "state.json"), []byte(`{"status":"complete"}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "PROJECT_MANAGEMENT.md"), []byte("# PM"), 0o644))
 
 	retroDir := filepath.Join(t.TempDir(), "retro")
-	require.NoError(t, os.MkdirAll(retroDir, 0755))
+	require.NoError(t, os.MkdirAll(retroDir, 0o755))
 
 	err := copyFinalStateToRetrospective(dir, retroDir)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.FileExists(t, filepath.Join(retroDir, "state.json"))
 	assert.FileExists(t, filepath.Join(retroDir, "PROJECT_MANAGEMENT.md"))
 }
@@ -4854,9 +5461,9 @@ func TestCopyFinalStateToRetrospectiveSuccess(t *testing.T) {
 func TestCopyProjectManagementToRetrospectiveWithPM(t *testing.T) {
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
-	require.NoError(t, os.MkdirAll(sgaiDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "PROJECT_MANAGEMENT.md"), []byte("# PM content"), 0644))
+	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "PROJECT_MANAGEMENT.md"), []byte("# PM content"), 0o644))
 	retroDir := t.TempDir()
-	copyProjectManagementToRetrospective(dir, retroDir)
+	require.NoError(t, copyProjectManagementToRetrospective(dir, retroDir))
 	assert.FileExists(t, filepath.Join(retroDir, "PROJECT_MANAGEMENT.md"))
 }

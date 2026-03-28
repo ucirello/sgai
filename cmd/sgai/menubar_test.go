@@ -11,6 +11,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func newTestMenuBarItem() menuBarItem {
+	return menuBarItem{
+		name:       "",
+		title:      "",
+		needsInput: false,
+		running:    false,
+		stopped:    false,
+		pinned:     false,
+	}
+}
+
 func TestCountAttention(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -25,38 +36,38 @@ func TestCountAttention(t *testing.T) {
 		{
 			name: "needsInput",
 			items: []menuBarItem{
-				{needsInput: true},
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.needsInput = true }),
 			},
 			expected: 1,
 		},
 		{
 			name: "stopped",
 			items: []menuBarItem{
-				{stopped: true},
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.stopped = true }),
 			},
 			expected: 1,
 		},
 		{
 			name: "running",
 			items: []menuBarItem{
-				{running: true},
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.running = true }),
 			},
 			expected: 0,
 		},
 		{
 			name: "pinned",
 			items: []menuBarItem{
-				{pinned: true},
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.pinned = true }),
 			},
 			expected: 0,
 		},
 		{
 			name: "mixedItems",
 			items: []menuBarItem{
-				{needsInput: true},
-				{running: true},
-				{stopped: true},
-				{pinned: true},
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.needsInput = true }),
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.running = true }),
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.stopped = true }),
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.pinned = true }),
 			},
 			expected: 2,
 		},
@@ -84,23 +95,23 @@ func TestCountRunning(t *testing.T) {
 		{
 			name: "running",
 			items: []menuBarItem{
-				{running: true},
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.running = true }),
 			},
 			expected: 1,
 		},
 		{
 			name: "notRunning",
 			items: []menuBarItem{
-				{running: false},
+				newTestMenuBarItem(),
 			},
 			expected: 0,
 		},
 		{
 			name: "mixedItems",
 			items: []menuBarItem{
-				{running: true},
-				{running: false},
-				{running: true},
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.running = true }),
+				newTestMenuBarItem(),
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.running = true }),
 			},
 			expected: 2,
 		},
@@ -128,46 +139,46 @@ func TestCountActive(t *testing.T) {
 		{
 			name: "running",
 			items: []menuBarItem{
-				{running: true},
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.running = true }),
 			},
 			expected: 1,
 		},
 		{
 			name: "stopped",
 			items: []menuBarItem{
-				{stopped: true},
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.stopped = true }),
 			},
 			expected: 1,
 		},
 		{
 			name: "needsInput",
 			items: []menuBarItem{
-				{needsInput: true},
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.needsInput = true }),
 			},
 			expected: 1,
 		},
 		{
 			name: "pinned",
 			items: []menuBarItem{
-				{pinned: true},
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.pinned = true }),
 			},
 			expected: 1,
 		},
 		{
 			name: "inactive",
 			items: []menuBarItem{
-				{running: false, stopped: false, needsInput: false, pinned: false},
+				newTestMenuBarItem(),
 			},
 			expected: 0,
 		},
 		{
 			name: "mixedItems",
 			items: []menuBarItem{
-				{running: true},
-				{stopped: true},
-				{needsInput: true},
-				{pinned: true},
-				{running: false, stopped: false, needsInput: false, pinned: false},
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.running = true }),
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.stopped = true }),
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.needsInput = true }),
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.pinned = true }),
+				newTestMenuBarItem(),
 			},
 			expected: 4,
 		},
@@ -195,38 +206,38 @@ func TestFilterVisibleItems(t *testing.T) {
 		{
 			name: "needsInput",
 			items: []menuBarItem{
-				{needsInput: true, name: "test"},
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.needsInput = true; item.name = "test" }),
 			},
 			expected: 1,
 		},
 		{
 			name: "stopped",
 			items: []menuBarItem{
-				{stopped: true, name: "test"},
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.stopped = true; item.name = "test" }),
 			},
 			expected: 1,
 		},
 		{
 			name: "pinned",
 			items: []menuBarItem{
-				{pinned: true, name: "test"},
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.pinned = true; item.name = "test" }),
 			},
 			expected: 1,
 		},
 		{
 			name: "runningNotVisible",
 			items: []menuBarItem{
-				{running: true, name: "test"},
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.running = true; item.name = "test" }),
 			},
 			expected: 0,
 		},
 		{
 			name: "mixedItems",
 			items: []menuBarItem{
-				{needsInput: true, name: "a"},
-				{running: true, name: "b"},
-				{stopped: true, name: "c"},
-				{pinned: true, name: "d"},
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.needsInput = true; item.name = "a" }),
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.running = true; item.name = "b" }),
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.stopped = true; item.name = "c" }),
+				updated(newTestMenuBarItem(), func(item *menuBarItem) { item.pinned = true; item.name = "d" }),
 			},
 			expected: 3,
 		},
@@ -248,54 +259,54 @@ func TestFormatMenuItemLabel(t *testing.T) {
 	}{
 		{
 			name: "needsInput",
-			item: menuBarItem{
-				name:       "workspace",
-				title:      "Test Goal",
-				needsInput: true,
-			},
+			item: updated(newTestMenuBarItem(), func(item *menuBarItem) {
+				item.name = "workspace"
+				item.title = "Test Goal"
+				item.needsInput = true
+			}),
 			expected: "\u26A0 Test Goal (Needs Input)",
 		},
 		{
 			name: "runningAndPinned",
-			item: menuBarItem{
-				name:    "workspace",
-				title:   "Test Goal",
-				running: true,
-				pinned:  true,
-			},
+			item: updated(newTestMenuBarItem(), func(item *menuBarItem) {
+				item.name = "workspace"
+				item.title = "Test Goal"
+				item.running = true
+				item.pinned = true
+			}),
 			expected: "\u25B6 Test Goal (Running)",
 		},
 		{
 			name: "pinnedOnly",
-			item: menuBarItem{
-				name:   "workspace",
-				title:  "Test Goal",
-				pinned: true,
-			},
+			item: updated(newTestMenuBarItem(), func(item *menuBarItem) {
+				item.name = "workspace"
+				item.title = "Test Goal"
+				item.pinned = true
+			}),
 			expected: "\u25CB Test Goal",
 		},
 		{
 			name: "stopped",
-			item: menuBarItem{
-				name:    "workspace",
-				title:   "Test Goal",
-				stopped: true,
-			},
+			item: updated(newTestMenuBarItem(), func(item *menuBarItem) {
+				item.name = "workspace"
+				item.title = "Test Goal"
+				item.stopped = true
+			}),
 			expected: "\u25A0 Test Goal (Stopped)",
 		},
 		{
 			name: "default",
-			item: menuBarItem{
-				name:  "workspace",
-				title: "Test Goal",
-			},
+			item: updated(newTestMenuBarItem(), func(item *menuBarItem) {
+				item.name = "workspace"
+				item.title = "Test Goal"
+			}),
 			expected: "Test Goal",
 		},
 		{
 			name: "noTitle",
-			item: menuBarItem{
-				name: "workspace",
-			},
+			item: updated(newTestMenuBarItem(), func(item *menuBarItem) {
+				item.name = "workspace"
+			}),
 			expected: "workspace",
 		},
 	}
@@ -316,12 +327,12 @@ func TestWorkspaceItemSubpath(t *testing.T) {
 	}{
 		{
 			name:     "needsInput",
-			item:     menuBarItem{needsInput: true},
+			item:     updated(newTestMenuBarItem(), func(item *menuBarItem) { item.needsInput = true }),
 			expected: "respond",
 		},
 		{
 			name:     "notNeedsInput",
-			item:     menuBarItem{needsInput: false},
+			item:     newTestMenuBarItem(),
 			expected: "progress",
 		},
 	}
@@ -381,15 +392,12 @@ func TestWorkspaceURL(t *testing.T) {
 }
 
 func TestAllocTag(t *testing.T) {
-	state := &menuBarState{
-		tags:    make(map[int]menuBarAction),
-		nextTag: 0,
-	}
+	state := newMenuBarState()
 
-	tag1 := allocTag(state, menuBarAction{actionURL: "url1"})
+	tag1 := allocTag(&state, menuBarAction{actionURL: "url1"})
 	assert.Equal(t, 1, tag1)
 
-	tag2 := allocTag(state, menuBarAction{actionURL: "url2"})
+	tag2 := allocTag(&state, menuBarAction{actionURL: "url2"})
 	assert.Equal(t, 2, tag2)
 
 	assert.Len(t, state.tags, 2)
@@ -399,30 +407,30 @@ func TestAllocTag(t *testing.T) {
 
 func TestFormatMenuItemLabelVariants(t *testing.T) {
 	t.Run("needsInput", func(t *testing.T) {
-		label := formatMenuItemLabel(menuBarItem{name: "ws", needsInput: true})
+		label := formatMenuItemLabel(updated(newTestMenuBarItem(), func(item *menuBarItem) { item.name = "ws"; item.needsInput = true }))
 		assert.Contains(t, label, "Needs Input")
 	})
 	t.Run("stopped", func(t *testing.T) {
-		label := formatMenuItemLabel(menuBarItem{name: "ws", stopped: true})
+		label := formatMenuItemLabel(updated(newTestMenuBarItem(), func(item *menuBarItem) { item.name = "ws"; item.stopped = true }))
 		assert.Contains(t, label, "Stopped")
 	})
 	t.Run("pinnedRunning", func(t *testing.T) {
-		label := formatMenuItemLabel(menuBarItem{name: "ws", running: true, pinned: true})
+		label := formatMenuItemLabel(updated(newTestMenuBarItem(), func(item *menuBarItem) { item.name = "ws"; item.running = true; item.pinned = true }))
 		assert.Contains(t, label, "Running")
 	})
 	t.Run("idle", func(t *testing.T) {
-		label := formatMenuItemLabel(menuBarItem{name: "ws"})
+		label := formatMenuItemLabel(updated(newTestMenuBarItem(), func(item *menuBarItem) { item.name = "ws" }))
 		assert.Equal(t, "ws", label)
 	})
 }
 
 func TestFilterVisibleItemsResult(t *testing.T) {
 	items := []menuBarItem{
-		{name: "running-ws", running: true},
-		{name: "idle-ws"},
-		{name: "pinned-ws", pinned: true},
-		{name: "input-ws", needsInput: true},
-		{name: "stopped-ws", stopped: true},
+		updated(newTestMenuBarItem(), func(item *menuBarItem) { item.name = "running-ws"; item.running = true }),
+		updated(newTestMenuBarItem(), func(item *menuBarItem) { item.name = "idle-ws" }),
+		updated(newTestMenuBarItem(), func(item *menuBarItem) { item.name = "pinned-ws"; item.pinned = true }),
+		updated(newTestMenuBarItem(), func(item *menuBarItem) { item.name = "input-ws"; item.needsInput = true }),
+		updated(newTestMenuBarItem(), func(item *menuBarItem) { item.name = "stopped-ws"; item.stopped = true }),
 	}
 	filtered := filterVisibleItems(items)
 	assert.Len(t, filtered, 3)
@@ -438,7 +446,7 @@ func TestToMenuBarItemRepairsMissingGoalTitle(t *testing.T) {
 		return "Menu Repair Title", nil
 	}
 
-	item := toMenuBarItem(server, workspaceInfo{DirName: "test-ws", Directory: wsDir})
+	item := toMenuBarItem(server, updated(newTestWorkspaceInfo(), func(workspace *workspaceInfo) { workspace.DirName = "test-ws"; workspace.Directory = wsDir }))
 	assert.Equal(t, "test-ws", item.title)
 
 	require.Eventually(t, func() bool {
@@ -446,6 +454,6 @@ func TestToMenuBarItemRepairsMissingGoalTitle(t *testing.T) {
 		return errRead == nil && strings.Contains(string(data), "title: Menu Repair Title")
 	}, time.Second, 10*time.Millisecond)
 
-	item = toMenuBarItem(server, workspaceInfo{DirName: "test-ws", Directory: wsDir})
+	item = toMenuBarItem(server, updated(newTestWorkspaceInfo(), func(workspace *workspaceInfo) { workspace.DirName = "test-ws"; workspace.Directory = wsDir }))
 	assert.Equal(t, "Menu Repair Title", item.title)
 }

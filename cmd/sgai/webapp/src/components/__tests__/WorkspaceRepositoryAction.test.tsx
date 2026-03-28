@@ -345,7 +345,7 @@ describe("WorkspaceRepositoryAction", () => {
     });
   });
 
-  it("passes workspaceDir when running destructive actions", async () => {
+  it("runs destructive actions with basename-only workspace identity", async () => {
     const user = userEvent.setup();
 
     render(
@@ -359,7 +359,7 @@ describe("WorkspaceRepositoryAction", () => {
     await user.click(screen.getByRole("button", { name: "Delete" }));
 
     await waitFor(() => {
-      expect(mockDeleteWorkspace).toHaveBeenCalledWith("demo-fork", "delete", "/tmp/teams/second/demo-fork");
+      expect(mockDeleteWorkspace).toHaveBeenCalledWith("demo-fork", "delete");
     });
   });
 });

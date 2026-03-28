@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,19 +24,23 @@ func TestForkWorkspaceService(t *testing.T) {
 	}{
 		{
 			name:        "forkFromRootWorkspace",
+			workspace:   "",
 			goalContent: "---\nflow: |\n  \"agent1\" -> \"agent2\"\n---\n# Test Goal",
-			setupFunc: func(t *testing.T, rootDir string) string { //nolint:thelper
+			setupFunc: func(t *testing.T, rootDir string) string {
+				t.Helper()
 				workspacePath := filepath.Join(rootDir, "root-workspace")
-				require.NoError(t, os.MkdirAll(workspacePath, 0755))
+				require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 				require.NoError(t, initializeWorkspace(workspacePath))
 
 				goalPath := filepath.Join(workspacePath, "GOAL.md")
-				require.NoError(t, os.WriteFile(goalPath, []byte("initial goal"), 0644))
+				require.NoError(t, os.WriteFile(goalPath, []byte("initial goal"), 0o644))
 
 				return workspacePath
 			},
-			wantErr: false,
-			validate: func(t *testing.T, _ string, result forkWorkspaceResult) { //nolint:thelper
+			wantErr:     false,
+			errContains: "",
+			validate: func(t *testing.T, _ string, result forkWorkspaceResult) {
+				t.Helper()
 				assert.NotEmpty(t, result.Name)
 				assert.DirExists(t, result.Dir)
 				assert.Equal(t, "root-workspace", result.Parent)
@@ -48,58 +52,67 @@ func TestForkWorkspaceService(t *testing.T) {
 		},
 		{
 			name:        "forkFromForkWorkspace",
+			workspace:   "",
 			goalContent: "---\nflow: |\n  \"agent1\" -> \"agent2\"\n---\n# Test Goal",
-			setupFunc: func(t *testing.T, rootDir string) string { //nolint:thelper
+			setupFunc: func(t *testing.T, rootDir string) string {
+				t.Helper()
 				rootPath := filepath.Join(rootDir, "root-workspace")
-				require.NoError(t, os.MkdirAll(rootPath, 0755))
+				require.NoError(t, os.MkdirAll(rootPath, 0o755))
 				require.NoError(t, initializeWorkspace(rootPath))
 
 				forkPath := filepath.Join(rootDir, "fork-workspace")
-				require.NoError(t, os.MkdirAll(forkPath, 0755))
+				require.NoError(t, os.MkdirAll(forkPath, 0o755))
 				require.NoError(t, unpackSkeleton(forkPath))
 				require.NoError(t, addGitExclude(forkPath))
 
-				require.NoError(t, os.MkdirAll(filepath.Join(forkPath, ".jj"), 0755))
+				require.NoError(t, os.MkdirAll(filepath.Join(forkPath, ".jj"), 0o755))
 				repoFile := filepath.Join(forkPath, ".jj", "repo")
-				require.NoError(t, os.WriteFile(repoFile, []byte(rootPath), 0644))
+				require.NoError(t, os.WriteFile(repoFile, []byte(rootPath), 0o644))
 
 				return forkPath
 			},
 			wantErr:     true,
 			errContains: "forks cannot create new forks",
+			validate:    nil,
 		},
 		{
 			name:        "forkWithEmptyGoalContent",
+			workspace:   "",
 			goalContent: "",
-			setupFunc: func(t *testing.T, rootDir string) string { //nolint:thelper
+			setupFunc: func(t *testing.T, rootDir string) string {
+				t.Helper()
 				workspacePath := filepath.Join(rootDir, "root-workspace")
-				require.NoError(t, os.MkdirAll(workspacePath, 0755))
+				require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 				require.NoError(t, initializeWorkspace(workspacePath))
 
 				return workspacePath
 			},
 			wantErr:     true,
 			errContains: "GOAL.md must have content describing the goal",
+			validate:    nil,
 		},
 		{
 			name:        "forkWithOnlyFrontmatter",
+			workspace:   "",
 			goalContent: "---\nflow: |\n  \"agent1\" -> \"agent2\"\n---\n",
-			setupFunc: func(t *testing.T, rootDir string) string { //nolint:thelper
+			setupFunc: func(t *testing.T, rootDir string) string {
+				t.Helper()
 				workspacePath := filepath.Join(rootDir, "root-workspace")
-				require.NoError(t, os.MkdirAll(workspacePath, 0755))
+				require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 				require.NoError(t, initializeWorkspace(workspacePath))
 
 				return workspacePath
 			},
 			wantErr:     true,
 			errContains: "GOAL.md must have content describing the goal",
+			validate:    nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
+			server := NewServer(rootDir, newTestServerPaths(), "")
 
 			var workspacePath string
 			if tt.setupFunc != nil {
@@ -128,10 +141,10 @@ func TestForkExternalWorkspaceSiblingPlacement(t *testing.T) {
 	sgaiRoot := t.TempDir()
 	externalParent := t.TempDir()
 	externalRepo := filepath.Join(externalParent, "my-external-repo")
-	require.NoError(t, os.MkdirAll(externalRepo, 0755))
+	require.NoError(t, os.MkdirAll(externalRepo, 0o755))
 	require.NoError(t, initializeWorkspace(externalRepo))
 
-	server := NewServer(sgaiRoot, serverPaths{}, "")
+	server := NewServer(sgaiRoot, newTestServerPaths(), "")
 	server.mu.Lock()
 	server.externalDirs[resolveSymlinks(externalRepo)] = true
 	server.mu.Unlock()
@@ -154,15 +167,17 @@ func TestDeleteWorkspaceService(t *testing.T) {
 	}{
 		{
 			name: "deleteExistingWorkspace",
-			setupFunc: func(t *testing.T, rootDir string) string { //nolint:thelper
+			setupFunc: func(t *testing.T, rootDir string) string {
+				t.Helper()
 				workspacePath := filepath.Join(rootDir, "test-workspace")
-				require.NoError(t, os.MkdirAll(workspacePath, 0755))
+				require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 				require.NoError(t, initializeWorkspace(workspacePath))
 				return workspacePath
 			},
 			wantErr:     true,
 			errContains: "workspace operation is not allowed",
-			validate: func(t *testing.T, workspacePath string) { //nolint:thelper
+			validate: func(t *testing.T, workspacePath string) {
+				t.Helper()
 				assert.DirExists(t, workspacePath)
 			},
 		},
@@ -181,7 +196,7 @@ func TestDeleteWorkspaceService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
+			server := NewServer(rootDir, newTestServerPaths(), "")
 
 			workspacePath := tt.setupFunc(t, rootDir)
 
@@ -215,9 +230,10 @@ func TestDeleteForkService(t *testing.T) {
 	}{
 		{
 			name: "deleteForkFromNonRootWorkspace",
-			setupFunc: func(t *testing.T, rootDir string) (string, string) { //nolint:thelper
+			setupFunc: func(t *testing.T, rootDir string) (string, string) {
+				t.Helper()
 				workspacePath := filepath.Join(rootDir, "standalone-workspace")
-				require.NoError(t, os.MkdirAll(workspacePath, 0755))
+				require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 				require.NoError(t, initializeWorkspace(workspacePath))
 
 				return workspacePath, workspacePath
@@ -225,19 +241,21 @@ func TestDeleteForkService(t *testing.T) {
 			confirm:     true,
 			wantErr:     true,
 			errContains: "workspace is not a root",
+			validate:    nil,
 		},
 		{
 			name: "deleteForkWithoutConfirmation",
-			setupFunc: func(t *testing.T, rootDir string) (string, string) { //nolint:thelper
+			setupFunc: func(t *testing.T, rootDir string) (string, string) {
+				t.Helper()
 				rootPath := filepath.Join(rootDir, "root-workspace")
-				require.NoError(t, os.MkdirAll(rootPath, 0755))
+				require.NoError(t, os.MkdirAll(rootPath, 0o755))
 				require.NoError(t, initializeWorkspace(rootPath))
-				require.NoError(t, os.MkdirAll(filepath.Join(rootPath, ".jj", "repo"), 0755))
+				require.NoError(t, os.MkdirAll(filepath.Join(rootPath, ".jj", "repo"), 0o755))
 				goalPath := filepath.Join(rootPath, "GOAL.md")
-				require.NoError(t, os.WriteFile(goalPath, []byte("# Test Goal"), 0644))
+				require.NoError(t, os.WriteFile(goalPath, []byte("# Test Goal"), 0o644))
 
 				forkPath := filepath.Join(rootDir, "fork-workspace")
-				require.NoError(t, os.MkdirAll(forkPath, 0755))
+				require.NoError(t, os.MkdirAll(forkPath, 0o755))
 				require.NoError(t, initializeWorkspace(forkPath))
 
 				return rootPath, forkPath
@@ -245,16 +263,18 @@ func TestDeleteForkService(t *testing.T) {
 			confirm:     false,
 			wantErr:     true,
 			errContains: "workspace is not a root",
+			validate:    nil,
 		},
 		{
 			name: "deleteNonExistentFork",
-			setupFunc: func(t *testing.T, rootDir string) (string, string) { //nolint:thelper
+			setupFunc: func(t *testing.T, rootDir string) (string, string) {
+				t.Helper()
 				rootPath := filepath.Join(rootDir, "root-workspace")
-				require.NoError(t, os.MkdirAll(rootPath, 0755))
+				require.NoError(t, os.MkdirAll(rootPath, 0o755))
 				require.NoError(t, initializeWorkspace(rootPath))
-				require.NoError(t, os.MkdirAll(filepath.Join(rootPath, ".jj", "repo"), 0755))
+				require.NoError(t, os.MkdirAll(filepath.Join(rootPath, ".jj", "repo"), 0o755))
 				goalPath := filepath.Join(rootPath, "GOAL.md")
-				require.NoError(t, os.WriteFile(goalPath, []byte("# Test Goal"), 0644))
+				require.NoError(t, os.WriteFile(goalPath, []byte("# Test Goal"), 0o644))
 
 				forkPath := filepath.Join(rootDir, "non-existent-fork")
 				return rootPath, forkPath
@@ -262,19 +282,21 @@ func TestDeleteForkService(t *testing.T) {
 			confirm:     true,
 			wantErr:     true,
 			errContains: "workspace is not a root",
+			validate:    nil,
 		},
 		{
 			name: "deleteForkThatIsNotAFork",
-			setupFunc: func(t *testing.T, rootDir string) (string, string) { //nolint:thelper
+			setupFunc: func(t *testing.T, rootDir string) (string, string) {
+				t.Helper()
 				rootPath := filepath.Join(rootDir, "root-workspace")
-				require.NoError(t, os.MkdirAll(rootPath, 0755))
+				require.NoError(t, os.MkdirAll(rootPath, 0o755))
 				require.NoError(t, initializeWorkspace(rootPath))
-				require.NoError(t, os.MkdirAll(filepath.Join(rootPath, ".jj", "repo"), 0755))
+				require.NoError(t, os.MkdirAll(filepath.Join(rootPath, ".jj", "repo"), 0o755))
 				goalPath := filepath.Join(rootPath, "GOAL.md")
-				require.NoError(t, os.WriteFile(goalPath, []byte("# Test Goal"), 0644))
+				require.NoError(t, os.WriteFile(goalPath, []byte("# Test Goal"), 0o644))
 
 				standalonePath := filepath.Join(rootDir, "standalone-workspace")
-				require.NoError(t, os.MkdirAll(standalonePath, 0755))
+				require.NoError(t, os.MkdirAll(standalonePath, 0o755))
 				require.NoError(t, initializeWorkspace(standalonePath))
 
 				return rootPath, standalonePath
@@ -282,17 +304,18 @@ func TestDeleteForkService(t *testing.T) {
 			confirm:     true,
 			wantErr:     true,
 			errContains: "workspace is not a root",
+			validate:    nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
+			server := NewServer(rootDir, newTestServerPaths(), "")
 
 			workspacePath, forkPath := tt.setupFunc(t, rootDir)
 
-			result, err := server.deleteForkService(workspacePath, forkPath, true)
+			result, err := server.deleteForkService(workspacePath, forkPath, tt.confirm)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -321,19 +344,22 @@ func TestGetGoalService(t *testing.T) {
 	}{
 		{
 			name: "getExistingGoal",
-			setupFunc: func(t *testing.T, rootDir string) string { //nolint:thelper
+			setupFunc: func(t *testing.T, rootDir string) string {
+				t.Helper()
 				workspacePath := filepath.Join(rootDir, "test-workspace")
-				require.NoError(t, os.MkdirAll(workspacePath, 0755))
+				require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 				require.NoError(t, initializeWorkspace(workspacePath))
 
 				goalContent := "---\nflow: |\n  \"agent1\" -> \"agent2\"\n---\n# Test Goal"
 				goalPath := filepath.Join(workspacePath, "GOAL.md")
-				require.NoError(t, os.WriteFile(goalPath, []byte(goalContent), 0644))
+				require.NoError(t, os.WriteFile(goalPath, []byte(goalContent), 0o644))
 
 				return workspacePath
 			},
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, result getGoalResult) {
+				t.Helper()
 				assert.Contains(t, result.Content, "# Test Goal")
 			},
 		},
@@ -344,13 +370,14 @@ func TestGetGoalService(t *testing.T) {
 			},
 			wantErr:     true,
 			errContains: "failed to read GOAL.md",
+			validate:    nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
+			server := NewServer(rootDir, newTestServerPaths(), "")
 
 			workspacePath := tt.setupFunc(t, rootDir)
 
@@ -384,18 +411,21 @@ func TestUpdateGoalService(t *testing.T) {
 		{
 			name:    "updateExistingGoal",
 			content: "---\nflow: |\n  \"agent1\" -> \"agent2\"\n---\n# Updated Goal",
-			setupFunc: func(t *testing.T, rootDir string) string { //nolint:thelper
+			setupFunc: func(t *testing.T, rootDir string) string {
+				t.Helper()
 				workspacePath := filepath.Join(rootDir, "test-workspace")
-				require.NoError(t, os.MkdirAll(workspacePath, 0755))
+				require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 				require.NoError(t, initializeWorkspace(workspacePath))
 
 				goalPath := filepath.Join(workspacePath, "GOAL.md")
-				require.NoError(t, os.WriteFile(goalPath, []byte("initial goal"), 0644))
+				require.NoError(t, os.WriteFile(goalPath, []byte("initial goal"), 0o644))
 
 				return workspacePath
 			},
-			wantErr: false,
-			validate: func(t *testing.T, workspacePath string, result updateGoalResult) { //nolint:thelper
+			wantErr:     false,
+			errContains: "",
+			validate: func(t *testing.T, workspacePath string, result updateGoalResult) {
+				t.Helper()
 				assert.True(t, result.Updated)
 				assert.Equal(t, "test-workspace", result.Workspace)
 
@@ -408,21 +438,23 @@ func TestUpdateGoalService(t *testing.T) {
 		{
 			name:    "updateGoalWithEmptyContent",
 			content: "",
-			setupFunc: func(t *testing.T, rootDir string) string { //nolint:thelper
+			setupFunc: func(t *testing.T, rootDir string) string {
+				t.Helper()
 				workspacePath := filepath.Join(rootDir, "test-workspace")
-				require.NoError(t, os.MkdirAll(workspacePath, 0755))
+				require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 				require.NoError(t, initializeWorkspace(workspacePath))
 				return workspacePath
 			},
 			wantErr:     true,
 			errContains: "content cannot be empty",
+			validate:    nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
+			server := NewServer(rootDir, newTestServerPaths(), "")
 
 			workspacePath := tt.setupFunc(t, rootDir)
 
@@ -454,28 +486,34 @@ func TestTogglePinService(t *testing.T) {
 	}{
 		{
 			name: "togglePinOn",
-			setupFunc: func(t *testing.T, rootDir string) string { //nolint:thelper
+			setupFunc: func(t *testing.T, rootDir string) string {
+				t.Helper()
 				workspacePath := filepath.Join(rootDir, "test-workspace")
-				require.NoError(t, os.MkdirAll(workspacePath, 0755))
+				require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 				require.NoError(t, initializeWorkspace(workspacePath))
 				return workspacePath
 			},
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, server *Server, workspacePath string, result togglePinResult) {
+				t.Helper()
 				assert.True(t, result.Pinned)
 				assert.True(t, server.isPinned(workspacePath))
 			},
 		},
 		{
 			name: "togglePinOff",
-			setupFunc: func(t *testing.T, rootDir string) string { //nolint:thelper
+			setupFunc: func(t *testing.T, rootDir string) string {
+				t.Helper()
 				workspacePath := filepath.Join(rootDir, "test-workspace")
-				require.NoError(t, os.MkdirAll(workspacePath, 0755))
+				require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 				require.NoError(t, initializeWorkspace(workspacePath))
 				return workspacePath
 			},
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, server *Server, workspacePath string, result togglePinResult) {
+				t.Helper()
 				assert.True(t, result.Pinned)
 
 				result2, err := server.togglePinService(workspacePath)
@@ -489,7 +527,7 @@ func TestTogglePinService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
+			server := NewServer(rootDir, newTestServerPaths(), "")
 
 			workspacePath := tt.setupFunc(t, rootDir)
 
@@ -522,21 +560,21 @@ func TestFailForkWorkspaceSetup(t *testing.T) {
 		{
 			name:        "failWithSetupError",
 			message:     "failed to unpack skeleton",
-			errCause:    fmt.Errorf("skeleton unpack failed"),
+			errCause:    errors.New("skeleton unpack failed"),
 			wantErr:     true,
 			errContains: "failed to unpack skeleton",
 		},
 		{
 			name:        "failWithGitExcludeError",
 			message:     "failed to add git exclude",
-			errCause:    fmt.Errorf("git exclude failed"),
+			errCause:    errors.New("git exclude failed"),
 			wantErr:     true,
 			errContains: "failed to add git exclude",
 		},
 		{
 			name:        "failWithGoalWriteError",
 			message:     "failed to create GOAL.md",
-			errCause:    fmt.Errorf("goal write failed"),
+			errCause:    errors.New("goal write failed"),
 			wantErr:     true,
 			errContains: "failed to create GOAL.md",
 		},
@@ -547,10 +585,10 @@ func TestFailForkWorkspaceSetup(t *testing.T) {
 			rootDir := t.TempDir()
 
 			workspacePath := filepath.Join(rootDir, "root-workspace")
-			require.NoError(t, os.MkdirAll(workspacePath, 0755))
+			require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 
 			forkPath := filepath.Join(rootDir, "fork-workspace")
-			require.NoError(t, os.MkdirAll(forkPath, 0755))
+			require.NoError(t, os.MkdirAll(forkPath, 0o755))
 
 			err := failForkWorkspaceSetup(workspacePath, forkPath, tt.message, tt.errCause)
 
@@ -574,12 +612,14 @@ func TestRollbackForkWorkspaceCreation(t *testing.T) {
 	}{
 		{
 			name: "rollbackForkWithoutJjRepo",
-			setupFunc: func(t *testing.T, _, forkPath string) { //nolint:thelper
-				require.NoError(t, os.MkdirAll(forkPath, 0755))
+			setupFunc: func(t *testing.T, _, forkPath string) {
+				t.Helper()
+				require.NoError(t, os.MkdirAll(forkPath, 0o755))
 			},
 			wantErr:     true,
 			errContains: "failed to forget fork workspace during rollback",
-			validate: func(t *testing.T, forkPath string) { //nolint:thelper
+			validate: func(t *testing.T, forkPath string) {
+				t.Helper()
 				assert.NoDirExists(t, forkPath)
 			},
 		},
@@ -589,6 +629,7 @@ func TestRollbackForkWorkspaceCreation(t *testing.T) {
 			},
 			wantErr:     true,
 			errContains: "failed to forget fork workspace during rollback",
+			validate:    nil,
 		},
 	}
 
@@ -597,7 +638,7 @@ func TestRollbackForkWorkspaceCreation(t *testing.T) {
 			rootDir := t.TempDir()
 
 			workspacePath := filepath.Join(rootDir, "root-workspace")
-			require.NoError(t, os.MkdirAll(workspacePath, 0755))
+			require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 
 			forkPath := filepath.Join(rootDir, "fork-workspace")
 
@@ -621,84 +662,6 @@ func TestRollbackForkWorkspaceCreation(t *testing.T) {
 	}
 }
 
-func TestDeleteForkByPathService(t *testing.T) {
-	t.Skip("Integration test - requires real jj repository with multiple workspaces")
-	tests := []struct {
-		name        string
-		setupFunc   func(*testing.T, string) string
-		wantErr     bool
-		errContains string
-		validate    func(*testing.T, string, deleteForkResult)
-	}{
-		{
-			name: "deleteForkByPath",
-			setupFunc: func(t *testing.T, rootDir string) string { //nolint:thelper
-				rootPath := filepath.Join(rootDir, "root-workspace")
-				require.NoError(t, os.MkdirAll(rootPath, 0755))
-				require.NoError(t, os.MkdirAll(filepath.Join(rootPath, ".sgai"), 0755))
-				require.NoError(t, os.MkdirAll(filepath.Join(rootPath, ".jj"), 0755))
-
-				forkPath := filepath.Join(rootDir, "fork-workspace")
-				require.NoError(t, os.MkdirAll(forkPath, 0755))
-				require.NoError(t, os.MkdirAll(filepath.Join(forkPath, ".sgai"), 0755))
-				require.NoError(t, os.MkdirAll(filepath.Join(forkPath, ".jj"), 0755))
-				repoFile := filepath.Join(forkPath, ".jj", "repo")
-				require.NoError(t, os.WriteFile(repoFile, []byte(rootPath), 0644))
-
-				return forkPath
-			},
-			wantErr: false,
-			validate: func(t *testing.T, _ string, result deleteForkResult) { //nolint:thelper
-				assert.True(t, result.Deleted)
-				assert.Contains(t, result.Message, "fork deleted successfully")
-			},
-		},
-		{
-			name: "deleteForkByPathWithInvalidFork",
-			setupFunc: func(_ *testing.T, rootDir string) string { //nolint:thelper
-				return filepath.Join(rootDir, "non-existent-fork")
-			},
-			wantErr:     true,
-			errContains: "could not determine root workspace for fork",
-		},
-		{
-			name: "deleteForkByPathWithStandaloneWorkspace",
-			setupFunc: func(t *testing.T, rootDir string) string { //nolint:thelper
-				workspacePath := filepath.Join(rootDir, "standalone-workspace")
-				require.NoError(t, os.MkdirAll(workspacePath, 0755))
-				require.NoError(t, initializeWorkspace(workspacePath))
-				return workspacePath
-			},
-			wantErr:     true,
-			errContains: "could not determine root workspace for fork",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
-
-			forkPath := tt.setupFunc(t, rootDir)
-
-			result, err := server.deleteForkByPathService(forkPath)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errContains != "" {
-					assert.Contains(t, err.Error(), tt.errContains)
-				}
-				return
-			}
-
-			require.NoError(t, err)
-			if tt.validate != nil {
-				tt.validate(t, forkPath, result)
-			}
-		})
-	}
-}
-
 func TestDeleteMessageService(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -712,17 +675,20 @@ func TestDeleteMessageService(t *testing.T) {
 			name:      "deleteNonExistentMessage",
 			messageID: 999,
 			setupFunc: func(t *testing.T, workspacePath string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			wantErr:     true,
 			errContains: "message not found",
+			validate:    nil,
 		},
 		{
 			name:      "deleteExistingMessage",
 			messageID: 1,
 			setupFunc: func(t *testing.T, workspacePath string) {
+				t.Helper()
 				sgaiDir := filepath.Join(workspacePath, ".sgai")
-				require.NoError(t, os.MkdirAll(sgaiDir, 0755))
+				require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 
 				stateData := `{
 					"status": "working",
@@ -738,10 +704,12 @@ func TestDeleteMessageService(t *testing.T) {
 					]
 				}`
 				statePath := filepath.Join(sgaiDir, "state.json")
-				require.NoError(t, os.WriteFile(statePath, []byte(stateData), 0644))
+				require.NoError(t, os.WriteFile(statePath, []byte(stateData), 0o644))
 			},
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, result deleteMessageResult) {
+				t.Helper()
 				assert.True(t, result.Deleted)
 				assert.Equal(t, 1, result.ID)
 			},
@@ -750,8 +718,9 @@ func TestDeleteMessageService(t *testing.T) {
 			name:      "deleteReadMessage",
 			messageID: 2,
 			setupFunc: func(t *testing.T, workspacePath string) {
+				t.Helper()
 				sgaiDir := filepath.Join(workspacePath, ".sgai")
-				require.NoError(t, os.MkdirAll(sgaiDir, 0755))
+				require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 
 				stateData := `{
 					"status": "working",
@@ -769,10 +738,12 @@ func TestDeleteMessageService(t *testing.T) {
 					]
 				}`
 				statePath := filepath.Join(sgaiDir, "state.json")
-				require.NoError(t, os.WriteFile(statePath, []byte(stateData), 0644))
+				require.NoError(t, os.WriteFile(statePath, []byte(stateData), 0o644))
 			},
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, result deleteMessageResult) {
+				t.Helper()
 				assert.True(t, result.Deleted)
 				assert.Equal(t, 2, result.ID)
 			},
@@ -782,10 +753,10 @@ func TestDeleteMessageService(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
+			server := NewServer(rootDir, newTestServerPaths(), "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
-			require.NoError(t, os.MkdirAll(workspacePath, 0755))
+			require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 			require.NoError(t, initializeWorkspace(workspacePath))
 
 			tt.setupFunc(t, workspacePath)
@@ -810,7 +781,7 @@ func TestDeleteMessageService(t *testing.T) {
 
 func TestDeleteForkByPathServiceNonExistent(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir, serverPaths{}, "")
+	server := NewServer(rootDir, newTestServerPaths(), "")
 
 	forkPath := filepath.Join(rootDir, "non-existent-fork")
 	_, err := server.deleteForkByPathService(forkPath)
@@ -819,10 +790,10 @@ func TestDeleteForkByPathServiceNonExistent(t *testing.T) {
 
 func TestDeleteForkByPathServiceStandalone(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir, serverPaths{}, "")
+	server := NewServer(rootDir, newTestServerPaths(), "")
 
 	workspacePath := filepath.Join(rootDir, "standalone-workspace")
-	require.NoError(t, os.MkdirAll(workspacePath, 0755))
+	require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 	require.NoError(t, initializeWorkspace(workspacePath))
 
 	_, err := server.deleteForkByPathService(workspacePath)
@@ -888,18 +859,18 @@ func TestDeleteMessageServiceNotFoundError(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws-delmsg-nf")
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
-	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{})
+	_, errCoord := state.NewCoordinatorWith(sp, newTestWorkflow())
 	require.NoError(t, errCoord)
 	_, errDelete := server.deleteMessageService(wsDir, 999)
-	assert.Error(t, errDelete)
+	require.Error(t, errDelete)
 }
 
 func TestGenerateRandomForkName(t *testing.T) {
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		name := generateRandomForkName()
 		assert.NotEmpty(t, name)
-		assert.True(t, len(name) > 5, "name should be longer than 5 characters")
-		assert.True(t, strings.Contains(name, "-"), "name should contain a hyphen")
+		assert.Greater(t, len(name), 5, "name should be longer than 5 characters")
+		assert.Contains(t, name, "-", "name should contain a hyphen")
 		parts := strings.Split(name, "-")
 		assert.Len(t, parts, 3, "name should have 3 parts separated by hyphens")
 	}
@@ -907,19 +878,19 @@ func TestGenerateRandomForkName(t *testing.T) {
 
 func TestGenerateRandomForkNameUniqueness(t *testing.T) {
 	names := make(map[string]bool)
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		name := generateRandomForkName()
 		names[name] = true
 	}
-	assert.True(t, len(names) > 100, "should generate many unique names")
+	assert.Greater(t, len(names), 100, "should generate many unique names")
 }
 
 func TestUpdateGoalServiceInvalidatesSVGCache(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir, serverPaths{}, "")
+	server := NewServer(rootDir, newTestServerPaths(), "")
 	workspacePath := filepath.Join(rootDir, "cache-ws")
-	require.NoError(t, os.MkdirAll(workspacePath, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(workspacePath, "GOAL.md"), []byte("# Old"), 0644))
+	require.NoError(t, os.MkdirAll(workspacePath, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workspacePath, "GOAL.md"), []byte("# Old"), 0o644))
 	server.svgCache.set(workspacePath+"|coordinator", "<svg>old</svg>")
 	server.svgCache.set(workspacePath+"|agent1", "<svg>old2</svg>")
 	server.svgCache.set("/other/path|coordinator", "<svg>other</svg>")
@@ -936,9 +907,9 @@ func TestUpdateGoalServiceInvalidatesSVGCache(t *testing.T) {
 
 func TestTogglePinServiceSuccess(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir, serverPaths{}, "")
+	server := NewServer(rootDir, newTestServerPaths(), "")
 	workspacePath := filepath.Join(rootDir, "pin-ws")
-	require.NoError(t, os.MkdirAll(workspacePath, 0755))
+	require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 
 	result, err := server.togglePinService(workspacePath)
 	require.NoError(t, err)
@@ -951,10 +922,10 @@ func TestTogglePinServiceSuccess(t *testing.T) {
 
 func TestDeleteWorkspaceServiceSuccess(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir, serverPaths{}, "")
+	server := NewServer(rootDir, newTestServerPaths(), "")
 	workspacePath := filepath.Join(rootDir, "delete-ws")
-	require.NoError(t, os.MkdirAll(workspacePath, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(workspacePath, "GOAL.md"), []byte("# Goal"), 0644))
+	require.NoError(t, os.MkdirAll(workspacePath, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workspacePath, "GOAL.md"), []byte("# Goal"), 0o644))
 	server.mu.Lock()
 	server.pinnedDirs[resolveSymlinks(workspacePath)] = true
 	server.mu.Unlock()
@@ -965,5 +936,5 @@ func TestDeleteWorkspaceServiceSuccess(t *testing.T) {
 	assert.False(t, result.Deleted)
 
 	_, errStat := os.Stat(workspacePath)
-	assert.NoError(t, errStat)
+	require.NoError(t, errStat)
 }

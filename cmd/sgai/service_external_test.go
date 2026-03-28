@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -38,7 +37,7 @@ func TestLoadExternalDirs(t *testing.T) {
 		server, _ := setupTestServer(t)
 		server.externalConfigDir = t.TempDir()
 		err := server.loadExternalDirs()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 	})
 
 	t.Run("validFile", func(t *testing.T) {
@@ -48,10 +47,10 @@ func TestLoadExternalDirs(t *testing.T) {
 
 		externalDir := t.TempDir()
 		data := `["` + externalDir + `"]`
-		require.NoError(t, os.WriteFile(filepath.Join(configDir, "external.json"), []byte(data), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "external.json"), []byte(data), 0o644))
 
 		err := server.loadExternalDirs()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 	})
 
 	t.Run("invalidJSON", func(t *testing.T) {
@@ -59,10 +58,10 @@ func TestLoadExternalDirs(t *testing.T) {
 		configDir := t.TempDir()
 		server.externalConfigDir = configDir
 
-		require.NoError(t, os.WriteFile(filepath.Join(configDir, "external.json"), []byte(`{invalid}`), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "external.json"), []byte(`{invalid}`), 0o644))
 
 		err := server.loadExternalDirs()
-		assert.Error(t, err)
+		require.Error(t, err)
 	})
 
 	t.Run("keepsUnreadableAttachedWorkspace", func(t *testing.T) {
@@ -142,16 +141,11 @@ func TestSaveExternalDirs(t *testing.T) {
 	server.mu.Unlock()
 
 	err := server.saveExternalDirs()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	data, errRead := os.ReadFile(filepath.Join(configDir, "external.json"))
 	require.NoError(t, errRead)
 	assert.Contains(t, string(data), "/some/path")
-}
-
-func TestIsExternalWorkspaceNotExternal(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	assert.False(t, srv.isExternalWorkspace("/some/random/path"))
 }
 
 func TestAttachExternalWorkspaceService(t *testing.T) {
@@ -165,11 +159,15 @@ func TestAttachExternalWorkspaceService(t *testing.T) {
 	}{
 		{
 			name: "attachValidExternalDirectory",
+			path: "",
 			setupFunc: func(t *testing.T, _, externalPath string) {
-				require.NoError(t, os.MkdirAll(externalPath, 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(externalPath, 0o755))
 			},
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, externalPath string, result attachExternalResult) {
+				t.Helper()
 				assert.NotEmpty(t, result.Name)
 				assert.Equal(t, externalPath, result.Dir)
 			},
@@ -181,6 +179,7 @@ func TestAttachExternalWorkspaceService(t *testing.T) {
 			},
 			wantErr:     true,
 			errContains: "path must be absolute",
+			validate:    nil,
 		},
 		{
 			name: "attachNonExistentDirectory",
@@ -189,38 +188,50 @@ func TestAttachExternalWorkspaceService(t *testing.T) {
 			},
 			wantErr:     true,
 			errContains: "directory does not exist",
+			validate:    nil,
 		},
 		{
 			name: "attachFileNotDirectory",
+			path: "",
 			setupFunc: func(t *testing.T, _, externalPath string) {
-				require.NoError(t, os.WriteFile(externalPath, []byte("test"), 0644))
+				t.Helper()
+				require.NoError(t, os.WriteFile(externalPath, []byte("test"), 0o644))
 			},
 			wantErr:     true,
 			errContains: "path is not a directory",
+			validate:    nil,
 		},
 		{
 			name: "attachDirectoryUnderRoot",
+			path: "",
 			setupFunc: func(t *testing.T, _, externalPath string) {
-				require.NoError(t, os.MkdirAll(externalPath, 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(externalPath, 0o755))
 			},
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, externalPath string, result attachExternalResult) {
+				t.Helper()
 				assert.Equal(t, externalPath, result.Dir)
 			},
 		},
 		{
 			name: "attachPersistsExternalDirectory",
+			path: "",
 			setupFunc: func(t *testing.T, _, externalPath string) {
-				require.NoError(t, os.MkdirAll(externalPath, 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(externalPath, 0o755))
 			},
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
+			validate:    nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
+			server := NewServer(rootDir, newTestServerPaths(), "")
 			server.externalConfigDir = t.TempDir()
 
 			var externalPath string
@@ -259,7 +270,7 @@ func TestAttachExternalWorkspaceService(t *testing.T) {
 
 func TestAttachExternalWorkspaceServiceAllowsDuplicateBasenames(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir, serverPaths{}, "")
+	server := NewServer(rootDir, newTestServerPaths(), "")
 	server.externalConfigDir = t.TempDir()
 
 	baseDir := t.TempDir()
@@ -291,12 +302,15 @@ func TestDetachExternalWorkspaceService(t *testing.T) {
 		{
 			name: "detachAttachedWorkspace",
 			setupFunc: func(t *testing.T, _ string, externalPath string, server *Server) {
-				require.NoError(t, os.MkdirAll(externalPath, 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(externalPath, 0o755))
 				_, err := server.attachExternalWorkspaceService(externalPath)
 				require.NoError(t, err)
 			},
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, result detachExternalResult) {
+				t.Helper()
 				assert.True(t, result.Detached)
 				assert.Equal(t, "external workspace detached", result.Message)
 			},
@@ -304,29 +318,34 @@ func TestDetachExternalWorkspaceService(t *testing.T) {
 		{
 			name: "detachRemovesPersistedExternalDirectory",
 			setupFunc: func(t *testing.T, _ string, externalPath string, server *Server) {
-				require.NoError(t, os.MkdirAll(externalPath, 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(externalPath, 0o755))
 				_, err := server.attachExternalWorkspaceService(externalPath)
 				require.NoError(t, err)
 			},
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, result detachExternalResult) {
+				t.Helper()
 				assert.True(t, result.Detached)
 			},
 		},
 		{
 			name: "detachNonAttachedWorkspace",
 			setupFunc: func(t *testing.T, _ string, externalPath string, _ *Server) {
-				require.NoError(t, os.MkdirAll(externalPath, 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(externalPath, 0o755))
 			},
 			wantErr:     true,
 			errContains: "directory is not attached as an external workspace",
+			validate:    nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
+			server := NewServer(rootDir, newTestServerPaths(), "")
 			server.externalConfigDir = t.TempDir()
 
 			externalPath := filepath.Join(t.TempDir(), "external-workspace")
@@ -357,7 +376,7 @@ func TestDetachExternalWorkspaceService(t *testing.T) {
 
 func TestAttachExternalWorkspaceServiceRestoresStateOnSaveFailure(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir, serverPaths{}, "")
+	server := NewServer(rootDir, newTestServerPaths(), "")
 
 	blockingPath := filepath.Join(t.TempDir(), "external-config-blocker")
 	require.NoError(t, os.WriteFile(blockingPath, []byte("block"), 0o644))
@@ -377,7 +396,7 @@ func TestAttachExternalWorkspaceServiceRestoresStateOnSaveFailure(t *testing.T) 
 
 func TestDetachExternalWorkspaceServiceRestoresStateOnSaveFailure(t *testing.T) {
 	rootDir := t.TempDir()
-	server := NewServer(rootDir, serverPaths{}, "")
+	server := NewServer(rootDir, newTestServerPaths(), "")
 	server.externalConfigDir = t.TempDir()
 
 	externalPath := filepath.Join(t.TempDir(), "external-workspace")
@@ -407,7 +426,8 @@ func TestIsExternalWorkspace(t *testing.T) {
 		{
 			name: "isExternalTrue",
 			setupFunc: func(t *testing.T, _ string, externalPath string, server *Server) {
-				require.NoError(t, os.MkdirAll(externalPath, 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(externalPath, 0o755))
 				_, err := server.attachExternalWorkspaceService(externalPath)
 				require.NoError(t, err)
 			},
@@ -416,7 +436,8 @@ func TestIsExternalWorkspace(t *testing.T) {
 		{
 			name: "isExternalFalse",
 			setupFunc: func(t *testing.T, _ string, externalPath string, _ *Server) {
-				require.NoError(t, os.MkdirAll(externalPath, 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(externalPath, 0o755))
 			},
 			expected: false,
 		},
@@ -425,7 +446,7 @@ func TestIsExternalWorkspace(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
+			server := NewServer(rootDir, newTestServerPaths(), "")
 
 			externalPath := filepath.Join(os.TempDir(), "external-workspace")
 			t.Cleanup(func() {
@@ -436,59 +457,6 @@ func TestIsExternalWorkspace(t *testing.T) {
 
 			result := server.isExternalWorkspace(externalPath)
 			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
-func TestDeleteExternalForkService(t *testing.T) {
-	if _, err := exec.LookPath("jj"); err != nil {
-		t.Skip("jj not found in PATH")
-	}
-
-	tests := []struct {
-		name        string
-		setupFunc   func(*testing.T, string, string, *Server)
-		wantErr     bool
-		errContains string
-		validate    func(*testing.T, string, deleteExternalForkResult)
-	}{
-		{
-			name: "deleteExternalFork",
-			setupFunc: func(t *testing.T, _ string, forkPath string, _ *Server) {
-				require.NoError(t, os.MkdirAll(forkPath, 0755))
-				require.NoError(t, os.MkdirAll(filepath.Join(forkPath, ".sgai"), 0755))
-			},
-			wantErr:     true,
-			errContains: "workspace operation is not allowed",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
-
-			forkPath := filepath.Join(os.TempDir(), "external-fork")
-			t.Cleanup(func() {
-				_ = os.RemoveAll(forkPath)
-			})
-
-			tt.setupFunc(t, rootDir, forkPath, server)
-
-			result, err := server.deleteExternalForkService(forkPath)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errContains != "" {
-					assert.Contains(t, err.Error(), tt.errContains)
-				}
-				return
-			}
-
-			require.NoError(t, err)
-			if tt.validate != nil {
-				tt.validate(t, forkPath, result)
-			}
 		})
 	}
 }
@@ -504,13 +472,17 @@ func TestBrowseDirectoriesService(t *testing.T) {
 	}{
 		{
 			name: "browseValidDirectory",
+			path: "",
 			setupFunc: func(t *testing.T, path string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(path, "dir1"), 0755))
-				require.NoError(t, os.MkdirAll(filepath.Join(path, "dir2"), 0755))
-				require.NoError(t, os.WriteFile(filepath.Join(path, "file1.txt"), []byte("test"), 0644))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(path, "dir1"), 0o755))
+				require.NoError(t, os.MkdirAll(filepath.Join(path, "dir2"), 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(path, "file1.txt"), []byte("test"), 0o644))
 			},
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, entries []directoryEntry) {
+				t.Helper()
 				assert.GreaterOrEqual(t, len(entries), 2)
 				for _, entry := range entries {
 					assert.True(t, entry.IsDir)
@@ -525,6 +497,7 @@ func TestBrowseDirectoriesService(t *testing.T) {
 			setupFunc:   func(_ *testing.T, _ string) {},
 			wantErr:     true,
 			errContains: "path must be absolute",
+			validate:    nil,
 		},
 		{
 			name:        "browseNonExistentDirectory",
@@ -532,13 +505,16 @@ func TestBrowseDirectoriesService(t *testing.T) {
 			setupFunc:   func(_ *testing.T, _ string) {},
 			wantErr:     true,
 			errContains: "directory does not exist",
+			validate:    nil,
 		},
 		{
-			name:      "browseEmptyPath",
-			path:      "",
-			setupFunc: func(_ *testing.T, _ string) {},
-			wantErr:   false,
+			name:        "browseEmptyPath",
+			path:        "",
+			setupFunc:   func(_ *testing.T, _ string) {},
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, entries []directoryEntry) {
+				t.Helper()
 				assert.NotNil(t, entries)
 			},
 		},
@@ -577,9 +553,9 @@ func TestBrowseDirectoriesServicePermissionDenied(t *testing.T) {
 	}
 	dir := t.TempDir()
 	restrictedDir := filepath.Join(dir, "restricted")
-	require.NoError(t, os.MkdirAll(restrictedDir, 0755))
-	require.NoError(t, os.Chmod(restrictedDir, 0000))
-	t.Cleanup(func() { _ = os.Chmod(restrictedDir, 0755) })
+	require.NoError(t, os.MkdirAll(restrictedDir, 0o755))
+	require.NoError(t, os.Chmod(restrictedDir, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(restrictedDir, 0o755) })
 
 	_, err := browseDirectoriesService(restrictedDir)
 	require.Error(t, err)
@@ -588,8 +564,8 @@ func TestBrowseDirectoriesServicePermissionDenied(t *testing.T) {
 
 func TestBrowseDirectoriesServiceHiddenDirsExcluded(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".hidden"), 0755))
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "visible"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".hidden"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "visible"), 0o755))
 
 	entries, err := browseDirectoriesService(dir)
 	require.NoError(t, err)
@@ -607,25 +583,28 @@ func TestClassifyWorkspace(t *testing.T) {
 		{
 			name: "classifyStandaloneWorkspace",
 			setupFunc: func(t *testing.T, workspacePath string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			expected: workspaceStandalone,
 		},
 		{
 			name: "classifyRootWorkspace",
 			setupFunc: func(t *testing.T, workspacePath string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".jj", "repo"), 0755))
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".jj", "repo"), 0o755))
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			expected: workspaceRoot,
 		},
 		{
 			name: "classifyForkWorkspace",
 			setupFunc: func(t *testing.T, workspacePath string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".jj"), 0755))
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".jj"), 0o755))
 				repoFile := filepath.Join(workspacePath, ".jj", "repo")
-				require.NoError(t, os.WriteFile(repoFile, []byte("/path/to/parent"), 0644))
-				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0755))
+				require.NoError(t, os.WriteFile(repoFile, []byte("/path/to/parent"), 0o644))
+				require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
 			},
 			expected: workspaceFork,
 		},
@@ -634,10 +613,10 @@ func TestClassifyWorkspace(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootDir := t.TempDir()
-			server := NewServer(rootDir, serverPaths{}, "")
+			server := NewServer(rootDir, newTestServerPaths(), "")
 
 			workspacePath := filepath.Join(rootDir, "test-workspace")
-			require.NoError(t, os.MkdirAll(workspacePath, 0755))
+			require.NoError(t, os.MkdirAll(workspacePath, 0o755))
 			tt.setupFunc(t, workspacePath)
 
 			result := server.classifyWorkspaceCached(workspacePath)

@@ -11,6 +11,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func newConfigTestActionConfig() actionConfig {
+	return actionConfig{
+		Name:        "",
+		Model:       "",
+		Prompt:      "",
+		Script:      "",
+		Description: "",
+	}
+}
+
+func newConfigTestProjectConfig() projectConfig {
+	return projectConfig{
+		DefaultModel: "",
+		MCP:          nil,
+		Editor:       "",
+		Actions:      nil,
+	}
+}
+
+func newConfigTestGoalMetadata() GoalMetadata {
+	return GoalMetadata{
+		Title:                "",
+		Flow:                 "",
+		Models:               nil,
+		Alias:                nil,
+		CompletionGateScript: "",
+		ContinuousModePrompt: "",
+		ContinuousModeAuto:   "",
+		ContinuousModeCron:   "",
+		Retrospective:        "",
+	}
+}
+
 func TestDefaultActionConfigs(t *testing.T) {
 	configs := defaultActionConfigs()
 	assert.Len(t, configs, 3)
@@ -30,16 +63,18 @@ func TestLoadProjectConfig(t *testing.T) {
 		{
 			name: "validConfig",
 			setupFunc: func(t *testing.T, dir string) {
-				config := projectConfig{
-					DefaultModel: "opencode/claude-opus-4-6",
-					Editor:       "code",
-				}
+				t.Helper()
+				config := newConfigTestProjectConfig()
+				config.DefaultModel = "opencode/claude-opus-4-6"
+				config.Editor = "code"
 				data, err := json.Marshal(config)
 				require.NoError(t, err)
-				require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), data, 0644))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), data, 0o644))
 			},
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, config *projectConfig) {
+				t.Helper()
 				require.NotNil(t, config)
 				assert.Equal(t, "opencode/claude-opus-4-6", config.DefaultModel)
 				assert.Equal(t, "code", config.Editor)
@@ -49,34 +84,42 @@ func TestLoadProjectConfig(t *testing.T) {
 			name: "noConfigFile",
 			setupFunc: func(_ *testing.T, _ string) {
 			},
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, config *projectConfig) {
+				t.Helper()
 				assert.Nil(t, config)
 			},
 		},
 		{
 			name: "invalidJSON",
 			setupFunc: func(t *testing.T, dir string) {
-				require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), []byte("not valid json"), 0644))
+				t.Helper()
+				require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), []byte("not valid json"), 0o644))
 			},
 			wantErr:     true,
 			errContains: "invalid JSON syntax",
+			validate:    nil,
 		},
 		{
 			name: "configWithActions",
 			setupFunc: func(t *testing.T, dir string) {
-				config := projectConfig{
-					DefaultModel: "opencode/claude-opus-4-6",
-					Actions: []actionConfig{
-						{Name: "Test Action", Model: "test-model", Prompt: "test prompt"},
-					},
-				}
+				t.Helper()
+				config := newConfigTestProjectConfig()
+				config.DefaultModel = "opencode/claude-opus-4-6"
+				action := newConfigTestActionConfig()
+				action.Name = "Test Action"
+				action.Model = "test-model"
+				action.Prompt = "test prompt"
+				config.Actions = []actionConfig{action}
 				data, err := json.Marshal(config)
 				require.NoError(t, err)
-				require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), data, 0644))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), data, 0o644))
 			},
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, config *projectConfig) {
+				t.Helper()
 				require.NotNil(t, config)
 				assert.Len(t, config.Actions, 1)
 				assert.Equal(t, "Test Action", config.Actions[0].Name)
@@ -85,18 +128,20 @@ func TestLoadProjectConfig(t *testing.T) {
 		{
 			name: "configWithMCP",
 			setupFunc: func(t *testing.T, dir string) {
-				config := projectConfig{
-					DefaultModel: "opencode/claude-opus-4-6",
-					MCP: map[string]json.RawMessage{
-						"test-server": json.RawMessage(`{"command": "test"}`),
-					},
+				t.Helper()
+				config := newConfigTestProjectConfig()
+				config.DefaultModel = "opencode/claude-opus-4-6"
+				config.MCP = map[string]json.RawMessage{
+					"test-server": json.RawMessage(`{"command": "test"}`),
 				}
 				data, err := json.Marshal(config)
 				require.NoError(t, err)
-				require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), data, 0644))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), data, 0o644))
 			},
-			wantErr: false,
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, config *projectConfig) {
+				t.Helper()
 				require.NotNil(t, config)
 				assert.NotNil(t, config.MCP)
 				assert.Contains(t, config.MCP, "test-server")
@@ -135,23 +180,29 @@ func TestValidateProjectConfig(t *testing.T) {
 		errContains string
 	}{
 		{
-			name:    "nilConfig",
-			config:  nil,
-			wantErr: false,
+			name:        "nilConfig",
+			config:      nil,
+			wantErr:     false,
+			errContains: "",
 		},
 		{
 			name: "emptyDefaultModel",
-			config: &projectConfig{
-				DefaultModel: "",
-			},
-			wantErr: false,
+			config: func() *projectConfig {
+				config := newConfigTestProjectConfig()
+				return &config
+			}(),
+			wantErr:     false,
+			errContains: "",
 		},
 		{
 			name: "validDefaultModel",
-			config: &projectConfig{
-				DefaultModel: "opencode/claude-opus-4-6",
-			},
-			wantErr: false,
+			config: func() *projectConfig {
+				config := newConfigTestProjectConfig()
+				config.DefaultModel = "opencode/claude-opus-4-6"
+				return &config
+			}(),
+			wantErr:     false,
+			errContains: "",
 		},
 	}
 
@@ -188,47 +239,65 @@ func TestApplyConfigDefaults(t *testing.T) {
 		{
 			name:   "nilConfig",
 			config: nil,
-			metadata: &GoalMetadata{
-				Models: map[string]any{"agent1": "model1"},
-			},
+			metadata: func() *GoalMetadata {
+				metadata := newConfigTestGoalMetadata()
+				metadata.Models = map[string]any{"agent1": "model1"}
+				return &metadata
+			}(),
 			validate: func(t *testing.T, m *GoalMetadata) {
+				t.Helper()
 				assert.Equal(t, "model1", m.Models["agent1"])
 			},
 		},
 		{
 			name: "emptyDefaultModel",
-			config: &projectConfig{
-				DefaultModel: "",
-			},
-			metadata: &GoalMetadata{
-				Models: map[string]any{"agent1": "model1"},
-			},
+			config: func() *projectConfig {
+				config := newConfigTestProjectConfig()
+				return &config
+			}(),
+			metadata: func() *GoalMetadata {
+				metadata := newConfigTestGoalMetadata()
+				metadata.Models = map[string]any{"agent1": "model1"}
+				return &metadata
+			}(),
 			validate: func(t *testing.T, m *GoalMetadata) {
+				t.Helper()
 				assert.Equal(t, "model1", m.Models["agent1"])
 			},
 		},
 		{
 			name: "applyDefaultToEmptyAgent",
-			config: &projectConfig{
-				DefaultModel: "default-model",
-			},
-			metadata: &GoalMetadata{
-				Models: map[string]any{
+			config: func() *projectConfig {
+				config := newConfigTestProjectConfig()
+				config.DefaultModel = "default-model"
+				return &config
+			}(),
+			metadata: func() *GoalMetadata {
+				metadata := newConfigTestGoalMetadata()
+				metadata.Models = map[string]any{
 					"agent1": "model1",
 					"agent2": "",
-				},
-			},
+				}
+				return &metadata
+			}(),
 			validate: func(t *testing.T, m *GoalMetadata) {
+				t.Helper()
 				assert.Equal(t, "model1", m.Models["agent1"])
 			},
 		},
 		{
 			name: "nilModelsMap",
-			config: &projectConfig{
-				DefaultModel: "default-model",
-			},
-			metadata: &GoalMetadata{},
+			config: func() *projectConfig {
+				config := newConfigTestProjectConfig()
+				config.DefaultModel = "default-model"
+				return &config
+			}(),
+			metadata: func() *GoalMetadata {
+				metadata := newConfigTestGoalMetadata()
+				return &metadata
+			}(),
 			validate: func(t *testing.T, m *GoalMetadata) {
+				t.Helper()
 				assert.NotNil(t, m.Models)
 			},
 		},
@@ -253,9 +322,12 @@ func TestExtractMCPSection(t *testing.T) {
 		validate    func(*testing.T, map[string]json.RawMessage)
 	}{
 		{
-			name: "noMCPSection",
-			oc:   map[string]json.RawMessage{},
+			name:        "noMCPSection",
+			oc:          map[string]json.RawMessage{},
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, mcp map[string]json.RawMessage) {
+				t.Helper()
 				assert.Empty(t, mcp)
 			},
 		},
@@ -264,7 +336,10 @@ func TestExtractMCPSection(t *testing.T) {
 			oc: map[string]json.RawMessage{
 				"mcp": json.RawMessage(`{"server1": {"command": "test"}}`),
 			},
+			wantErr:     false,
+			errContains: "",
 			validate: func(t *testing.T, mcp map[string]json.RawMessage) {
+				t.Helper()
 				assert.Contains(t, mcp, "server1")
 			},
 		},
@@ -273,7 +348,9 @@ func TestExtractMCPSection(t *testing.T) {
 			oc: map[string]json.RawMessage{
 				"mcp": json.RawMessage(`not valid json`),
 			},
-			wantErr: true,
+			wantErr:     true,
+			errContains: "",
+			validate:    nil,
 		},
 	}
 
@@ -310,43 +387,54 @@ func TestApplyCustomMCPs(t *testing.T) {
 			config: nil,
 			setupFunc: func(_ *testing.T, _ string) {
 			},
-			wantErr: false,
+			wantErr:  false,
+			validate: nil,
 		},
 		{
 			name: "emptyMCP",
-			config: &projectConfig{
-				MCP: map[string]json.RawMessage{},
-			},
+			config: func() *projectConfig {
+				config := newConfigTestProjectConfig()
+				config.MCP = map[string]json.RawMessage{}
+				return &config
+			}(),
 			setupFunc: func(_ *testing.T, _ string) {
 			},
-			wantErr: false,
+			wantErr:  false,
+			validate: nil,
 		},
 		{
 			name: "noOpencodeFile",
-			config: &projectConfig{
-				MCP: map[string]json.RawMessage{
+			config: func() *projectConfig {
+				config := newConfigTestProjectConfig()
+				config.MCP = map[string]json.RawMessage{
 					"test-server": json.RawMessage(`{"command": "test"}`),
-				},
-			},
+				}
+				return &config
+			}(),
 			setupFunc: func(_ *testing.T, _ string) {
 			},
-			wantErr: true,
+			wantErr:  true,
+			validate: nil,
 		},
 		{
 			name: "addNewMCP",
-			config: &projectConfig{
-				MCP: map[string]json.RawMessage{
+			config: func() *projectConfig {
+				config := newConfigTestProjectConfig()
+				config.MCP = map[string]json.RawMessage{
 					"new-server": json.RawMessage(`{"command": "new"}`),
-				},
-			},
+				}
+				return &config
+			}(),
 			setupFunc: func(t *testing.T, dir string) {
+				t.Helper()
 				sgaiDir := filepath.Join(dir, ".sgai")
-				require.NoError(t, os.MkdirAll(sgaiDir, 0755))
+				require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 				opencodeContent := `{"mcp": {}}`
-				require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "opencode.jsonc"), []byte(opencodeContent), 0644))
+				require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "opencode.jsonc"), []byte(opencodeContent), 0o644))
 			},
 			wantErr: false,
 			validate: func(t *testing.T, dir string) {
+				t.Helper()
 				data, err := os.ReadFile(filepath.Join(dir, ".sgai", "opencode.jsonc"))
 				require.NoError(t, err)
 				var oc map[string]json.RawMessage
@@ -356,19 +444,23 @@ func TestApplyCustomMCPs(t *testing.T) {
 		},
 		{
 			name: "existingMCP",
-			config: &projectConfig{
-				MCP: map[string]json.RawMessage{
+			config: func() *projectConfig {
+				config := newConfigTestProjectConfig()
+				config.MCP = map[string]json.RawMessage{
 					"existing-server": json.RawMessage(`{"command": "updated"}`),
-				},
-			},
+				}
+				return &config
+			}(),
 			setupFunc: func(t *testing.T, dir string) {
+				t.Helper()
 				sgaiDir := filepath.Join(dir, ".sgai")
-				require.NoError(t, os.MkdirAll(sgaiDir, 0755))
+				require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 				opencodeContent := `{"mcp": {"existing-server": {"command": "original"}}}`
-				require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "opencode.jsonc"), []byte(opencodeContent), 0644))
+				require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "opencode.jsonc"), []byte(opencodeContent), 0o644))
 			},
 			wantErr: false,
 			validate: func(t *testing.T, dir string) {
+				t.Helper()
 				data, err := os.ReadFile(filepath.Join(dir, ".sgai", "opencode.jsonc"))
 				require.NoError(t, err)
 				var oc map[string]json.RawMessage
@@ -400,7 +492,7 @@ func TestApplyCustomMCPs(t *testing.T) {
 
 func TestLoadProjectConfigTypeError(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), []byte(`{"editor": 12345}`), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), []byte(`{"editor": 12345}`), 0o644))
 	_, err := loadProjectConfig(dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid JSON type")
@@ -409,8 +501,8 @@ func TestLoadProjectConfigTypeError(t *testing.T) {
 func TestLoadProjectConfigPermissionDenied(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, configFileName)
-	require.NoError(t, os.WriteFile(configPath, []byte(`{}`), 0000))
-	t.Cleanup(func() { _ = os.Chmod(configPath, 0644) })
+	require.NoError(t, os.WriteFile(configPath, []byte(`{}`), 0o000))
+	t.Cleanup(func() { _ = os.Chmod(configPath, 0o644) })
 	_, err := loadProjectConfig(dir)
 	if err != nil {
 		assert.Contains(t, err.Error(), "permission denied")
@@ -420,28 +512,26 @@ func TestLoadProjectConfigPermissionDenied(t *testing.T) {
 func TestApplyCustomMCPsInvalidOpencodeJSON(t *testing.T) {
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
-	require.NoError(t, os.MkdirAll(sgaiDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "opencode.jsonc"), []byte("not valid json"), 0644))
-	cfg := &projectConfig{
-		MCP: map[string]json.RawMessage{
-			"test-server": json.RawMessage(`{"command": "test"}`),
-		},
+	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "opencode.jsonc"), []byte("not valid json"), 0o644))
+	cfg := newConfigTestProjectConfig()
+	cfg.MCP = map[string]json.RawMessage{
+		"test-server": json.RawMessage(`{"command": "test"}`),
 	}
-	err := applyCustomMCPs(dir, cfg)
-	assert.Error(t, err)
+	err := applyCustomMCPs(dir, &cfg)
+	require.Error(t, err)
 }
 
 func TestApplyCustomMCPsInvalidMCPSection(t *testing.T) {
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
-	require.NoError(t, os.MkdirAll(sgaiDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "opencode.jsonc"), []byte(`{"mcp": "not a map"}`), 0644))
-	cfg := &projectConfig{
-		MCP: map[string]json.RawMessage{
-			"test-server": json.RawMessage(`{"command": "test"}`),
-		},
+	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "opencode.jsonc"), []byte(`{"mcp": "not a map"}`), 0o644))
+	cfg := newConfigTestProjectConfig()
+	cfg.MCP = map[string]json.RawMessage{
+		"test-server": json.RawMessage(`{"command": "test"}`),
 	}
-	err := applyCustomMCPs(dir, cfg)
+	err := applyCustomMCPs(dir, &cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "extracting mcp section")
 }

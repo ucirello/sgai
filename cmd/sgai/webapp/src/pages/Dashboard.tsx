@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, type ReactNode, type CSSProperties } from "react";
-import { useParams, useNavigate, Link, useSearchParams } from "react-router";
+import { useParams, useNavigate, Link } from "react-router";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -30,10 +30,9 @@ import {
   getWorkspaceBaseLabel,
   buildWorkspaceNameDisambiguators,
   buildWorkspacePath,
-  getWorkspaceDirFromSearchParams,
   getWorkspaceDisplayLabel,
   isSameWorkspace,
-  resolveWorkspaceByIdentity,
+  resolveWorkspaceByName,
 } from "@/lib/workspace-identity";
 
 type ForkEntry = NonNullable<ApiWorkspaceEntry["forks"]>[number];
@@ -843,19 +842,17 @@ interface DashboardContentProps {
 
 function DashboardContent({ children, onSidebarResizeMouseDown }: DashboardContentProps): JSX.Element {
   const { name: selectedName } = useParams<{ name: string }>();
-  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { setOpenMobile } = useSidebar();
 
   const { workspaces, fetchStatus } = useFactoryState();
-  const selectedWorkspaceDir = getWorkspaceDirFromSearchParams(searchParams);
   const selectedWorkspace = useMemo(() => {
     if (!selectedName) {
       return null;
     }
 
-    return resolveWorkspaceByIdentity(workspaces, selectedName, selectedWorkspaceDir);
-  }, [selectedName, selectedWorkspaceDir, workspaces]);
+    return resolveWorkspaceByName(workspaces, selectedName);
+  }, [selectedName, workspaces]);
   const loading = fetchStatus === "fetching" && workspaces.length === 0;
   const error = fetchStatus === "error" && workspaces.length === 0
     ? new Error("Failed to load workspaces")

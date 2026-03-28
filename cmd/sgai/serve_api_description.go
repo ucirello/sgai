@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -27,11 +28,11 @@ func (s goalTitleState) label() string {
 
 func goalTitleStateFromPath(dir, dirName string) goalTitleState {
 	if dir == "" {
-		return goalTitleState{ComputedTitle: dirName}
+		return goalTitleState{Title: "", ComputedTitle: dirName, NeedsRepair: false}
 	}
 	data, errRead := os.ReadFile(filepath.Join(dir, "GOAL.md"))
 	if errRead != nil {
-		return goalTitleState{ComputedTitle: dirName}
+		return goalTitleState{Title: "", ComputedTitle: dirName, NeedsRepair: false}
 	}
 	return goalTitleStateFromContent(data, dirName)
 }
@@ -39,20 +40,20 @@ func goalTitleStateFromPath(dir, dirName string) goalTitleState {
 func goalTitleStateFromContent(content []byte, dirName string) goalTitleState {
 	fallback := dirName
 	if len(content) == 0 {
-		return goalTitleState{ComputedTitle: fallback}
+		return goalTitleState{Title: "", ComputedTitle: fallback, NeedsRepair: false}
 	}
 	if _, ok := splitFrontmatter(content); !ok {
-		return goalTitleState{ComputedTitle: fallback}
+		return goalTitleState{Title: "", ComputedTitle: fallback, NeedsRepair: false}
 	}
 	metadata, errParse := parseYAMLFrontmatter(content)
 	if errParse != nil {
-		return goalTitleState{ComputedTitle: fallback}
+		return goalTitleState{Title: "", ComputedTitle: fallback, NeedsRepair: false}
 	}
 	title := strings.TrimSpace(metadata.Title)
 	if title != "" {
-		return goalTitleState{Title: title}
+		return goalTitleState{Title: title, ComputedTitle: "", NeedsRepair: false}
 	}
-	return goalTitleState{ComputedTitle: fallback, NeedsRepair: true}
+	return goalTitleState{Title: "", ComputedTitle: fallback, NeedsRepair: true}
 }
 
 func composeGoalTitleFromContent(content []byte, fallback string) string {
@@ -90,7 +91,7 @@ func splitGoalFrontmatterSections(content []byte) (goalFrontmatterSections, erro
 	sections, errSplit := splitFrontmatterSections(content)
 	if errSplit != nil {
 		if !bytes.HasPrefix(content, []byte("---")) {
-			return goalFrontmatterSections{}, fmt.Errorf("GOAL.md has no frontmatter")
+			return goalFrontmatterSections{}, errors.New("GOAL.md has no frontmatter")
 		}
 		return goalFrontmatterSections{}, fmt.Errorf("GOAL.md %w", errSplit)
 	}
@@ -114,7 +115,7 @@ func updatedGoalFrontmatter(content []byte, title string) ([]byte, error) {
 	}
 	mapping := doc.Content[0]
 	if mapping.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("GOAL.md frontmatter must be a mapping")
+		return nil, errors.New("GOAL.md frontmatter must be a mapping")
 	}
 	if !setGoalFrontmatterTitle(mapping, title) {
 		prependGoalFrontmatterTitle(mapping, title)
@@ -200,14 +201,14 @@ func canonicalGoalTitleRepairPath(workspacePath string) string {
 func overwriteExistingFile(path string, data []byte) error {
 	f, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
 	if errOpen != nil {
-		return errOpen
+		return fmt.Errorf("opening %s: %w", path, errOpen)
 	}
 	if _, errWrite := f.Write(data); errWrite != nil {
 		_ = f.Close()
-		return errWrite
+		return fmt.Errorf("writing %s: %w", path, errWrite)
 	}
 	if errClose := f.Close(); errClose != nil {
-		return errClose
+		return fmt.Errorf("closing %s: %w", path, errClose)
 	}
 	return nil
 }
@@ -270,7 +271,7 @@ func (s *Server) repairGoalTitle(workspacePath string) error {
 	goalPath := filepath.Join(workspacePath, "GOAL.md")
 	goalContent, errRead := s.goalTitleReadFile(goalPath)
 	if errRead != nil {
-		if os.IsNotExist(errRead) {
+		if errors.Is(errRead, os.ErrNotExist) {
 			return nil
 		}
 		return fmt.Errorf("read GOAL.md: %w", errRead)
@@ -281,7 +282,7 @@ func (s *Server) repairGoalTitle(workspacePath string) error {
 	}
 	latestGoalContent, errReadLatest := s.goalTitleReadFile(goalPath)
 	if errReadLatest != nil {
-		if os.IsNotExist(errReadLatest) {
+		if errors.Is(errReadLatest, os.ErrNotExist) {
 			return nil
 		}
 		return fmt.Errorf("re-read GOAL.md: %w", errReadLatest)
@@ -296,14 +297,14 @@ func (s *Server) repairGoalTitle(workspacePath string) error {
 	}
 	title = sanitizedPersistedGoalTitle(title)
 	if title == "" {
-		return fmt.Errorf("compose title: empty title")
+		return errors.New("compose title: empty title")
 	}
 	updatedContent, errUpdate := contentWithInsertedGoalTitle(latestGoalContent, title)
 	if errUpdate != nil {
 		return fmt.Errorf("insert title: %w", errUpdate)
 	}
 	if errWrite := overwriteExistingFile(goalPath, updatedContent); errWrite != nil {
-		if os.IsNotExist(errWrite) {
+		if errors.Is(errWrite, os.ErrNotExist) {
 			return nil
 		}
 		return fmt.Errorf("write GOAL.md: %w", errWrite)

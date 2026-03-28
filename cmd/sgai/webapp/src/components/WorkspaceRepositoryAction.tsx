@@ -193,7 +193,7 @@ export function WorkspaceRepositoryAction({
     setIsPending(true);
     void (async () => {
       try {
-        await api.workspaces.deleteWorkspace(workspace.name, operation, workspace.dir);
+        await api.workspaces.deleteWorkspace(workspace.name, operation);
         triggerFactoryRefresh();
         setOpen(false);
         setCompleted(true);
@@ -203,7 +203,7 @@ export function WorkspaceRepositoryAction({
         setIsPending(false);
       }
     })();
-  }, [isPending, onCompleted, workspace.dir, workspace.name]);
+  }, [isPending, onCompleted, workspace.name]);
 
   if (!action || action.entryPoint === "hidden" || !action.presentation || completed) {
     return null;

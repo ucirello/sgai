@@ -18,11 +18,13 @@ type ttlCache[K comparable, V any] struct {
 
 func newTTLCache[K comparable, V any](ttl time.Duration) *ttlCache[K, V] {
 	return &ttlCache[K, V]{
+		mu:      sync.Mutex{},
 		entries: make(map[K]ttlCacheEntry[V]),
 		ttl:     ttl,
 	}
 }
 
+//nolint:ireturn // V is the caller's concrete cached value type for this generic helper.
 func (c *ttlCache[K, V]) get(key K) (V, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

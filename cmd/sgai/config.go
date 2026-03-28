@@ -16,18 +16,21 @@ func defaultActionConfigs() []actionConfig {
 			Name:        "Create PR",
 			Model:       "anthropic/claude-opus-4-6 (max)",
 			Prompt:      "copy GOAL.md into GOALS/ following the instructions from README.md; store the git path (by querying jj) into GIT_DIR, and using GH, make a draft PR for the commit at @ (jj); CRITICAL: commit message, the PR title and body, must adhere to the standard of previous commits - update all of these if necessary; once you are done, using bash(`open`), open the PR for me.",
+			Script:      "",
 			Description: "Create a draft pull request from current changes",
 		},
 		{
 			Name:        "Upstream Sync",
 			Model:       "anthropic/claude-opus-4-6 (max)",
 			Prompt:      "`jj git fetch --all-remotes`; rebase against main@origin (`jj rebase -d main@origin`), fix merge conflicts, and push",
+			Script:      "",
 			Description: "Fetch and rebase against upstream main branch",
 		},
 		{
 			Name:        "Start Application",
 			Model:       "anthropic/claude-opus-4-6 (max)",
 			Prompt:      "start the application server and ensure it is running properly; use the instructions inside `.deploy/` if available; if this is a networked application, and it starts at localhost, use 'localhost:0' to randomize the application start.",
+			Script:      "",
 			Description: "Start the application locally",
 		},
 	}
@@ -166,7 +169,7 @@ func applyCustomMCPs(dir string, config *projectConfig) error {
 		return fmt.Errorf("encoding opencode.jsonc: %w", err)
 	}
 
-	if err := os.WriteFile(opencodePath, buf.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(opencodePath, buf.Bytes(), 0o644); err != nil {
 		return fmt.Errorf("writing opencode.jsonc: %w", err)
 	}
 
@@ -180,7 +183,7 @@ func extractMCPSection(oc map[string]json.RawMessage) (map[string]json.RawMessag
 	}
 	var mcpSection map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &mcpSection); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parsing mcp section: %w", err)
 	}
 	return mcpSection, nil
 }

@@ -1,9 +1,10 @@
 #import <Cocoa/Cocoa.h>
 
-extern void goMenuItemClicked(int tag);
+extern void goMenuItemClicked(uintptr_t handle, int tag);
 
 static NSStatusItem *statusItem = nil;
 static NSMenu *statusMenu = nil;
+static uintptr_t menuBarGoHandle = 0;
 
 @interface MenuBarDelegate : NSObject
 - (void)menuItemClicked:(NSMenuItem *)sender;
@@ -13,7 +14,7 @@ static NSMenu *statusMenu = nil;
 - (void)menuItemClicked:(NSMenuItem *)sender {
 	int tag = (int)sender.tag;
 	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-		goMenuItemClicked(tag);
+		goMenuItemClicked(menuBarGoHandle, tag);
 	});
 }
 @end
@@ -33,6 +34,10 @@ void MenuBarInit(void) {
 
 	statusMenu = [[NSMenu alloc] init];
 	statusItem.menu = statusMenu;
+}
+
+void MenuBarSetGoHandle(uintptr_t handle) {
+	menuBarGoHandle = handle;
 }
 
 void MenuBarSetTitle(const char *title) {

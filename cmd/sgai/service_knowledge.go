@@ -41,7 +41,7 @@ func (s *Server) skillDetailService(workspacePath, skillName string) skillDetail
 	skillFilePath := skillName + "/SKILL.md"
 	content, errRead := fs.ReadFile(skillsFS, skillFilePath)
 	if errRead != nil {
-		return skillDetailResult{Found: false}
+		return skillDetailResult{Name: "", FullPath: "", Content: "", RawContent: "", Found: false}
 	}
 
 	stripped := stripFrontmatter(string(content))
@@ -81,7 +81,7 @@ func (s *Server) snippetsByLanguageService(workspacePath, lang string) snippetsB
 			return snippetsByLanguageResult{Language: lc.Name, Snippets: lc.Snippets, Found: true}
 		}
 	}
-	return snippetsByLanguageResult{Found: false}
+	return snippetsByLanguageResult{Language: "", Snippets: nil, Found: false}
 }
 
 type snippetDetailResult struct {
@@ -110,7 +110,7 @@ func (s *Server) snippetDetailService(workspacePath, lang, fileName string) snip
 	}
 
 	if content == nil {
-		return snippetDetailResult{Found: false}
+		return snippetDetailResult{Name: "", FileName: "", Language: "", Description: "", WhenToUse: "", Content: "", Found: false}
 	}
 
 	fm := parseFrontmatterMap(content)
@@ -139,7 +139,7 @@ func (s *Server) listModelsService(workspaceName string) listModelsResult {
 	validModels, errFetch := fetchValidModels()
 	if errFetch != nil {
 		log.Println("cannot fetch models:", errFetch)
-		return listModelsResult{Models: []apiModelEntry{}}
+		return listModelsResult{Models: []apiModelEntry{}, DefaultModel: ""}
 	}
 
 	modelNames := slices.Sorted(maps.Keys(validModels))

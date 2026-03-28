@@ -13,6 +13,7 @@ type singleflight[K ~string, V any] struct {
 	calls map[K]*singleflightCall[V]
 }
 
+//nolint:ireturn // V is the caller's concrete result type for this generic helper.
 func (s *singleflight[K, V]) do(key K, fn func() (V, error)) (V, error) {
 	s.mu.Lock()
 	if s.calls == nil {
@@ -23,7 +24,8 @@ func (s *singleflight[K, V]) do(key K, fn func() (V, error)) (V, error) {
 		c.wg.Wait()
 		return c.val, c.err
 	}
-	c := &singleflightCall[V]{}
+	var zero V
+	c := &singleflightCall[V]{wg: sync.WaitGroup{}, val: zero, err: nil}
 	c.wg.Add(1)
 	s.calls[key] = c
 	s.mu.Unlock()

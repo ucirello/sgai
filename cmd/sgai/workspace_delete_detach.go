@@ -125,85 +125,72 @@ func (s *Server) workspaceActionPolicy(workspacePath string) workspaceActionPoli
 	canonicalPath := resolveSymlinks(workspacePath)
 	kind := s.classifyWorkspaceCached(canonicalPath)
 	running, _ := s.getWorkspaceStatus(canonicalPath)
+	var policy workspaceActionPolicy
+	policy.repositoryMode = kind
 
 	switch kind {
 	case workspaceFork:
 		if running {
-			return workspaceActionPolicy{
-				repositoryMode: workspaceFork,
-				entryPoint:     workspaceActionEntryPointHidden,
-				disabledReason: disabledReasonRunning,
-				running:        true,
-			}
+			policy.entryPoint = workspaceActionEntryPointHidden
+			policy.disabledReason = disabledReasonRunning
+			policy.running = true
+			return policy
 		}
-		return workspaceActionPolicy{
-			repositoryMode: workspaceFork,
-			entryPoint:     workspaceActionEntryPointChoose,
-			allowedOps:     []workspaceOperation{workspaceOperationDetach, workspaceOperationDelete},
-		}
+		policy.entryPoint = workspaceActionEntryPointChoose
+		policy.allowedOps = []workspaceOperation{workspaceOperationDetach, workspaceOperationDelete}
+		return policy
 	case workspaceRoot:
 		if running {
-			return workspaceActionPolicy{
-				repositoryMode: workspaceRoot,
-				entryPoint:     workspaceActionEntryPointHidden,
-				disabledReason: disabledReasonRunning,
-				running:        true,
-			}
+			policy.entryPoint = workspaceActionEntryPointHidden
+			policy.disabledReason = disabledReasonRunning
+			policy.running = true
+			return policy
 		}
 		forkCount, errCount := s.countWorkspaceChildren(canonicalPath)
 		if errCount != nil {
 			attachedForks := s.countAttachedForks(canonicalPath)
 			if attachedForks > 0 {
-				return workspaceActionPolicy{
-					repositoryMode: workspaceRoot,
-					entryPoint:     workspaceActionEntryPointHidden,
-					disabledReason: disabledReasonForks,
-					attachedForks:  attachedForks,
-				}
+				policy.entryPoint = workspaceActionEntryPointHidden
+				policy.disabledReason = disabledReasonForks
+				policy.attachedForks = attachedForks
+				return policy
 			}
-			return workspaceActionPolicy{
-				repositoryMode: workspaceRoot,
-				entryPoint:     workspaceActionEntryPointHidden,
-				disabledReason: disabledReasonTopology,
-			}
+			policy.entryPoint = workspaceActionEntryPointHidden
+			policy.disabledReason = disabledReasonTopology
+			return policy
 		}
 		if forkCount > 0 {
-			return workspaceActionPolicy{
-				repositoryMode: workspaceRoot,
-				entryPoint:     workspaceActionEntryPointHidden,
-				disabledReason: disabledReasonForks,
-				attachedForks:  forkCount,
-			}
+			policy.entryPoint = workspaceActionEntryPointHidden
+			policy.disabledReason = disabledReasonForks
+			policy.attachedForks = forkCount
+			return policy
 		}
-		return workspaceActionPolicy{
-			repositoryMode:   workspaceRoot,
-			entryPoint:       workspaceActionEntryPointConfirm,
-			defaultOperation: workspaceOperationDetach,
-			allowedOps:       []workspaceOperation{workspaceOperationDetach},
-		}
-	default:
+		policy.entryPoint = workspaceActionEntryPointConfirm
+		policy.defaultOperation = workspaceOperationDetach
+		policy.allowedOps = []workspaceOperation{workspaceOperationDetach}
+		return policy
+	case workspaceStandalone:
 		if running {
-			return workspaceActionPolicy{
-				repositoryMode: workspaceStandalone,
-				entryPoint:     workspaceActionEntryPointHidden,
-				disabledReason: disabledReasonRunning,
-				running:        true,
-			}
+			policy.entryPoint = workspaceActionEntryPointHidden
+			policy.disabledReason = disabledReasonRunning
+			policy.running = true
+			return policy
 		}
-		return workspaceActionPolicy{
-			repositoryMode:   workspaceStandalone,
-			entryPoint:       workspaceActionEntryPointConfirm,
-			defaultOperation: workspaceOperationDetach,
-			allowedOps:       []workspaceOperation{workspaceOperationDetach},
-		}
+		policy.entryPoint = workspaceActionEntryPointConfirm
+		policy.defaultOperation = workspaceOperationDetach
+		policy.allowedOps = []workspaceOperation{workspaceOperationDetach}
+		return policy
+	default:
+		var emptyPolicy workspaceActionPolicy
+		return emptyPolicy
 	}
 }
 
-func (p workspaceActionPolicy) allows(op workspaceOperation) bool {
+func (p *workspaceActionPolicy) allows(op workspaceOperation) bool {
 	return slices.Contains(p.allowedOps, op)
 }
 
-func (p workspaceActionPolicy) api(workspaceName string) apiRepositoryAction {
+func (p *workspaceActionPolicy) api(workspaceName string) apiRepositoryAction {
 	allowedOps := make([]string, 0, len(p.allowedOps))
 	for _, op := range p.allowedOps {
 		allowedOps = append(allowedOps, string(op))
@@ -212,6 +199,8 @@ func (p workspaceActionPolicy) api(workspaceName string) apiRepositoryAction {
 		RepositoryMode: string(p.repositoryMode),
 		EntryPoint:     string(p.entryPoint),
 		AllowedOps:     allowedOps,
+		DefaultOp:      "",
+		DisabledReason: "",
 		AttachedForks:  p.attachedForks,
 		Running:        p.running,
 		Presentation:   p.apiPresentation(workspaceName),
@@ -225,10 +214,19 @@ func (p workspaceActionPolicy) api(workspaceName string) apiRepositoryAction {
 	return result
 }
 
-func (p workspaceActionPolicy) apiPresentation(workspaceName string) apiRepositoryActionPresentation {
+func (p *workspaceActionPolicy) apiPresentation(workspaceName string) apiRepositoryActionPresentation {
 	operations := p.apiOperationPresentations()
 	if p.entryPoint == workspaceActionEntryPointHidden {
-		return apiRepositoryActionPresentation{Operations: operations}
+		return apiRepositoryActionPresentation{
+			DetailTriggerLabel:  "",
+			TreeTriggerLabel:    "",
+			ForkRowTriggerLabel: "",
+			DialogTitle:         "",
+			DialogDescription:   "",
+			Icon:                "",
+			Tone:                "",
+			Operations:          operations,
+		}
 	}
 
 	if p.entryPoint == workspaceActionEntryPointChoose {
@@ -239,8 +237,8 @@ func (p workspaceActionPolicy) apiPresentation(workspaceName string) apiReposito
 		}
 		return apiRepositoryActionPresentation{
 			DetailTriggerLabel:  "Choose action",
-			TreeTriggerLabel:    fmt.Sprintf("Choose action for %s", subject),
-			ForkRowTriggerLabel: fmt.Sprintf("Choose action for %s", subject),
+			TreeTriggerLabel:    "Choose action for " + subject,
+			ForkRowTriggerLabel: "Choose action for " + subject,
 			DialogTitle:         dialogTitle,
 			DialogDescription:   p.chooseDialogDescription(workspaceName),
 			Icon:                string(workspaceActionIconChoose),
@@ -268,7 +266,7 @@ func (p workspaceActionPolicy) apiPresentation(workspaceName string) apiReposito
 	}
 }
 
-func (p workspaceActionPolicy) apiOperationPresentations() []apiRepositoryActionOperationPresentation {
+func (p *workspaceActionPolicy) apiOperationPresentations() []apiRepositoryActionOperationPresentation {
 	operations := make([]apiRepositoryActionOperationPresentation, 0, len(p.allowedOps))
 	for _, op := range p.allowedOps {
 		operations = append(operations, apiRepositoryActionOperationPresentation{
@@ -281,56 +279,56 @@ func (p workspaceActionPolicy) apiOperationPresentations() []apiRepositoryAction
 	return operations
 }
 
-func (p workspaceActionPolicy) repositoryNoun() string {
+func (p *workspaceActionPolicy) repositoryNoun() string {
 	if p.repositoryMode == workspaceFork {
 		return "fork"
 	}
 	return "workspace"
 }
 
-func (p workspaceActionPolicy) repositorySubject(workspaceName string) string {
+func (p *workspaceActionPolicy) repositorySubject(workspaceName string) string {
 	if p.repositoryMode == workspaceFork {
-		return fmt.Sprintf("fork %s", workspaceName)
+		return "fork " + workspaceName
 	}
 	return workspaceName
 }
 
-func (p workspaceActionPolicy) operationLabel(op workspaceOperation) string {
+func (p *workspaceActionPolicy) operationLabel(op workspaceOperation) string {
 	if op == workspaceOperationDelete {
 		return "Delete"
 	}
 	return "Detach"
 }
 
-func (p workspaceActionPolicy) operationIcon(op workspaceOperation) workspaceActionIcon {
+func (p *workspaceActionPolicy) operationIcon(op workspaceOperation) workspaceActionIcon {
 	if op == workspaceOperationDelete {
 		return workspaceActionIconDelete
 	}
 	return workspaceActionIconDetach
 }
 
-func (p workspaceActionPolicy) operationTone(op workspaceOperation) workspaceActionTone {
+func (p *workspaceActionPolicy) operationTone(op workspaceOperation) workspaceActionTone {
 	if op == workspaceOperationDelete {
 		return workspaceActionToneDestructive
 	}
 	return workspaceActionToneNeutral
 }
 
-func (p workspaceActionPolicy) confirmDialogTitle(op workspaceOperation) string {
+func (p *workspaceActionPolicy) confirmDialogTitle(op workspaceOperation) string {
 	if op == workspaceOperationDelete {
 		return "Delete workspace"
 	}
 	return "Detach workspace"
 }
 
-func (p workspaceActionPolicy) confirmDialogDescription(workspaceName string, op workspaceOperation) string {
+func (p *workspaceActionPolicy) confirmDialogDescription(workspaceName string, op workspaceOperation) string {
 	if op == workspaceOperationDelete {
 		return fmt.Sprintf("This will permanently delete '%s' from disk. This action cannot be undone.", workspaceName)
 	}
 	return fmt.Sprintf("This will remove '%s' from the SGAI workspace list. The files on disk will NOT be deleted.", workspaceName)
 }
 
-func (p workspaceActionPolicy) chooseDialogDescription(workspaceName string) string {
+func (p *workspaceActionPolicy) chooseDialogDescription(workspaceName string) string {
 	repositoryNoun := p.repositoryNoun()
 	parts := make([]string, 0, len(p.allowedOps))
 	for _, op := range p.allowedOps {
@@ -339,7 +337,7 @@ func (p workspaceActionPolicy) chooseDialogDescription(workspaceName string) str
 	return fmt.Sprintf("Choose what to do with %s '%s'. %s", repositoryNoun, workspaceName, strings.Join(parts, " "))
 }
 
-func (p workspaceActionPolicy) chooseOperationDescription(repositoryNoun string, op workspaceOperation) string {
+func (p *workspaceActionPolicy) chooseOperationDescription(repositoryNoun string, op workspaceOperation) string {
 	if op == workspaceOperationDelete {
 		return fmt.Sprintf("Delete permanently removes the %s from disk.", repositoryNoun)
 	}
@@ -374,20 +372,21 @@ func (s *Server) countAttachedForks(rootPath string) int {
 
 func (s *Server) resolveWorkspaceOperation(workspacePath, requestedOperation string) (workspaceActionPolicy, workspaceOperation, error) {
 	policy := s.workspaceActionPolicy(workspacePath)
+	var emptyPolicy workspaceActionPolicy
 	if policy.disabledReason == disabledReasonRunning {
-		return workspaceActionPolicy{}, "", errWorkspaceActionRunning
+		return emptyPolicy, "", errWorkspaceActionRunning
 	}
 	if policy.disabledReason == disabledReasonForks {
-		return workspaceActionPolicy{}, "", errWorkspaceActionForksAttached
+		return emptyPolicy, "", errWorkspaceActionForksAttached
 	}
 	if policy.entryPoint == workspaceActionEntryPointHidden {
-		return workspaceActionPolicy{}, "", errWorkspaceActionNotAllowed
+		return emptyPolicy, "", errWorkspaceActionNotAllowed
 	}
 
 	requested := workspaceOperation(requestedOperation)
 	if requested == "" {
 		if policy.defaultOperation == "" {
-			return workspaceActionPolicy{}, "", errWorkspaceActionOperationRequired
+			return emptyPolicy, "", errWorkspaceActionOperationRequired
 		}
 		requested = policy.defaultOperation
 	}
@@ -395,11 +394,11 @@ func (s *Server) resolveWorkspaceOperation(workspacePath, requestedOperation str
 	switch requested {
 	case workspaceOperationDelete, workspaceOperationDetach:
 	default:
-		return workspaceActionPolicy{}, "", errWorkspaceActionInvalidOperation
+		return emptyPolicy, "", errWorkspaceActionInvalidOperation
 	}
 
 	if !policy.allows(requested) {
-		return workspaceActionPolicy{}, "", errWorkspaceActionNotAllowed
+		return emptyPolicy, "", errWorkspaceActionNotAllowed
 	}
 
 	return policy, requested, nil
@@ -407,28 +406,35 @@ func (s *Server) resolveWorkspaceOperation(workspacePath, requestedOperation str
 
 func (s *Server) executeWorkspaceAction(workspacePath string, op workspaceOperation) (workspaceActionResult, error) {
 	policy, resolvedOp, errResolve := s.resolveWorkspaceOperation(workspacePath, string(op))
+	var emptyResult workspaceActionResult
 	if errResolve != nil {
-		return workspaceActionResult{}, errResolve
+		return emptyResult, errResolve
 	}
 
 	switch resolvedOp {
 	case workspaceOperationDetach:
 		result, errDetach := s.detachWorkspaceService(workspacePath)
 		if errDetach != nil {
-			return workspaceActionResult{}, errDetach
+			return emptyResult, errDetach
 		}
-		return workspaceActionResult{Message: result.Message, Detached: result.Detached}, nil
+		var actionResult workspaceActionResult
+		actionResult.Message = result.Message
+		actionResult.Detached = result.Detached
+		return actionResult, nil
 	case workspaceOperationDelete:
 		if policy.repositoryMode != workspaceFork {
-			return workspaceActionResult{}, errWorkspaceActionNotAllowed
+			return emptyResult, errWorkspaceActionNotAllowed
 		}
 		result, errDelete := s.deleteForkWorkspaceService(workspacePath)
 		if errDelete != nil {
-			return workspaceActionResult{}, errDelete
+			return emptyResult, errDelete
 		}
-		return workspaceActionResult{Message: result.Message, Deleted: result.Deleted}, nil
+		var actionResult workspaceActionResult
+		actionResult.Message = result.Message
+		actionResult.Deleted = result.Deleted
+		return actionResult, nil
 	default:
-		return workspaceActionResult{}, errWorkspaceActionInvalidOperation
+		return emptyResult, errWorkspaceActionInvalidOperation
 	}
 }
 
@@ -483,7 +489,7 @@ func (s *Server) deleteForkWorkspaceService(workspacePath string) (deleteForkRes
 
 	rootPath := resolveSymlinks(getRootWorkspacePath(canonicalPath))
 	if rootPath == "" {
-		return deleteForkResult{}, fmt.Errorf("could not determine root workspace for fork")
+		return deleteForkResult{}, errors.New("could not determine root workspace for fork")
 	}
 
 	state := s.currentWorkspaceListState()
@@ -649,7 +655,11 @@ func marshalDirectoryMap(dirs map[string]bool) ([]byte, error) {
 		values = []string{}
 	}
 	slices.Sort(values)
-	return json.Marshal(values)
+	data, errMarshal := json.Marshal(values)
+	if errMarshal != nil {
+		return nil, fmt.Errorf("encoding directory map: %w", errMarshal)
+	}
+	return data, nil
 }
 
 func prepareFileReplacement(configDir, fileName string, data []byte, label string) (pendingFileReplacement, error) {
@@ -683,7 +693,7 @@ func prepareFileReplacement(configDir, fileName string, data []byte, label strin
 }
 
 func commitFileReplacements(replacements []pendingFileReplacement) (*committedFileReplacements, error) {
-	committed := &committedFileReplacements{}
+	committed := &committedFileReplacements{replacements: []committedFileReplacement{}}
 	for _, replacement := range replacements {
 		info, errStat := os.Stat(replacement.targetPath)
 		if errStat == nil && info.IsDir() {
@@ -698,7 +708,9 @@ func commitFileReplacements(replacements []pendingFileReplacement) (*committedFi
 
 		committedReplacement := committedFileReplacement{
 			targetPath:   replacement.targetPath,
+			backupPath:   "",
 			label:        replacement.label,
+			hadOriginal:  false,
 			parentConfig: filepath.Dir(replacement.targetPath),
 		}
 		if errStat == nil {
@@ -870,19 +882,22 @@ func syncParentDirs(parentDirs []string) error {
 func stageWorkspaceDirectoryForDeletion(workspacePath string) (string, error) {
 	stagedPath, errStagedPath := os.MkdirTemp(filepath.Dir(workspacePath), filepath.Base(workspacePath)+".delete-*")
 	if errStagedPath != nil {
-		return "", errStagedPath
+		return "", fmt.Errorf("creating staged deletion directory for %s: %w", workspacePath, errStagedPath)
 	}
 	if errRemove := os.Remove(stagedPath); errRemove != nil {
-		return "", errRemove
+		return "", fmt.Errorf("removing staging placeholder for %s: %w", workspacePath, errRemove)
 	}
 	if errRename := os.Rename(workspacePath, stagedPath); errRename != nil {
-		return "", errRename
+		return "", fmt.Errorf("staging workspace %s for deletion: %w", workspacePath, errRename)
 	}
 	return stagedPath, nil
 }
 
 func restoreStagedWorkspaceDirectory(stagedPath, workspacePath string) error {
-	return os.Rename(stagedPath, workspacePath)
+	if errRename := os.Rename(stagedPath, workspacePath); errRename != nil {
+		return fmt.Errorf("restoring staged workspace %s: %w", workspacePath, errRename)
+	}
+	return nil
 }
 
 func forgetWorkspace(rootPath, forkName string) error {
@@ -900,15 +915,15 @@ func currentOperationID(rootPath string) (string, error) {
 	cmd.Dir = rootPath
 	output, errOutput := cmd.Output()
 	if errOutput != nil {
-		return "", errOutput
+		return "", fmt.Errorf("reading current operation for %s: %w", rootPath, errOutput)
 	}
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	if len(lines) == 0 {
-		return "", fmt.Errorf("operation log is empty")
+		return "", errors.New("operation log is empty")
 	}
 	fields := strings.Fields(lines[0])
 	if len(fields) == 0 {
-		return "", fmt.Errorf("operation log did not contain an operation id")
+		return "", errors.New("operation log did not contain an operation id")
 	}
 	return fields[0], nil
 }

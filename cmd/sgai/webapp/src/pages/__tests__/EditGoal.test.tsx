@@ -260,41 +260,6 @@ describe("EditGoal", () => {
       });
     });
 
-    it("loads and saves the selected duplicate-name workspace via its routed identifier", async () => {
-      const user = userEvent.setup();
-      mockWorkspaces = [
-        {
-          ...mockWorkspace,
-          name: "shared-ws",
-          dir: "/tmp/first/shared-ws",
-          title: "First Shared Workspace",
-          goalContent: "# First Goal",
-          rawGoalContent: "# First Goal",
-        },
-        {
-          ...mockWorkspace,
-          name: "shared-ws",
-          dir: "/tmp/second/shared-ws",
-          title: "Second Shared Workspace",
-          goalContent: "# Second Goal",
-          rawGoalContent: "# Second Goal",
-        },
-      ];
-
-      renderEditGoal("second/shared-ws");
-
-      await waitFor(() => {
-        expect(mockGetGoal).toHaveBeenCalledWith("second/shared-ws");
-      });
-      await waitForContentToLoad();
-
-      await user.click(getSaveButton());
-
-      await waitFor(() => {
-        expect(mockUpdateGoal).toHaveBeenCalledWith("second/shared-ws", "# Test Goal\n\nThis is a test goal.");
-      });
-    });
-
     it("keeps unsaved editor content and avoids refetching GOAL.md when workspace state refreshes", async () => {
       const view = renderEditGoal();
 
@@ -413,7 +378,7 @@ describe("EditGoal", () => {
       expect(mockGetGoal).not.toHaveBeenCalled();
     });
 
-    it("moves focus to the page heading after the routed goal loads", async () => {
+    it("moves focus to the page heading after the goal loads", async () => {
       renderEditGoal();
 
       await waitFor(() => {
@@ -519,7 +484,7 @@ describe("EditGoal", () => {
   });
 
   describe("navigation", () => {
-    it("waits for routed detail navigation that commits on the next fake-timer turn", async () => {
+    it("waits for detail navigation that commits on the next fake-timer turn", async () => {
       function DelayedRouteCommit() {
         const navigate = useNavigate();
         const [isCommitQueued, setIsCommitQueued] = useState(false);
@@ -588,51 +553,21 @@ describe("EditGoal", () => {
       });
     });
 
-    it("keeps the back link on the routed detail URL without workspaceDir", async () => {
-      mockWorkspaces = [
-        {
-          ...mockWorkspace,
-          name: "shared-ws",
-          dir: "/tmp/first/shared-ws",
-          title: "First Shared Workspace",
-        },
-        {
-          ...mockWorkspace,
-          name: "shared-ws",
-          dir: "/tmp/second/shared-ws",
-          title: "Second Shared Workspace",
-        },
-      ];
-
-      renderEditGoal("second/shared-ws");
+    it("keeps the back link on the basename detail URL without workspaceDir", async () => {
+      renderEditGoal();
 
       await waitFor(() => {
-        const backLink = screen.getByLabelText("Back to Second Shared Workspace");
-        expect(backLink.getAttribute("href")).toBe("/workspaces/second%2Fshared-ws");
+        const backLink = screen.getByLabelText("Back to Test Workspace Title");
+        expect(backLink.getAttribute("href")).toBe("/workspaces/test-workspace");
         expect(backLink.getAttribute("href")).not.toContain("workspaceDir");
       });
     });
 
-    it("redirects after save to the live routed detail page without workspaceDir", async () => {
-      mockWorkspaces = [
-        {
-          ...mockWorkspace,
-          name: "shared-ws",
-          dir: "/tmp/first/shared-ws",
-          title: "First Shared Workspace",
-        },
-        {
-          ...mockWorkspace,
-          name: "shared-ws",
-          dir: "/tmp/second/shared-ws",
-          title: "Second Shared Workspace",
-        },
-      ];
-
-      const { router } = renderEditGoalIntegrationRouter("second/shared-ws");
+    it("redirects after save to the basename detail page without workspaceDir", async () => {
+      const { router } = renderEditGoalIntegrationRouter();
 
       await waitFor(() => {
-        expect(mockGetGoal).toHaveBeenCalledWith("second/shared-ws");
+        expect(mockGetGoal).toHaveBeenCalledWith("test-workspace");
       });
       await waitForContentToLoad();
 
@@ -643,7 +578,7 @@ describe("EditGoal", () => {
       fireEvent.click(getSaveButton());
 
       await waitFor(() => {
-        expect(mockUpdateGoal).toHaveBeenCalledWith("second/shared-ws", "# Test Goal\n\nThis is a test goal.");
+        expect(mockUpdateGoal).toHaveBeenCalledWith("test-workspace", "# Test Goal\n\nThis is a test goal.");
       });
 
       await waitForSaveToComplete(refreshCallCountBeforeSave);
@@ -653,33 +588,16 @@ describe("EditGoal", () => {
 
       await waitForWorkspaceDetailRedirect(
         router,
-        "/workspaces/second%2Fshared-ws",
-        "Second Shared Workspace · second",
+        "/workspaces/test-workspace",
+        "Test Workspace Title",
       );
-
-      expect(screen.queryByText("First Shared Workspace")).toBeNull();
     });
 
     it("blurs the focused editor before the save redirect runs", async () => {
-      mockWorkspaces = [
-        {
-          ...mockWorkspace,
-          name: "shared-ws",
-          dir: "/tmp/first/shared-ws",
-          title: "First Shared Workspace",
-        },
-        {
-          ...mockWorkspace,
-          name: "shared-ws",
-          dir: "/tmp/second/shared-ws",
-          title: "Second Shared Workspace",
-        },
-      ];
-
-      const { router } = renderEditGoalIntegrationRouter("second/shared-ws");
+      const { router } = renderEditGoalIntegrationRouter();
 
       await waitFor(() => {
-        expect(mockGetGoal).toHaveBeenCalledWith("second/shared-ws");
+        expect(mockGetGoal).toHaveBeenCalledWith("test-workspace");
       });
       await waitForContentToLoad();
 
@@ -694,7 +612,7 @@ describe("EditGoal", () => {
       fireEvent.keyDown(textarea, { key: "s", ctrlKey: true, bubbles: true });
 
       await waitFor(() => {
-        expect(mockUpdateGoal).toHaveBeenCalledWith("second/shared-ws", "# Test Goal\n\nThis is a test goal.");
+        expect(mockUpdateGoal).toHaveBeenCalledWith("test-workspace", "# Test Goal\n\nThis is a test goal.");
       });
 
       await waitFor(() => {
@@ -708,8 +626,8 @@ describe("EditGoal", () => {
 
       await waitForWorkspaceDetailRedirect(
         router,
-        "/workspaces/second%2Fshared-ws",
-        "Second Shared Workspace · second",
+        "/workspaces/test-workspace",
+        "Test Workspace Title",
       );
     });
   });

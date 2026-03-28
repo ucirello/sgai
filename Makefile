@@ -14,7 +14,7 @@ test: webapp-test webapp-build
 webapp-check-deps:
 	cd cmd/sgai/webapp && bun outdated
 
-lint:
+lint: webapp-build
 	GOOS= GOARCH= go run -mod=readonly github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.8.0 run ./...
 
 install: build

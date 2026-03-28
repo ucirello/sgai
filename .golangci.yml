@@ -3,25 +3,61 @@ version: "2"
 linters:
   default: standard
   enable:
+    - asciicheck
+    - canonicalheader
+    - dogsled
+    - dupl
+    - embeddedstructfieldcheck
     - errcheck
+    - errname
+    - exhaustive
+    - exhaustruct
+    - exptostd
+    - funcorder
+    - gochecknoglobals
+    - gochecknoinits
+    - gochecksumtype
     - gocritic
+    - gocyclo
+    - godoclint
+    - godox
     - govet
     - ineffassign
+    - ireturn
     - misspell
+    - modernize
+    - nolintlint
+    - nosprintfhostport
+    - perfsprint
+    - prealloc
+    - revive
+    - sloglint
     - staticcheck
+    - testifylint
+    - thelper
     - unconvert
     - unparam
     - unused
+    - usestdlibvars
     - wastedassign
-    - canonicalheader
-    - dupl
-    - revive
-    - gocyclo
+    - whitespace
+    - wrapcheck
   exclusions:
     rules:
       - path: _test\.go
         linters:
           - gocyclo
+  settings:
+    gocritic:
+      enable-all: true
+    godox:
+      keywords:
+        - TODO
+        - BUG
+        - FIXME
+        - NOTE
+        - OPTIMIZE
+        - GPT
 
 run:
   timeout: 5m

@@ -11,6 +11,23 @@ import (
 	"github.com/ucirello/sgai/pkg/state"
 )
 
+func snapshotWith(update func(*workspaceStateSnapshot)) workspaceStateSnapshot {
+	snapshot := workspaceStateSnapshot{
+		modTime:      time.Time{},
+		status:       "",
+		needsInput:   false,
+		progressLen:  0,
+		todosHash:    "",
+		messagesHash: "",
+		goalModTime:  time.Time{},
+		goalHash:     "",
+	}
+	if update != nil {
+		update(&snapshot)
+	}
+	return snapshot
+}
+
 func TestHashTodos(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -25,7 +42,11 @@ func TestHashTodos(t *testing.T) {
 		{
 			name: "projectTodosOnly",
 			projectTodos: []state.TodoItem{
-				{Content: "Task 1", Status: "pending", Priority: "high"},
+				todoItemWith(func(item *state.TodoItem) {
+					item.Content = "Task 1"
+					item.Status = "pending"
+					item.Priority = "high"
+				}),
 			},
 			agentTodos: []state.TodoItem{},
 		},
@@ -33,26 +54,50 @@ func TestHashTodos(t *testing.T) {
 			name:         "agentTodosOnly",
 			projectTodos: []state.TodoItem{},
 			agentTodos: []state.TodoItem{
-				{Content: "Task 2", Status: "completed", Priority: "low"},
+				todoItemWith(func(item *state.TodoItem) {
+					item.Content = "Task 2"
+					item.Status = "completed"
+					item.Priority = "low"
+				}),
 			},
 		},
 		{
 			name: "bothTodos",
 			projectTodos: []state.TodoItem{
-				{Content: "Task 1", Status: "pending", Priority: "high"},
+				todoItemWith(func(item *state.TodoItem) {
+					item.Content = "Task 1"
+					item.Status = "pending"
+					item.Priority = "high"
+				}),
 			},
 			agentTodos: []state.TodoItem{
-				{Content: "Task 2", Status: "completed", Priority: "low"},
+				todoItemWith(func(item *state.TodoItem) {
+					item.Content = "Task 2"
+					item.Status = "completed"
+					item.Priority = "low"
+				}),
 			},
 		},
 		{
 			name: "multipleTodos",
 			projectTodos: []state.TodoItem{
-				{Content: "Task 1", Status: "pending", Priority: "high"},
-				{Content: "Task 2", Status: "in_progress", Priority: "medium"},
+				todoItemWith(func(item *state.TodoItem) {
+					item.Content = "Task 1"
+					item.Status = "pending"
+					item.Priority = "high"
+				}),
+				todoItemWith(func(item *state.TodoItem) {
+					item.Content = "Task 2"
+					item.Status = "in_progress"
+					item.Priority = "medium"
+				}),
 			},
 			agentTodos: []state.TodoItem{
-				{Content: "Task 3", Status: "completed", Priority: "low"},
+				todoItemWith(func(item *state.TodoItem) {
+					item.Content = "Task 3"
+					item.Status = "completed"
+					item.Priority = "low"
+				}),
 			},
 		},
 	}
@@ -68,7 +113,11 @@ func TestHashTodos(t *testing.T) {
 
 func TestHashTodosConsistency(t *testing.T) {
 	todos := []state.TodoItem{
-		{Content: "Task 1", Status: "pending", Priority: "high"},
+		todoItemWith(func(item *state.TodoItem) {
+			item.Content = "Task 1"
+			item.Status = "pending"
+			item.Priority = "high"
+		}),
 	}
 
 	hash1 := hashTodos(todos, []state.TodoItem{})
@@ -79,10 +128,18 @@ func TestHashTodosConsistency(t *testing.T) {
 
 func TestHashTodosDifferent(t *testing.T) {
 	todos1 := []state.TodoItem{
-		{Content: "Task 1", Status: "pending", Priority: "high"},
+		todoItemWith(func(item *state.TodoItem) {
+			item.Content = "Task 1"
+			item.Status = "pending"
+			item.Priority = "high"
+		}),
 	}
 	todos2 := []state.TodoItem{
-		{Content: "Task 2", Status: "pending", Priority: "high"},
+		todoItemWith(func(item *state.TodoItem) {
+			item.Content = "Task 2"
+			item.Status = "pending"
+			item.Priority = "high"
+		}),
 	}
 
 	hash1 := hashTodos(todos1, []state.TodoItem{})
@@ -103,20 +160,41 @@ func TestHashMessages(t *testing.T) {
 		{
 			name: "singleMessage",
 			messages: []state.Message{
-				{ID: 1, FromAgent: "agent1", ToAgent: "agent2", Body: "Hello"},
+				messageWith(func(message *state.Message) {
+					message.ID = 1
+					message.FromAgent = "agent1"
+					message.ToAgent = "agent2"
+					message.Body = "Hello"
+				}),
 			},
 		},
 		{
 			name: "multipleMessages",
 			messages: []state.Message{
-				{ID: 1, FromAgent: "agent1", ToAgent: "agent2", Body: "Hello"},
-				{ID: 2, FromAgent: "agent2", ToAgent: "agent1", Body: "World"},
+				messageWith(func(message *state.Message) {
+					message.ID = 1
+					message.FromAgent = "agent1"
+					message.ToAgent = "agent2"
+					message.Body = "Hello"
+				}),
+				messageWith(func(message *state.Message) {
+					message.ID = 2
+					message.FromAgent = "agent2"
+					message.ToAgent = "agent1"
+					message.Body = "World"
+				}),
 			},
 		},
 		{
 			name: "messageWithReadStatus",
 			messages: []state.Message{
-				{ID: 1, FromAgent: "agent1", ToAgent: "agent2", Body: "Hello", Read: true},
+				messageWith(func(message *state.Message) {
+					message.ID = 1
+					message.FromAgent = "agent1"
+					message.ToAgent = "agent2"
+					message.Body = "Hello"
+					message.Read = true
+				}),
 			},
 		},
 	}
@@ -132,7 +210,12 @@ func TestHashMessages(t *testing.T) {
 
 func TestHashMessagesConsistency(t *testing.T) {
 	messages := []state.Message{
-		{ID: 1, FromAgent: "agent1", ToAgent: "agent2", Body: "Hello"},
+		messageWith(func(message *state.Message) {
+			message.ID = 1
+			message.FromAgent = "agent1"
+			message.ToAgent = "agent2"
+			message.Body = "Hello"
+		}),
 	}
 
 	hash1 := hashMessages(messages)
@@ -143,10 +226,20 @@ func TestHashMessagesConsistency(t *testing.T) {
 
 func TestHashMessagesDifferent(t *testing.T) {
 	messages1 := []state.Message{
-		{ID: 1, FromAgent: "agent1", ToAgent: "agent2", Body: "Hello"},
+		messageWith(func(message *state.Message) {
+			message.ID = 1
+			message.FromAgent = "agent1"
+			message.ToAgent = "agent2"
+			message.Body = "Hello"
+		}),
 	}
 	messages2 := []state.Message{
-		{ID: 1, FromAgent: "agent1", ToAgent: "agent2", Body: "World"},
+		messageWith(func(message *state.Message) {
+			message.ID = 1
+			message.FromAgent = "agent1"
+			message.ToAgent = "agent2"
+			message.Body = "World"
+		}),
 	}
 
 	hash1 := hashMessages(messages1)
@@ -238,7 +331,7 @@ func TestHashGoalFileDifferentAfterModification(t *testing.T) {
 
 	time.Sleep(10 * time.Millisecond)
 
-	_ = os.WriteFile(tmpFile.Name(), []byte("modified content"), 0644)
+	_ = os.WriteFile(tmpFile.Name(), []byte("modified content"), 0o644)
 
 	fileInfo2, err := os.Stat(tmpFile.Name())
 	if err != nil {
@@ -252,21 +345,32 @@ func TestHashGoalFileDifferentAfterModification(t *testing.T) {
 
 func TestBuildStateSnapshot(t *testing.T) {
 	modTime := time.Now()
-	wfState := state.Workflow{
-		Status:       state.StatusWorking,
-		HumanMessage: "test question",
-		Progress: []state.ProgressEntry{
-			{Agent: "coordinator", Description: "started"},
-		},
-		ProjectTodos: []state.TodoItem{
-			{Content: "task1", Status: "pending"},
-		},
-		Messages: []state.Message{
-			{ID: 1, FromAgent: "dev", ToAgent: "coord", Body: "done"},
-		},
-	}
+	wfState := workflowWith(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.HumanMessage = "test question"
+		workflow.Progress = []state.ProgressEntry{
+			progressEntryWith(func(entry *state.ProgressEntry) {
+				entry.Agent = "coordinator"
+				entry.Description = "started"
+			}),
+		}
+		workflow.ProjectTodos = []state.TodoItem{
+			todoItemWith(func(item *state.TodoItem) {
+				item.Content = "task1"
+				item.Status = "pending"
+			}),
+		}
+		workflow.Messages = []state.Message{
+			messageWith(func(message *state.Message) {
+				message.ID = 1
+				message.FromAgent = "dev"
+				message.ToAgent = "coord"
+				message.Body = "done"
+			}),
+		}
+	})
 
-	snapshot := buildStateSnapshot(modTime, wfState, nil)
+	snapshot := buildStateSnapshot(modTime, &wfState, nil)
 	assert.Equal(t, modTime, snapshot.modTime)
 	assert.Equal(t, state.StatusWorking, snapshot.status)
 	assert.True(t, snapshot.needsInput)
@@ -291,7 +395,8 @@ func TestBuildStateSnapshotWithGoalInfo(t *testing.T) {
 	}
 
 	modTime := time.Now()
-	snapshot := buildStateSnapshot(modTime, state.Workflow{}, goalInfo)
+	wfState := newTestWorkflow()
+	snapshot := buildStateSnapshot(modTime, &wfState, goalInfo)
 	assert.NotEmpty(t, snapshot.goalHash)
 	assert.False(t, snapshot.goalModTime.IsZero())
 }
@@ -300,45 +405,41 @@ func TestEmitStateChangeEvents(t *testing.T) {
 	server, _ := setupTestServer(t)
 
 	t.Run("noChange", func(_ *testing.T) {
-		prev := workspaceStateSnapshot{
-			status:      state.StatusWorking,
-			needsInput:  false,
-			progressLen: 5,
-			todosHash:   "abc",
-		}
-		server.emitStateChangeEvents("/test", prev, prev)
+		prev := snapshotWith(func(snapshot *workspaceStateSnapshot) {
+			snapshot.status = state.StatusWorking
+			snapshot.progressLen = 5
+			snapshot.todosHash = "abc"
+		})
+		server.emitStateChangeEvents(&prev, &prev)
 	})
 
 	t.Run("statusChange", func(_ *testing.T) {
-		prev := workspaceStateSnapshot{status: state.StatusWorking}
-		current := workspaceStateSnapshot{status: state.StatusComplete}
-		server.emitStateChangeEvents("/test", prev, current)
+		prev := snapshotWith(func(snapshot *workspaceStateSnapshot) {
+			snapshot.status = state.StatusWorking
+		})
+		current := snapshotWith(func(snapshot *workspaceStateSnapshot) {
+			snapshot.status = state.StatusComplete
+		})
+		server.emitStateChangeEvents(&prev, &current)
 	})
 
 	t.Run("needsInputChange", func(_ *testing.T) {
-		prev := workspaceStateSnapshot{needsInput: false}
-		current := workspaceStateSnapshot{needsInput: true}
-		server.emitStateChangeEvents("/test", prev, current)
+		prev := snapshotWith(nil)
+		current := snapshotWith(func(snapshot *workspaceStateSnapshot) {
+			snapshot.needsInput = true
+		})
+		server.emitStateChangeEvents(&prev, &current)
 	})
 
 	t.Run("progressChange", func(_ *testing.T) {
-		prev := workspaceStateSnapshot{progressLen: 5}
-		current := workspaceStateSnapshot{progressLen: 6}
-		server.emitStateChangeEvents("/test", prev, current)
+		prev := snapshotWith(func(snapshot *workspaceStateSnapshot) {
+			snapshot.progressLen = 5
+		})
+		current := snapshotWith(func(snapshot *workspaceStateSnapshot) {
+			snapshot.progressLen = 6
+		})
+		server.emitStateChangeEvents(&prev, &current)
 	})
-}
-
-func TestStateWatcherEmitChangeEventsStatusChange(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	prev := workspaceStateSnapshot{status: state.StatusWorking, todosHash: "abc", messagesHash: "def", goalHash: "ghi"}
-	changed := workspaceStateSnapshot{status: state.StatusComplete, todosHash: "abc", messagesHash: "def", goalHash: "ghi"}
-	srv.emitStateChangeEvents("dir", prev, changed)
-}
-
-func TestStateWatcherEmitNoChangeEvents(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	s := workspaceStateSnapshot{status: state.StatusWorking, progressLen: 3, todosHash: "abc", messagesHash: "def", goalHash: "ghi"}
-	srv.emitStateChangeEvents("dir", s, s)
 }
 
 func TestCheckWorkspaceStateSecondVisitNoChange(t *testing.T) {
@@ -347,7 +448,9 @@ func TestCheckWorkspaceStateSecondVisitNoChange(t *testing.T) {
 	sgaiDir := filepath.Join(dir, ".sgai")
 	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 	sp := filepath.Join(sgaiDir, "state.json")
-	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{Status: state.StatusComplete})
+	_, errCoord := state.NewCoordinatorWith(sp, workflowWith(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusComplete
+	}))
 	require.NoError(t, errCoord)
 
 	snapshots := make(map[string]workspaceStateSnapshot)
@@ -364,10 +467,10 @@ func TestCheckWorkspaceStateWithMapChanges(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, srv, rootDir, "cwsc-ws")
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
-	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{
-		Status: state.StatusComplete,
-		Task:   "all done",
-	})
+	_, errCoord := state.NewCoordinatorWith(sp, workflowWith(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusComplete
+		workflow.Task = "all done"
+	}))
 	require.NoError(t, errCoord)
 
 	snapshots := make(map[string]workspaceStateSnapshot)
@@ -385,9 +488,9 @@ func TestBuildStateSnapshotWithGoalHash(t *testing.T) {
 	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("# Goal"), 0o644))
 	sp := filepath.Join(sgaiDir, "state.json")
-	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{
-		Status: state.StatusComplete,
-	})
+	_, errCoord := state.NewCoordinatorWith(sp, workflowWith(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusComplete
+	}))
 	require.NoError(t, errCoord)
 
 	srv, _ := setupTestServer(t)
@@ -400,38 +503,23 @@ func TestBuildStateSnapshotWithGoalHash(t *testing.T) {
 	assert.NotEmpty(t, snap.goalHash)
 }
 
-func TestHashGoalFileNilInfo(t *testing.T) {
-	hash := hashGoalFile(nil)
-	assert.Empty(t, hash)
-}
-
-func TestHashGoalFileValidInfo(t *testing.T) {
-	dir := t.TempDir()
-	goalPath := filepath.Join(dir, "GOAL.md")
-	require.NoError(t, os.WriteFile(goalPath, []byte("# Goal"), 0o644))
-
-	info, errStat := os.Stat(goalPath)
-	require.NoError(t, errStat)
-
-	hash := hashGoalFile(info)
-	assert.NotEmpty(t, hash)
-}
-
 func TestPollWorkspaceStatesWithMultipleWorkspaces(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir1 := setupTestWorkspace(t, srv, rootDir, "poll-ws1")
 	wsDir2 := setupTestWorkspace(t, srv, rootDir, "poll-ws2")
 	sp1 := filepath.Join(wsDir1, ".sgai", "state.json")
-	_, errCoord1 := state.NewCoordinatorWith(sp1, state.Workflow{
-		Status: state.StatusComplete,
-	})
+	_, errCoord1 := state.NewCoordinatorWith(sp1, workflowWith(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusComplete
+	}))
 	require.NoError(t, errCoord1)
 
-	stopCachedSession(t, srv, wsDir2, state.Workflow{Status: state.StatusComplete})
-	writeWorkflowStateToDisk(t, wsDir2, state.Workflow{
-		Status: state.StatusWorking,
-		Task:   "building",
-	})
+	stopCachedSession(t, srv, wsDir2, workflowRef(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusComplete
+	}))
+	writeWorkflowStateToDisk(t, wsDir2, workflowRef(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.Task = "building"
+	}))
 
 	snapshots := make(map[string]workspaceStateSnapshot)
 	srv.pollWorkspaceStates(snapshots)
@@ -445,13 +533,15 @@ func TestPollWorkspaceStatesCleanupRemoved(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, srv, rootDir, "poll-cleanup")
 	sp := filepath.Join(wsDir, ".sgai", "state.json")
-	_, errCoord := state.NewCoordinatorWith(sp, state.Workflow{
-		Status: state.StatusComplete,
-	})
+	_, errCoord := state.NewCoordinatorWith(sp, workflowWith(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusComplete
+	}))
 	require.NoError(t, errCoord)
 
 	snapshots := make(map[string]workspaceStateSnapshot)
-	snapshots["/nonexistent/removed-ws"] = workspaceStateSnapshot{status: "old"}
+	snapshots["/nonexistent/removed-ws"] = snapshotWith(func(snapshot *workspaceStateSnapshot) {
+		snapshot.status = "old"
+	})
 	srv.pollWorkspaceStates(snapshots)
 	_, exists := snapshots["/nonexistent/removed-ws"]
 	assert.False(t, exists)

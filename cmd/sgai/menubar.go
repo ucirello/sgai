@@ -24,6 +24,14 @@ type menuBarAction struct {
 	actionURL string
 }
 
+func newMenuBarState() menuBarState {
+	return menuBarState{
+		mu:      sync.Mutex{},
+		tags:    make(map[int]menuBarAction),
+		nextTag: 0,
+	}
+}
+
 func toMenuBarItem(srv *Server, w workspaceInfo) menuBarItem {
 	titleState := goalTitleStateFromPath(w.Directory, w.DirName)
 	if srv != nil && titleState.NeedsRepair {

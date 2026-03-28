@@ -10,13 +10,12 @@ import { ActionBar } from "@/components/ActionBar";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { api } from "@/lib/api";
 import { useFactoryState } from "@/lib/factory-state";
-import { resolveWorkspaceByIdentity } from "@/lib/workspace-identity";
+import { resolveWorkspaceByName } from "@/lib/workspace-identity";
 import { useAdhocRun } from "@/hooks/useAdhocRun";
 import type { ApiEventEntry, ApiModelStatusEntry, ApiAgentModelEntry, ApiActionEntry } from "@/types";
 
 interface EventsTabProps {
   workspaceName: string;
-  workspaceDir?: string;
   goalContent?: string;
   actions?: ApiActionEntry[];
   actionConfigError?: string;
@@ -195,7 +194,7 @@ function EventTimeline({ events }: { events: ApiEventEntry[] }) {
   );
 }
 
-export function EventsTab({ workspaceName, workspaceDir, goalContent, actions, actionConfigError }: EventsTabProps) {
+export function EventsTab({ workspaceName, goalContent, actions, actionConfigError }: EventsTabProps) {
   const [goalOpenError, setGoalOpenError] = useState<string | null>(null);
   const [isGoalOpenPending, startGoalOpenTransition] = useTransition();
   const [actionOutputOpen, setActionOutputOpen] = useState(false);
@@ -212,7 +211,7 @@ export function EventsTab({ workspaceName, workspaceDir, goalContent, actions, a
   } = useAdhocRun({ workspaceName, skipModelsFetch: true });
 
   const { workspaces, fetchStatus } = useFactoryState();
-  const workspace = resolveWorkspaceByIdentity(workspaces, workspaceName, workspaceDir);
+  const workspace = resolveWorkspaceByName(workspaces, workspaceName);
 
   const handleOpenGoal = (event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();

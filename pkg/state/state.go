@@ -4,8 +4,11 @@ package state
 
 import (
 	"encoding/json"
+	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 // Workflow status constants define the possible states of a sgai workflow.
@@ -23,20 +26,6 @@ const (
 	ModeRetrospective = "retrospective"
 	ModeContinuous    = "continuous"
 )
-
-// NeedsHumanInput reports whether this workflow currently has pending
-// in-memory human input.
-func (w Workflow) NeedsHumanInput() bool {
-	return w.MultiChoiceQuestion != nil || w.HumanMessage != ""
-}
-
-// ValidStatuses contains the workflow status values that agents can set
-// via the update_workflow_state tool.
-var ValidStatuses = []string{
-	StatusWorking,
-	StatusAgentDone,
-	StatusComplete,
-}
 
 // TodoItem represents a single item in the agent's TODO list.
 // The structure matches the opencode todo.updated event payload.
@@ -180,6 +169,68 @@ type Workflow struct {
 	SummaryManual bool `json:"summaryManual,omitempty"`
 }
 
+// NewWorkflow returns a workflow with the non-nil collections expected by a
+// fresh session state.
+func NewWorkflow() Workflow {
+	var wf Workflow
+	wf.Progress = []ProgressEntry{}
+	wf.Messages = []Message{}
+	wf.VisitCounts = map[string]int{}
+	wf.Todos = []TodoItem{}
+	wf.ProjectTodos = []TodoItem{}
+	wf.AgentSequence = []AgentSequenceEntry{}
+	wf.Cost.ByAgent = []AgentCost{}
+	wf.ModelStatuses = map[string]string{}
+	return wf
+}
+
+// NeedsHumanInput reports whether this workflow currently has pending
+// in-memory human input.
+//
+//nolint:gocritic // Workflow state is intentionally queried as a value snapshot throughout the server.
+func (w Workflow) NeedsHumanInput() bool {
+	return w.MultiChoiceQuestion != nil || w.HumanMessage != ""
+}
+
+func (w *Workflow) detached() Workflow {
+	detached := *w
+	detached.Progress = slices.Clone(w.Progress)
+	detached.Messages = slices.Clone(w.Messages)
+	detached.VisitCounts = maps.Clone(w.VisitCounts)
+	detached.Todos = slices.Clone(w.Todos)
+	detached.ProjectTodos = slices.Clone(w.ProjectTodos)
+	detached.AgentSequence = slices.Clone(w.AgentSequence)
+	detached.Cost.ByAgent = detachedAgentCosts(w.Cost.ByAgent)
+	detached.ModelStatuses = maps.Clone(w.ModelStatuses)
+	detached.MultiChoiceQuestion = detachedMultiChoiceQuestion(w.MultiChoiceQuestion)
+	return detached
+}
+
+func detachedMultiChoiceQuestion(question *MultiChoiceQuestion) *MultiChoiceQuestion {
+	if question == nil {
+		return nil
+	}
+	detached := *question
+	detached.Questions = detachedQuestionItems(question.Questions)
+	return &detached
+}
+
+func detachedQuestionItems(items []QuestionItem) []QuestionItem {
+	detached := slices.Clone(items)
+	for i := range items {
+		detached[i].Choices = slices.Clone(items[i].Choices)
+	}
+	return detached
+}
+
+func detachedAgentCosts(agentCosts []AgentCost) []AgentCost {
+	detached := slices.Clone(agentCosts)
+	for i := range agentCosts {
+		detached[i].Steps = slices.Clone(agentCosts[i].Steps)
+	}
+	return detached
+}
+
 // Message represents an inter-agent message in the workflow system.
 type Message struct {
 	ID        int    `json:"id"`
@@ -195,11 +246,11 @@ type Message struct {
 func load(path string) (Workflow, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Workflow{}, err
+		return Workflow{}, fmt.Errorf("reading workflow state %s: %w", path, err)
 	}
 	var wf Workflow
 	if err := json.Unmarshal(data, &wf); err != nil {
-		return Workflow{}, err
+		return Workflow{}, fmt.Errorf("decoding workflow state %s: %w", path, err)
 	}
 	if wf.VisitCounts == nil {
 		wf.VisitCounts = make(map[string]int)
@@ -212,15 +263,19 @@ func load(path string) (Workflow, error) {
 	return wf, nil
 }
 
-func save(path string, wf Workflow) error {
-	wf.HumanMessage = ""
-	wf.MultiChoiceQuestion = nil
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
+func save(path string, wf *Workflow) error {
+	snapshot := wf.detached()
+	snapshot.HumanMessage = ""
+	snapshot.MultiChoiceQuestion = nil
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating workflow state directory for %s: %w", path, err)
 	}
-	data, err := json.MarshalIndent(wf, "", "  ")
+	data, err := json.MarshalIndent(snapshot, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("encoding workflow state %s: %w", path, err)
 	}
-	return os.WriteFile(path, data, 0644)
+	if errWrite := os.WriteFile(path, data, 0o644); errWrite != nil {
+		return fmt.Errorf("writing workflow state %s: %w", path, errWrite)
+	}
+	return nil
 }
