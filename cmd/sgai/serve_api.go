@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sandgardenhq/sgai/pkg/state"
+	"github.com/ucirello/sgai/pkg/state"
 )
 
 type signalSubscriber struct {

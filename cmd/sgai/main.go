@@ -24,7 +24,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sandgardenhq/sgai/pkg/state"
+	"github.com/ucirello/sgai/pkg/state"
 	"sigs.k8s.io/yaml"
 )
 

@@ -9,7 +9,7 @@ Watch AI agents plan, execute, and validate your software — with you in contro
 
 **📺 [Watch the 4-minute demo →](https://youtu.be/NYmjhwLUg8Q)**
 
-<img style="margin:20px 0;border:1px solid #999;" src="https://github.com/sandgardenhq/sgai/blob/main/assets/screenshots/08-Workspace.png?raw=true" alt="Sgai Dashboard" width="800">
+<img style="margin:20px 0;border:1px solid #999;" src="https://github.com/ucirello/sgai/blob/main/assets/screenshots/08-Workspace.png?raw=true" alt="Sgai Dashboard" width="800">
 
 ---
 
@@ -46,7 +46,7 @@ A local AI software factory.
 ```bash
 opencode upgrade
 opencode auth login
-opencode --model anthropic/claude-opus-4-6 run "install Sgai using the instructions from https://github.com/sandgardenhq/sgai/blob/main/INSTALLATION.md"
+opencode --model anthropic/claude-opus-4-6 run "install Sgai using the instructions from https://github.com/ucirello/sgai/blob/main/INSTALLATION.md"
 ```
 
 This runs the official installation guide automatically and launches a demo workspace.
@@ -60,19 +60,19 @@ This runs the official installation guide automatically and launches a demo work
 **Recommended:** jj (version control), tmux (session management), ripgrep (code search), Graphviz (diagram rendering)
 
 ```bash
-go install github.com/sandgardenhq/sgai/cmd/sgai@latest
+go install github.com/ucirello/sgai/cmd/sgai@latest
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/sandgardenhq/sgai.git
+git clone https://github.com/ucirello/sgai.git
 cd sgai
 cd cmd/sgai/webapp && bun install && cd ../../..
 make build
 ```
 
-See [INSTALLATION.md](https://github.com/sandgardenhq/sgai/blob/main/INSTALLATION.md) for details.
+See [INSTALLATION.md](https://github.com/ucirello/sgai/blob/main/INSTALLATION.md) for details.
 
 ---
 
@@ -136,7 +136,7 @@ An aliased agent inherits everything from its base agent (prompt, tools, snippet
 
 ### 2. Agents Plan the Work
 
-<img style="margin:20px 0;border:1px solid #999;" src="https://github.com/sandgardenhq/sgai/blob/main/assets/screenshots/02-ChooseATemplate.png?raw=true" alt="Choose a Template" width="600">
+<img style="margin:20px 0;border:1px solid #999;" src="https://github.com/ucirello/sgai/blob/main/assets/screenshots/02-ChooseATemplate.png?raw=true" alt="Choose a Template" width="600">
 
 Sgai breaks your goal into a workflow diagram of coordinated agents with defined roles.
 
@@ -144,7 +144,7 @@ Dependencies are explicit. Execution is visible.
 
 ### 3. Approve the Plan & Monitor
 
-<img style="margin:20px 0;border:1px solid #999;" src="https://github.com/sandgardenhq/sgai/blob/main/assets/screenshots/09-Questions.png?raw=true" alt="Agent Questions" width="600">
+<img style="margin:20px 0;border:1px solid #999;" src="https://github.com/ucirello/sgai/blob/main/assets/screenshots/09-Questions.png?raw=true" alt="Agent Questions" width="600">
 
 Before execution begins, agents ask clarifying questions about your goal.
 
@@ -161,7 +161,7 @@ Most of the time, you approve the plan and come back when it's done.
 
 ### 4. Learn from Past Sessions with _Skills_
 
-<img style="margin:20px 0;border:1px solid #999;" src="https://github.com/sandgardenhq/sgai/blob/main/assets/screenshots/11-Skills.png?raw=true" alt="Skills Library" width="500">
+<img style="margin:20px 0;border:1px solid #999;" src="https://github.com/ucirello/sgai/blob/main/assets/screenshots/11-Skills.png?raw=true" alt="Skills Library" width="500">
 
 Sgai extracts reusable skills and code snippets from completed sessions — your agents get smarter over time.
 
@@ -185,15 +185,15 @@ Sgai accepts improvements as specifications inside `GOALS/`.
 2. Describe desired behavior and success criteria
 3. Submit a PR
 
-See the [GOALS directory](https://github.com/sandgardenhq/sgai/tree/main/GOALS) for examples.
+See the [GOALS directory](https://github.com/ucirello/sgai/tree/main/GOALS) for examples.
 
 ---
 
 ## Questions?
 
-**Found a bug or have a feature request?** [Open an issue →](https://github.com/sandgardenhq/sgai/issues)
+**Found a bug or have a feature request?** [Open an issue →](https://github.com/ucirello/sgai/issues)
 
-**Want to discuss ideas or share what you built?** [Start a discussion →](https://github.com/sandgardenhq/sgai/discussions)
+**Want to discuss ideas or share what you built?** [Start a discussion →](https://github.com/ucirello/sgai/discussions)
 
 ---
 
@@ -205,7 +205,7 @@ Developer documentation lives in `docs/`, produced by [Doc Holiday](https://doc.
 
 ## License
 
-[https://github.com/sandgardenhq/sgai/blob/main/LICENSE](https://github.com/sandgardenhq/sgai/blob/main/LICENSE)
+[https://github.com/ucirello/sgai/blob/main/LICENSE](https://github.com/ucirello/sgai/blob/main/LICENSE)
 
 ---
 

@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"github.com/adrg/xdg"
-	"github.com/sandgardenhq/sgai/pkg/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/ucirello/sgai/pkg/state"
 )
 
 func attachSessionCoordinator(t *testing.T, srv *Server, wsDir string, wf state.Workflow) {

@@ -1,4 +1,4 @@
-module github.com/sandgardenhq/sgai
+module github.com/ucirello/sgai
 
 go 1.26.1
 
