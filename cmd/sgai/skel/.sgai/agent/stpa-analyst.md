@@ -2,6 +2,8 @@
 description: STPA hazard analyst for software, physical, and AI systems. Uses System Theoretic Process Analysis to identify unsafe control actions and loss scenarios.
 mode: primary
 permission:
+  edit:
+    "*/GOAL.md": deny
   doom_loop: deny
   external_directory: deny
   question: deny

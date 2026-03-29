@@ -2,6 +2,8 @@
 description: Expert C4 Code-level documentation specialist. Analyzes code directories to create comprehensive C4 code-level documentation including function signatures, arguments, dependencies, and code structure. Use when documenting code at the lowest C4 level for individual directories and code modules.
 mode: primary
 permission:
+  edit:
+    "*/GOAL.md": deny
   doom_loop: deny
   external_directory: deny
   question: deny

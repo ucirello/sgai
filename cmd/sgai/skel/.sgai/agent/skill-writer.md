@@ -2,6 +2,8 @@
 description: Creates new skills from approved suggestions, MUST validate using testing-skills-with-subagents before completion
 mode: all
 permission:
+  edit:
+    "*/GOAL.md": deny
   doom_loop: deny
   external_directory: deny
   question: deny

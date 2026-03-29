@@ -2,6 +2,8 @@
 description: Deploys Cloudflare Workers using Wrangler CLI and Workers platform
 mode: primary
 permission:
+  edit:
+    "*/GOAL.md": deny
   doom_loop: deny
   external_directory: deny
   question: deny

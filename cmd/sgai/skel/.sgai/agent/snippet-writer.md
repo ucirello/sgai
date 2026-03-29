@@ -2,6 +2,8 @@
 description: Creates new code snippets from approved suggestions
 mode: all
 permission:
+  edit:
+    "*/GOAL.md": deny
   webfetch: deny
   doom_loop: deny
   external_directory: deny

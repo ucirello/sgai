@@ -2,6 +2,8 @@
 description: Deploys applications to exe.dev using its CLI and proxy/copy-files features
 mode: primary
 permission:
+  edit:
+    "*/GOAL.md": deny
   doom_loop: deny
   external_directory: deny
   question: deny
