@@ -157,13 +157,17 @@ func (s *Server) startCommandService(workspacePath string, spec *commandStartSpe
 	}
 	writer := &lockedWriter{mu: &st.mu, buf: &st.output}
 	prefix := fmt.Sprintf("[%s][%s:0000]", filepath.Base(workspacePath), spec.logLabel)
-	stdoutPW := &prefixWriter{prefix: prefix + " ", w: os.Stdout, startTime: time.Now()}
-	stderrPW := &prefixWriter{prefix: prefix + " ", w: os.Stderr, startTime: time.Now()}
-	cmd.Stdout = io.MultiWriter(stdoutPW, writer)
-	cmd.Stderr = io.MultiWriter(stderrPW, writer)
+	st.linePrefix = prefix + " "
+	stdoutPW := newPrefixWriter(prefix+" ", os.Stdout, time.Now)
+	stderrPW := newPrefixWriter(prefix+" ", os.Stderr, time.Now)
+	stdoutBufferPW := newPrefixWriter(prefix+" ", writer, time.Now)
+	stderrBufferPW := newPrefixWriter(prefix+" ", writer, time.Now)
+	statePW := newPrefixWriter(prefix+" ", &st.output, time.Now)
+	cmd.Stdout = io.MultiWriter(stdoutPW, stdoutBufferPW)
+	cmd.Stderr = io.MultiWriter(stderrPW, stderrBufferPW)
 	for _, line := range spec.headerLines {
 		_, _ = fmt.Fprintln(stderrPW, line)
-		st.output.WriteString(line + "\n")
+		_, _ = fmt.Fprintln(statePW, line)
 	}
 
 	if errStart := cmd.Start(); errStart != nil {
@@ -179,17 +183,22 @@ func (s *Server) startCommandService(workspacePath string, spec *commandStartSpe
 
 	go func() {
 		errWait := cmd.Wait()
+		flushPrefixWriterWithLog("command stdout", stdoutPW)
+		flushPrefixWriterWithLog("command stderr", stderrPW)
+		flushPrefixWriterWithLog("command stdout buffer", stdoutBufferPW)
+		flushPrefixWriterWithLog("command stderr buffer", stderrBufferPW)
 		st.mu.Lock()
 		stoppedByUser := st.stopRequested
-		if errWait != nil && !stoppedByUser {
-			st.output.WriteString("\n[command exited with error: " + errWait.Error() + "]\n")
-		}
 		st.running = false
 		st.cmd = nil
 		st.waitDone = nil
 		st.stopRequested = false
 		close(waitDone)
 		st.mu.Unlock()
+		if errWait != nil && !stoppedByUser {
+			_, _ = fmt.Fprintln(stderrPW, "command exited with error:", errWait)
+			_, _ = fmt.Fprintln(stderrBufferPW, "command exited with error:", errWait)
+		}
 		s.notifyStateChange()
 	}()
 

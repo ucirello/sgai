@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os/exec"
 	"regexp"
 	"sync"
@@ -15,6 +16,7 @@ type adhocPromptState struct {
 	mu            sync.Mutex
 	running       bool
 	output        bytes.Buffer
+	linePrefix    string
 	cmd           *exec.Cmd
 	waitDone      chan struct{}
 	stopRequested bool
@@ -25,7 +27,7 @@ func (s *Server) getAdhocState(workspacePath string) *adhocPromptState {
 	defer s.mu.Unlock()
 	st := s.adhocStates[workspacePath]
 	if st == nil {
-		st = new(adhocPromptState)
+		st = &adhocPromptState{mu: sync.Mutex{}, running: false, output: bytes.Buffer{}, linePrefix: "", cmd: nil, waitDone: nil, stopRequested: false}
 		s.adhocStates[workspacePath] = st
 	}
 	return st
@@ -76,6 +78,6 @@ func (st *adhocPromptState) stop() {
 		st.waitDone = nil
 		st.stopRequested = false
 	}
-	st.output.WriteString("\n[stopped by user]\n")
+	_, _ = fmt.Fprintln(newPrefixWriter(st.linePrefix, &st.output, time.Now), "[stopped by user]")
 	st.mu.Unlock()
 }

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -94,12 +95,12 @@ func TestRingWriterWrite(t *testing.T) {
 	n, err := rw.Write([]byte("line1\n"))
 	require.NoError(t, err)
 	assert.Equal(t, 6, n)
-	assert.Equal(t, 2, rw.size)
+	assert.Equal(t, 1, rw.size)
 
 	n, err = rw.Write([]byte("line2\n"))
 	require.NoError(t, err)
 	assert.Equal(t, 6, n)
-	assert.Equal(t, 4, rw.size)
+	assert.Equal(t, 2, rw.size)
 }
 
 func TestRingWriterWritePartial(t *testing.T) {
@@ -114,7 +115,7 @@ func TestRingWriterWritePartial(t *testing.T) {
 	n, err = rw.Write([]byte(" line\n"))
 	require.NoError(t, err)
 	assert.Equal(t, 6, n)
-	assert.Equal(t, 2, rw.size)
+	assert.Equal(t, 1, rw.size)
 	assert.Nil(t, rw.partial)
 }
 
@@ -127,9 +128,7 @@ func TestRingWriterDump(t *testing.T) {
 	var buf bytes.Buffer
 	rw.dump(&buf)
 
-	output := buf.String()
-	assert.Contains(t, output, "line1")
-	assert.Contains(t, output, "line2")
+	assert.Equal(t, []string{"line1", "line2"}, stripTimestampedPayloads(t, buf.String()))
 }
 
 func TestRingWriterDumpEmpty(t *testing.T) {
@@ -150,45 +149,36 @@ func TestRingWriterDumpPartial(t *testing.T) {
 	var buf bytes.Buffer
 	rw.dump(&buf)
 
-	output := buf.String()
-	assert.Contains(t, output, "line1")
-	assert.Contains(t, output, "partial")
+	assert.Equal(t, []string{"line1", "partial"}, stripTimestampedPayloads(t, buf.String()))
+	assert.Equal(t, 1, rw.size)
 }
 
-func TestSplitLines(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected []string
-	}{
-		{
-			name:     "empty",
-			input:    "",
-			expected: []string{""},
-		},
-		{
-			name:     "singleLine",
-			input:    "line1",
-			expected: []string{"line1"},
-		},
-		{
-			name:     "multipleLines",
-			input:    "line1\nline2\nline3",
-			expected: []string{"line1", "line2", "line3"},
-		},
-		{
-			name:     "trailingNewline",
-			input:    "line1\nline2\n",
-			expected: []string{"line1", "line2", ""},
-		},
-	}
+func TestRingWriterDumpTrimsTrailingCarriageReturnAtEOF(t *testing.T) {
+	rw := newRingWriter()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := splitLines([]byte(tt.input))
-			assert.Equal(t, tt.expected, result)
-		})
-	}
+	_, _ = rw.Write([]byte("partial\r"))
+
+	var buf bytes.Buffer
+	rw.dump(&buf)
+
+	assert.Equal(t, []string{"partial"}, stripTimestampedPayloads(t, buf.String()))
+}
+
+func TestRingWriterDumpPreservesIntentionalBlankLines(t *testing.T) {
+	rw := newRingWriter()
+
+	_, _ = rw.Write([]byte("line1\n\nline3\n"))
+
+	var buf bytes.Buffer
+	rw.dump(&buf)
+
+	assert.Equal(t, []string{"line1", "", "line3"}, stripTimestampedPayloads(t, buf.String()))
+}
+
+func TestScanBufferedLinesHandlesCRLF(t *testing.T) {
+	lines, partial := scanBufferedLines([]byte("line1\r\nline2\r\nline3"), false)
+	assert.Equal(t, []string{"line1", "line2"}, lines)
+	assert.Equal(t, []byte("line3"), partial)
 }
 
 func TestBuildAgentOutputWriter(t *testing.T) {
@@ -328,4 +318,27 @@ func TestSessionLogWriterPartialLine(t *testing.T) {
 	lines := sess.outputLog.lines()
 	require.GreaterOrEqual(t, len(lines), 1)
 	assert.Equal(t, "partial", lines[0].text)
+}
+
+func stripTimestampedPayloads(t *testing.T, output string) []string {
+	t.Helper()
+
+	trimmed := strings.TrimSuffix(output, "\n")
+	if trimmed == "" {
+		return nil
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	payloads := make([]string, 0, len(lines))
+	for _, line := range lines {
+		require.GreaterOrEqual(t, len(line), len("[00:00:00] "))
+		require.Equal(t, byte('['), line[0])
+		require.Equal(t, byte(':'), line[3])
+		require.Equal(t, byte(':'), line[6])
+		require.Equal(t, byte(']'), line[9])
+		require.Equal(t, byte(' '), line[10])
+		payloads = append(payloads, line[len("[00:00:00] "):])
+	}
+
+	return payloads
 }

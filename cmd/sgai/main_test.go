@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -325,7 +326,7 @@ func newTestJSONPrettyWriter() *jsonPrettyWriter {
 		coord:        nil,
 		currentAgent: "",
 		stepCounter:  0,
-		startTime:    time.Time{},
+		now:          testLogNow,
 	}
 }
 
@@ -333,8 +334,32 @@ func newBufferedTestJSONPrettyWriter(w io.Writer, prefix string) *jsonPrettyWrit
 	writer := newTestJSONPrettyWriter()
 	writer.w = w
 	writer.prefix = prefix
-	writer.startTime = time.Now()
+	writer.now = testLogNow
 	return writer
+}
+
+func TestFormatLogTimeOutput(t *testing.T) {
+	got := formatLogTime(time.Date(2026, time.March, 28, 5, 4, 3, 0, time.UTC))
+	assert.Equal(t, "[05:04:03]", got)
+}
+
+func testLogNow() time.Time {
+	return time.Date(2026, time.March, 28, 12, 34, 56, 0, time.UTC)
+}
+
+func testLogTimestamp() string {
+	return formatLogTime(testLogNow())
+}
+
+func timestampedTestOutput(prefix string, lines ...string) string {
+	var b strings.Builder
+	for _, line := range lines {
+		b.WriteString(testLogTimestamp())
+		b.WriteString(prefix)
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 func TestExtractModelFromArgs(t *testing.T) {
@@ -1393,11 +1418,6 @@ func TestRetrospectiveEnabledVariants(t *testing.T) {
 	metadataTrue := newTestGoalMetadata()
 	metadataTrue.Retrospective = "true"
 	assert.True(t, retrospectiveEnabled(metadataTrue.Retrospective))
-}
-
-func TestFormatElapsedOutput(t *testing.T) {
-	got := formatElapsed(time.Now().Add(-5 * time.Minute))
-	assert.Contains(t, got, "05:0")
 }
 
 func TestIsExistingDirectoryVariants(t *testing.T) {
@@ -3352,16 +3372,26 @@ func envEntriesToMap(env []string) map[string]string {
 	return values
 }
 
+type failingWriter struct {
+	err error
+}
+
+func (w *failingWriter) Write(_ []byte) (int, error) {
+	return 0, w.err
+}
+
+func installTestOpencodeScript(t *testing.T, dir, script string) {
+	t.Helper()
+
+	binDir := filepath.Join(dir, "bin")
+	require.NoError(t, os.MkdirAll(binDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "opencode"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 func TestExecuteAgentProcessPreservesVariantInAgentIdentity(t *testing.T) {
 	tmpDir := t.TempDir()
-	binDir := filepath.Join(tmpDir, "bin")
-	require.NoError(t, os.MkdirAll(binDir, 0o755))
-
-	scriptPath := filepath.Join(binDir, "opencode")
-	script := "#!/bin/sh" + "\n" + "printf '%s' \"$SGAI_AGENT_IDENTITY\" > \"$CAPTURE_FILE\""
-	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
-
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	installTestOpencodeScript(t, tmpDir, "#!/bin/sh\nprintf '%s' \"$SGAI_AGENT_IDENTITY\" > \"$CAPTURE_FILE\"")
 
 	tests := []struct {
 		name         string
@@ -3402,6 +3432,118 @@ func TestExecuteAgentProcessPreservesVariantInAgentIdentity(t *testing.T) {
 			assert.Equal(t, tt.wantIdentity, string(identity))
 		})
 	}
+}
+
+func TestExecuteAgentProcessFlushesBufferedTextOnError(t *testing.T) {
+	tmpDir := t.TempDir()
+	event, errMarshal := json.Marshal(updated(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "text"
+		event.Part = updated(newTestPart(), func(part *part) {
+			part.Text = "final buffered text"
+		})
+	}))
+	require.NoError(t, errMarshal)
+	t.Setenv("TEST_AGENT_EVENT", string(event))
+	installTestOpencodeScript(t, tmpDir, "#!/bin/sh\nprintf '%s\\n' \"$TEST_AGENT_EVENT\"\nexit 1\n")
+
+	var logBuf bytes.Buffer
+	cfg := updated(newTestMultiModelConfig(), func(cfg *multiModelConfig) {
+		cfg.agent = "test-agent"
+		cfg.dir = tmpDir
+		cfg.mcpURL = "http://127.0.0.1:7777/mcp"
+		cfg.coord = state.NewCoordinatorEmpty(filepath.Join(tmpDir, "state.json"))
+		cfg.logWriter = &logBuf
+	})
+
+	workflow := newTestWorkflow()
+	_, _, errState := executeAgentProcess(context.Background(), &cfg, []string{"run"}, "", "[test]", newRingWriter(), &workflow)
+	require.NotNil(t, errState)
+	assert.Contains(t, logBuf.String(), "final buffered text")
+}
+
+func TestExecuteAgentProcessFlushesBufferedTextOnInterrupt(t *testing.T) {
+	tmpDir := t.TempDir()
+	event, errMarshal := json.Marshal(updated(newTestStreamEvent(), func(event *streamEvent) {
+		event.Type = "text"
+		event.Part = updated(newTestPart(), func(part *part) {
+			part.Text = "interrupted buffered text"
+		})
+	}))
+	require.NoError(t, errMarshal)
+	readyFile := filepath.Join(tmpDir, "ready")
+	t.Setenv("TEST_AGENT_EVENT", string(event))
+	t.Setenv("READY_FILE", readyFile)
+	installTestOpencodeScript(t, tmpDir, "#!/bin/sh\nprintf '%s\\n' \"$TEST_AGENT_EVENT\"\n: > \"$READY_FILE\"\nsleep 30\n")
+
+	var logBuf bytes.Buffer
+	cfg := updated(newTestMultiModelConfig(), func(cfg *multiModelConfig) {
+		cfg.agent = "test-agent"
+		cfg.dir = tmpDir
+		cfg.mcpURL = "http://127.0.0.1:7777/mcp"
+		cfg.coord = state.NewCoordinatorEmpty(filepath.Join(tmpDir, "state.json"))
+		cfg.logWriter = &logBuf
+		cfg.paddedsgai = "test"
+	})
+
+	type processResult struct {
+		errState *state.Workflow
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ring := newRingWriter()
+	workflow := newTestWorkflow()
+	resultCh := make(chan processResult, 1)
+	go func() {
+		_, _, errState := executeAgentProcess(ctx, &cfg, []string{"run"}, "", "[test]", ring, &workflow)
+		resultCh <- processResult{errState: errState}
+	}()
+
+	require.Eventually(t, func() bool {
+		ring.mu.Lock()
+		hasOutput := ring.size > 0
+		ring.mu.Unlock()
+		if !hasOutput {
+			return false
+		}
+		_, errStat := os.Stat(readyFile)
+		return errStat == nil
+	}, time.Second, 10*time.Millisecond)
+
+	cancel()
+
+	select {
+	case result := <-resultCh:
+		require.NotNil(t, result.errState)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for interrupted agent process")
+	}
+
+	assert.Contains(t, logBuf.String(), "interrupted buffered text")
+}
+
+func TestExecuteAgentProcessReportsStderrFlushErrors(t *testing.T) {
+	tmpDir := t.TempDir()
+	installTestOpencodeScript(t, tmpDir, "#!/bin/sh\nprintf '%s' 'trailing stderr' >&2\nexit 1\n")
+
+	var logBuf bytes.Buffer
+	errBoom := errors.New("boom")
+	cfg := updated(newTestMultiModelConfig(), func(cfg *multiModelConfig) {
+		cfg.agent = "test-agent"
+		cfg.dir = tmpDir
+		cfg.mcpURL = "http://127.0.0.1:7777/mcp"
+		cfg.coord = state.NewCoordinatorEmpty(filepath.Join(tmpDir, "state.json"))
+		cfg.logWriter = &logBuf
+		cfg.stderrLog = &failingWriter{err: errBoom}
+	})
+
+	workflow := newTestWorkflow()
+	output := captureDefaultLoggerOutput(t, testLogNow, func() {
+		_, _, errState := executeAgentProcess(context.Background(), &cfg, []string{"run"}, "", "[test]", newRingWriter(), &workflow)
+		require.NotNil(t, errState)
+	})
+
+	assert.Contains(t, output, "failed to flush agent stderr: flush prefixed line: boom")
 }
 
 func TestMarkCurrentAgentInSequence(t *testing.T) {
@@ -4015,53 +4157,6 @@ func TestResolveBaseAgent(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := resolveBaseAgent(tt.alias, tt.agentName)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
-func TestFormatElapsed(t *testing.T) {
-	tests := []struct {
-		name     string
-		duration time.Duration
-		expected string
-	}{
-		{
-			name:     "zeroDuration",
-			duration: 0,
-			expected: "[00:00:00.000]",
-		},
-		{
-			name:     "oneSecond",
-			duration: time.Second,
-			expected: "[00:00:01.000]",
-		},
-		{
-			name:     "oneMinute",
-			duration: time.Minute,
-			expected: "[00:01:00.000]",
-		},
-		{
-			name:     "oneHour",
-			duration: time.Hour,
-			expected: "[01:00:00.000]",
-		},
-		{
-			name:     "mixedDuration",
-			duration: time.Hour + 2*time.Minute + 3*time.Second + 4*time.Millisecond,
-			expected: "[01:02:03.004]",
-		},
-		{
-			name:     "millisecondsOnly",
-			duration: 123 * time.Millisecond,
-			expected: "[00:00:00.123]",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			start := time.Now().Add(-tt.duration)
-			result := formatElapsed(start)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -4878,36 +4973,106 @@ func TestJSONPrettyWriterToolNilState(t *testing.T) {
 
 func TestPrefixWriter(t *testing.T) {
 	var buf bytes.Buffer
-	w := &prefixWriter{
-		prefix:    " [test] ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newPrefixWriter(" [test] ", &buf, testLogNow)
 
 	n, err := w.Write([]byte("hello\nworld\n"))
 	require.NoError(t, err)
 	assert.Equal(t, 12, n)
-
-	output := buf.String()
-	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
-	assert.Len(t, lines, 2)
-	for _, line := range lines {
-		assert.Contains(t, line, "[test]")
-	}
-	assert.Contains(t, output, "hello")
-	assert.Contains(t, output, "world")
+	assert.Equal(t, testLogTimestamp()+" [test] hello\n"+testLogTimestamp()+" [test] world\n", buf.String())
 }
 
 func TestPrefixWriterSingleLine(t *testing.T) {
 	var buf bytes.Buffer
-	w := &prefixWriter{
-		prefix:    " [p] ",
-		w:         &buf,
-		startTime: time.Now(),
-	}
+	w := newPrefixWriter(" [p] ", &buf, testLogNow)
 
 	_, _ = w.Write([]byte("single line\n"))
-	assert.Contains(t, buf.String(), "single line")
+	assert.Equal(t, testLogTimestamp()+" [p] single line\n", buf.String())
+}
+
+func TestPrefixWriterWithoutLabelUsesSpaceAfterTime(t *testing.T) {
+	var buf bytes.Buffer
+	w := newPrefixWriter("", &buf, testLogNow)
+
+	_, _ = w.Write([]byte("hello\n"))
+	assert.Equal(t, testLogTimestamp()+" hello\n", buf.String())
+}
+
+func TestPrefixWriterBuffersPartialWritesUntilNewline(t *testing.T) {
+	var buf bytes.Buffer
+	w := newPrefixWriter(" [test] ", &buf, testLogNow)
+
+	n, err := w.Write([]byte("hello"))
+	require.NoError(t, err)
+	assert.Equal(t, 5, n)
+	assert.Empty(t, buf.String())
+
+	n, err = w.Write([]byte(" world\nnext"))
+	require.NoError(t, err)
+	assert.Equal(t, 11, n)
+	assert.Equal(t, testLogTimestamp()+" [test] hello world\n", buf.String())
+
+	n, err = w.Write([]byte(" line\n"))
+	require.NoError(t, err)
+	assert.Equal(t, 6, n)
+	assert.Equal(t, testLogTimestamp()+" [test] hello world\n"+testLogTimestamp()+" [test] next line\n", buf.String())
+}
+
+func TestPrefixWriterFlushTrimsTrailingCarriageReturnAtEOF(t *testing.T) {
+	var buf bytes.Buffer
+	w := newPrefixWriter(" [test] ", &buf, testLogNow)
+
+	_, errWrite := w.Write([]byte("hello\r"))
+	require.NoError(t, errWrite)
+
+	errFlush := w.Flush()
+	require.NoError(t, errFlush)
+	assert.Equal(t, testLogTimestamp()+" [test] hello\n", buf.String())
+}
+
+func TestConfigureSgaiLoggerPrefixesLogOutput(t *testing.T) {
+	var buf bytes.Buffer
+	originalWriter := log.Writer()
+	originalFlags := log.Flags()
+	t.Cleanup(func() {
+		log.SetOutput(originalWriter)
+		log.SetFlags(originalFlags)
+	})
+
+	configureSgaiLogger(&buf)
+	log.Println("logger output")
+
+	assert.Regexp(t, `^\[\d{2}:\d{2}:\d{2}\] logger output\n$`, buf.String())
+}
+
+func TestHandleWorkingLoopLogsViaDefaultLogger(t *testing.T) {
+	cfg := newTestMultiModelConfig()
+	cfg.paddedsgai = "test"
+	cfg.agent = "builder"
+	sessionID := "session-123"
+
+	output := captureDefaultLoggerOutput(t, testLogNow, func() {
+		assert.Equal(t, 1, handleWorkingLoop(&cfg, &sessionID, 0))
+	})
+
+	assert.Equal(t, "session-123", sessionID)
+	assert.Equal(t, timestampedTestOutput(" ", "[test] agent builder still working, re-running..."), output)
+}
+
+func captureDefaultLoggerOutput(t *testing.T, now func() time.Time, fn func()) string {
+	t.Helper()
+
+	var buf bytes.Buffer
+	originalWriter := log.Writer()
+	originalFlags := log.Flags()
+	log.SetFlags(0)
+	log.SetOutput(newPrefixWriter("", &buf, now))
+	t.Cleanup(func() {
+		log.SetOutput(originalWriter)
+		log.SetFlags(originalFlags)
+	})
+
+	fn()
+	return buf.String()
 }
 
 func TestCopyCompletionArtifactsToRetrospectiveNoDir(t *testing.T) {
