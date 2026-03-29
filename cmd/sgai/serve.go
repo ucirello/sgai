@@ -26,7 +26,7 @@ import (
 	"time"
 
 	"github.com/adrg/xdg"
-	"github.com/sandgardenhq/sgai/pkg/state"
+	"github.com/ucirello/sgai/pkg/state"
 	"github.com/yuin/goldmark"
 	emoji "github.com/yuin/goldmark-emoji"
 	"github.com/yuin/goldmark/extension"

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sandgardenhq/sgai/pkg/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/ucirello/sgai/pkg/state"
 )
 
 func startCoordinatorQuestion(t *testing.T, coord *state.Coordinator, question *state.MultiChoiceQuestion, humanMessage string) (<-chan error, context.CancelFunc) {

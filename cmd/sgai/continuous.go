@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/adhocore/gronx"
-	"github.com/sandgardenhq/sgai/pkg/state"
+	"github.com/ucirello/sgai/pkg/state"
 )
 
 type triggerKind string

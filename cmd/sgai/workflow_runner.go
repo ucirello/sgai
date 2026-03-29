@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/sandgardenhq/sgai/pkg/state"
+	"github.com/ucirello/sgai/pkg/state"
 )
 
 type workflowRunner struct {
