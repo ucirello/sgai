@@ -60,7 +60,11 @@ func (s *Server) forkWorkspaceService(workspacePath, goalContent string) (forkWo
 		return forkWorkspaceResult{}, errGoalContentEmpty
 	}
 
-	name := generateRandomForkName()
+	name := filepath.Base(workspacePath)
+	if rootPath := getRootWorkspacePath(workspacePath); rootPath != "" {
+		name = filepath.Base(rootPath)
+	}
+	name += "-" + generateRandomForkName()
 
 	parentDir := filepath.Dir(workspacePath)
 	forkPath := filepath.Join(parentDir, name)
