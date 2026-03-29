@@ -29,3 +29,13 @@ absorb-sgai:
 		mkdir -p "$$(dirname "cmd/sgai/skel/.sgai/$${f#sgai/}")" || true; \
 		mv -v "$$f" "cmd/sgai/skel/.sgai/$${f#sgai/}"; \
 	done
+
+diff-absorb-sgai:
+	@tmpdir="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmpdir"' EXIT; \
+	cp -R cmd/sgai/skel "$$tmpdir/skel"; \
+	find sgai/ -type f ! -name 'README.md' ! -name '.DS_Store' | while read f; do \
+		mkdir -p "$$(dirname "$$tmpdir/skel/.sgai/$${f#sgai/}")" || true; \
+		cp "$$f" "$$tmpdir/skel/.sgai/$${f#sgai/}"; \
+	done; \
+	diff -ur cmd/sgai/skel "$$tmpdir/skel" || true

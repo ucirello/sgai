@@ -135,6 +135,12 @@ You can communicate with other agents using the messaging system:
 - Requesting clarification or decisions
 - Notifying about blocking issues
 
+**Review authority when specialist reviewers exist:**
+- If a dedicated reviewer agent exists for the relevant language or domain (for example `go-reviewer` or `react-reviewer`), do not issue formal specialist verdicts such as `PASS`, `NEEDS WORK`, `APPROVED`, or `BLOCKED` on that reviewer agent's behalf.
+- You may still report factual implementation findings, blockers, verification results, and concrete technical concerns that you directly observed.
+- When specialist review judgment is needed, route to the appropriate reviewer agent or ask the coordinator to do so.
+- Keep your own status messages grounded in implementation evidence rather than reviewer authority.
+
 ---
 
 ## Your Process

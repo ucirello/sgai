@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -41,13 +43,20 @@ func TestForkWorkspaceService(t *testing.T) {
 			errContains: "",
 			validate: func(t *testing.T, _ string, result forkWorkspaceResult) {
 				t.Helper()
-				assert.NotEmpty(t, result.Name)
+				const wantGoalContent = "---\nflow: |\n  \"agent1\" -> \"agent2\"\n---\n# Test Goal"
+
+				assertForkNameHasRootPrefix(t, result.Name, "root-workspace")
 				assert.DirExists(t, result.Dir)
+				assert.Equal(t, result.Name, filepath.Base(result.Dir))
 				assert.Equal(t, "root-workspace", result.Parent)
 				assert.NotEmpty(t, result.CreatedAt)
 
 				goalPath := filepath.Join(result.Dir, "GOAL.md")
 				assert.FileExists(t, goalPath)
+
+				goalContent, errRead := os.ReadFile(goalPath)
+				require.NoError(t, errRead)
+				assert.Equal(t, wantGoalContent, string(goalContent))
 			},
 		},
 		{
@@ -111,28 +120,32 @@ func TestForkWorkspaceService(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rootDir := t.TempDir()
-			server := NewServer(rootDir, newTestServerPaths(), "")
+			synctest.Test(t, func(t *testing.T) {
+				rootDir := t.TempDir()
+				server := NewServer(rootDir, newTestServerPaths(), "")
+				expectedCreatedAt := time.Now().UTC().Format(time.RFC3339)
 
-			var workspacePath string
-			if tt.setupFunc != nil {
-				workspacePath = tt.setupFunc(t, rootDir)
-			}
-
-			result, err := server.forkWorkspaceService(workspacePath, tt.goalContent)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errContains != "" {
-					assert.Contains(t, err.Error(), tt.errContains)
+				var workspacePath string
+				if tt.setupFunc != nil {
+					workspacePath = tt.setupFunc(t, rootDir)
 				}
-				return
-			}
 
-			require.NoError(t, err)
-			if tt.validate != nil {
-				tt.validate(t, rootDir, result)
-			}
+				result, err := server.forkWorkspaceService(workspacePath, tt.goalContent)
+
+				if tt.wantErr {
+					require.Error(t, err)
+					if tt.errContains != "" {
+						assert.Contains(t, err.Error(), tt.errContains)
+					}
+					return
+				}
+
+				require.NoError(t, err)
+				assert.Equal(t, expectedCreatedAt, result.CreatedAt)
+				if tt.validate != nil {
+					tt.validate(t, rootDir, result)
+				}
+			})
 		})
 	}
 }
@@ -152,6 +165,7 @@ func TestForkExternalWorkspaceSiblingPlacement(t *testing.T) {
 	result, err := server.forkWorkspaceService(externalRepo, "---\nflow: |\n  \"a\" -> \"b\"\n---\n# Test Goal")
 	require.NoError(t, err)
 
+	assertForkNameHasRootPrefix(t, result.Name, "my-external-repo")
 	assert.Equal(t, externalParent, filepath.Dir(result.Dir))
 	assert.DirExists(t, result.Dir)
 	assert.NotEqual(t, sgaiRoot, filepath.Dir(result.Dir))
@@ -863,6 +877,14 @@ func TestDeleteMessageServiceNotFoundError(t *testing.T) {
 	require.NoError(t, errCoord)
 	_, errDelete := server.deleteMessageService(wsDir, 999)
 	require.Error(t, errDelete)
+}
+
+func assertForkNameHasRootPrefix(t *testing.T, name, rootName string) {
+	t.Helper()
+	require.NotEmpty(t, name)
+	require.True(t, strings.HasPrefix(name, rootName+"-"), "name %q should start with %q", name, rootName+"-")
+	parts := strings.Split(strings.TrimPrefix(name, rootName+"-"), "-")
+	require.Len(t, parts, 3)
 }
 
 func TestGenerateRandomForkName(t *testing.T) {

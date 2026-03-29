@@ -174,6 +174,11 @@ _, err := rand.Read(key)
 - [ ] No goroutine leaks (blocked on unreachable channels)
 - [ ] Synchronous functions preferred (let caller add concurrency)
 - [ ] Data races checked (`go test -race`)
+- [ ] Time- and scheduler-sensitive tests use `testing/synctest` or an equally deterministic approach when the target Go version supports it, instead of real wall-clock sleeps, polling, or scheduler races
+
+**`testing/synctest` scope:**
+- Prefer it for bubble-local timers, timeouts, goroutine coordination, and similar concurrency tests.
+- Do not require it mechanically for network I/O, external processes, system calls, or mutex waits; require proper fakes or isolation for those boundaries instead.
 
 ### 8. Synchronous Functions
 
@@ -338,7 +343,7 @@ func Process(req Request) error
 - [ ] Uses `slices.Collect(maps.Keys())` instead of manual loops to extract keys
 - [ ] Uses `slices.Collect(maps.Values())` instead of manual loops to extract values
 - [ ] Uses generics appropriately (not over-generalized, not under-utilized)
-- [ ] Time-dependent code uses dependency injection, not `time.Now()` directly
+- [ ] Time-dependent code is testable without wall-clock flakiness; when available, prefer `testing/synctest` for eligible timer/concurrency tests before requiring custom clock injection
 - [ ] Iterators (Go 1.23+) used for custom iteration patterns when cleaner than alternatives
 - [ ] Uses `slices.Min` instead of loops where applicable
 - [ ] Uses `slices.Max` instead of loops where applicable
@@ -366,6 +371,7 @@ for _, item := range items {
 - https://pkg.go.dev/slices
 - https://pkg.go.dev/maps
 - https://pkg.go.dev/iter (Go 1.23+)
+- https://pkg.go.dev/testing/synctest
 - https://go.dev/doc/tutorial/generics
 
 ### 17. File Organization
