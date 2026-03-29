@@ -136,6 +136,71 @@ func TestRunScriptActionLogsQuotedArguments(t *testing.T) {
 	assert.NotContains(t, output, "$ printf %s hello world")
 }
 
+func TestStartCommandServiceFlushesTrailingPartialOutput(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, server, rootDir, "partial-output-ws")
+
+	result := server.startCommandService(wsDir, &commandStartSpec{
+		command:               "sh",
+		args:                  []string{"-c", "printf trailing-partial"},
+		stdin:                 "",
+		env:                   nil,
+		logLabel:              "test",
+		headerLines:           nil,
+		startedMessage:        "started",
+		alreadyRunningMessage: "already running",
+	})
+	require.NoError(t, result.Error)
+
+	require.Eventually(t, func() bool {
+		st := server.getAdhocState(wsDir)
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		return !st.running
+	}, time.Second, 10*time.Millisecond)
+
+	st := server.getAdhocState(wsDir)
+	st.mu.Lock()
+	output := st.output.String()
+	st.mu.Unlock()
+
+	assert.Regexp(t, `(?m)^\[\d{2}:\d{2}:\d{2}\]\[partial-output-ws\]\[test:0000\] trailing-partial$`, output)
+}
+
+func TestStartCommandServiceKeepsStdoutAndStderrPartialLinesSeparate(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, server, rootDir, "split-streams-ws")
+
+	result := server.startCommandService(wsDir, &commandStartSpec{
+		command:               "sh",
+		args:                  []string{"-c", "printf stdout; sleep 0.05; printf stderr >&2; sleep 0.05; printf ' tail\\n'; sleep 0.05; printf ' tail\\n' >&2"},
+		stdin:                 "",
+		env:                   nil,
+		logLabel:              "test",
+		headerLines:           nil,
+		startedMessage:        "started",
+		alreadyRunningMessage: "already running",
+	})
+	require.NoError(t, result.Error)
+
+	require.Eventually(t, func() bool {
+		st := server.getAdhocState(wsDir)
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		return !st.running
+	}, 2*time.Second, 10*time.Millisecond)
+
+	st := server.getAdhocState(wsDir)
+	st.mu.Lock()
+	output := st.output.String()
+	st.mu.Unlock()
+
+	assert.Regexp(t, `(?m)^\[\d{2}:\d{2}:\d{2}\]\[split-streams-ws\]\[test:0000\] stdout tail$`, output)
+	assert.Regexp(t, `(?m)^\[\d{2}:\d{2}:\d{2}\]\[split-streams-ws\]\[test:0000\] stderr tail$`, output)
+	assert.NotContains(t, output, "stdoutstderr")
+	assert.NotContains(t, output, "stderrstdout")
+}
+
 func TestAdhocStopServiceDoesNotReportStopAsCommandError(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, server, rootDir, "stop-coordination-ws")
@@ -161,6 +226,7 @@ func TestAdhocStopServiceDoesNotReportStopAsCommandError(t *testing.T) {
 
 	stopResult := server.adhocStopService(wsDir)
 	assert.Contains(t, stopResult.Output, "[stopped by user]")
+	assert.Regexp(t, `(?m)^\[\d{2}:\d{2}:\d{2}\]\[stop-coordination-ws\]\[test:0000\] \[stopped by user\]$`, stopResult.Output)
 
 	require.Eventually(t, func() bool {
 		st := server.getAdhocState(wsDir)
@@ -175,4 +241,5 @@ func TestAdhocStopServiceDoesNotReportStopAsCommandError(t *testing.T) {
 	st.mu.Unlock()
 
 	assert.NotContains(t, output, "[command exited with error:", output)
+	assert.Regexp(t, `(?m)^\[\d{2}:\d{2}:\d{2}\]\[stop-coordination-ws\]\[test:0000\] \[stopped by user\]$`, output)
 }

@@ -1,13 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"container/ring"
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -90,18 +91,13 @@ func (r *ringWriter) Write(data []byte) (int, error) {
 	n := len(data)
 	combined := r.partial
 	combined = append(combined, data...)
-	lines := splitLines(combined)
+	lines, partial := scanBufferedLines(combined, false)
 
-	for i := 0; i < len(lines)-1; i++ {
-		r.addLine(lines[i])
+	for _, line := range lines {
+		r.addLine(line)
 	}
 
-	if len(combined) > 0 && combined[len(combined)-1] == '\n' {
-		r.addLine(lines[len(lines)-1])
-		r.partial = nil
-	} else {
-		r.partial = []byte(lines[len(lines)-1])
-	}
+	r.partial = partial
 
 	return n, nil
 }
@@ -114,6 +110,8 @@ func (r *ringWriter) dump(w io.Writer) {
 		return
 	}
 
+	pw := newPrefixWriter("", w, time.Now)
+
 	startRing := r.ring
 	if r.size < outputBufferSize {
 		startRing = r.ring.Move(-r.size)
@@ -121,14 +119,15 @@ func (r *ringWriter) dump(w io.Writer) {
 
 	startRing.Do(func(v any) {
 		if v != nil {
-			if _, err := fmt.Fprintln(w, v.(string)); err != nil {
+			if _, err := pw.Write([]byte(v.(string) + "\n")); err != nil {
 				log.Println("write failed:", err)
 			}
 		}
 	})
 
-	if len(r.partial) > 0 {
-		if _, err := fmt.Fprintln(w, string(r.partial)); err != nil {
+	lines, _ := scanBufferedLines(r.partial, true)
+	for _, line := range lines {
+		if _, err := pw.Write([]byte(line + "\n")); err != nil {
 			log.Println("write failed:", err)
 		}
 	}
@@ -142,8 +141,25 @@ func (r *ringWriter) addLine(line string) {
 	}
 }
 
-func splitLines(data []byte) []string {
-	return strings.Split(string(data), "\n")
+func scanBufferedLines(data []byte, atEOF bool) (lines []string, partial []byte) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	remaining := data
+	for len(remaining) > 0 {
+		advance, token, errScan := bufio.ScanLines(remaining, atEOF)
+		if errScan != nil {
+			return lines, append([]byte{}, remaining...)
+		}
+		if advance == 0 {
+			return lines, append([]byte{}, remaining...)
+		}
+		lines = append(lines, string(token))
+		remaining = remaining[advance:]
+	}
+
+	return lines, nil
 }
 
 func prepareLogFile(logPath string) (*os.File, error) {
@@ -196,18 +212,13 @@ func (w *sessionLogWriter) Write(data []byte) (int, error) {
 	n := len(data)
 	combined := w.partial
 	combined = append(combined, data...)
-	lines := splitLines(combined)
+	lines, partial := scanBufferedLines(combined, false)
 
-	for i := 0; i < len(lines)-1; i++ {
-		w.addLine(lines[i])
+	for _, line := range lines {
+		w.addLine(line)
 	}
 
-	if len(combined) > 0 && combined[len(combined)-1] == '\n' {
-		w.addLine(lines[len(lines)-1])
-		w.partial = nil
-	} else {
-		w.partial = []byte(lines[len(lines)-1])
-	}
+	w.partial = partial
 
 	return n, nil
 }

@@ -47,7 +47,7 @@ const (
 func (r *workflowRunner) run(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
-			fmt.Println("["+r.paddedsgai+"]", "interrupted, stopping workflow...")
+			log.Println("["+r.paddedsgai+"]", "interrupted, stopping workflow...")
 			return
 		}
 
@@ -103,7 +103,7 @@ func (r *workflowRunner) runAgent(ctx context.Context, currentAgent string) runR
 		if redirected {
 			return resultContinue
 		}
-		fmt.Println("["+r.paddedsgai+"]", "complete:", r.wfState.Task)
+		log.Println("["+r.paddedsgai+"]", "complete:", r.wfState.Task)
 		return resultComplete
 	}
 
@@ -115,12 +115,12 @@ func (r *workflowRunner) runAgent(ctx context.Context, currentAgent string) runR
 func (r *workflowRunner) resolveNextAgent(currentAgent string) string {
 	pendingAgent := findFirstPendingMessageAgent(r.wfState.Messages)
 	if pendingAgent != "" {
-		fmt.Println("["+r.paddedsgai+"]", "pending messages for", pendingAgent, "- redirecting")
+		log.Println("["+r.paddedsgai+"]", "pending messages for", pendingAgent, "- redirecting")
 		return pendingAgent
 	}
 
 	if r.flowDag.isTerminal(currentAgent) {
-		fmt.Println("["+r.paddedsgai+"]", "reached terminal node", currentAgent)
+		log.Println("["+r.paddedsgai+"]", "reached terminal node", currentAgent)
 		return "coordinator"
 	}
 
@@ -133,7 +133,7 @@ func (r *workflowRunner) resolveNextAgent(currentAgent string) string {
 
 func (r *workflowRunner) prepareAgent(currentAgent string) error {
 	if r.previousAgent != "" && r.previousAgent != currentAgent {
-		fmt.Println("["+r.paddedsgai+"]", r.previousAgent, "->", currentAgent)
+		log.Println("["+r.paddedsgai+"]", r.previousAgent, "->", currentAgent)
 		r.wfState.Todos = []state.TodoItem{}
 		if errOverlay := applyLayerFolderOverlay(r.dir); errOverlay != nil {
 			return fmt.Errorf("apply overlay on agent transition: %w", errOverlay)
