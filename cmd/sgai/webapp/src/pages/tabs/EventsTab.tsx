@@ -1,4 +1,4 @@
-import { useState, useTransition, type MouseEvent } from "react";
+import { useState } from "react";
 import { ChevronRight, Square } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,7 +8,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Button } from "@/components/ui/button";
 import { ActionBar } from "@/components/ActionBar";
 import { MarkdownContent } from "@/components/MarkdownContent";
-import { api } from "@/lib/api";
 import { useFactoryState } from "@/lib/factory-state";
 import { resolveWorkspaceByName } from "@/lib/workspace-identity";
 import { useAdhocRun } from "@/hooks/useAdhocRun";
@@ -195,8 +194,6 @@ function EventTimeline({ events }: { events: ApiEventEntry[] }) {
 }
 
 export function EventsTab({ workspaceName, goalContent, actions, actionConfigError }: EventsTabProps) {
-  const [goalOpenError, setGoalOpenError] = useState<string | null>(null);
-  const [isGoalOpenPending, startGoalOpenTransition] = useTransition();
   const [actionOutputOpen, setActionOutputOpen] = useState(false);
 
   const hasActionBar = Boolean((actions && actions.length > 0) || actionConfigError?.trim());
@@ -212,20 +209,6 @@ export function EventsTab({ workspaceName, goalContent, actions, actionConfigErr
 
   const { workspaces, fetchStatus } = useFactoryState();
   const workspace = resolveWorkspaceByName(workspaces, workspaceName);
-
-  const handleOpenGoal = (event: MouseEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (!workspaceName || isGoalOpenPending) return;
-    setGoalOpenError(null);
-    startGoalOpenTransition(async () => {
-      try {
-        await api.workspaces.openEditorGoal(workspaceName);
-      } catch (err) {
-        setGoalOpenError(err instanceof Error ? err.message : "Failed to open GOAL.md");
-      }
-    });
-  };
 
   const handleActionClick = (action: ApiActionEntry, variables: Record<string, string>) => {
     setActionOutputOpen(true);
@@ -306,29 +289,11 @@ export function EventsTab({ workspaceName, goalContent, actions, actionConfigErr
               aria-hidden="true"
             />
             <span>GOAL.md</span>
-            <span className="ml-auto">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                title="Open GOAL.md in editor"
-                aria-label="Open GOAL.md in editor"
-                onClick={handleOpenGoal}
-                disabled={isGoalOpenPending}
-              >
-                📝
-              </Button>
-            </span>
           </summary>
           <MarkdownContent
             content={goalContent}
             className="p-4 border rounded-lg bg-muted/20"
           />
-          {goalOpenError && (
-            <p className="text-xs text-destructive mt-2" role="alert">
-              {goalOpenError}
-            </p>
-          )}
         </details>
       )}
       <Card>

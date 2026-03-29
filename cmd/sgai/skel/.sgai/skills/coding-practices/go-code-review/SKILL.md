@@ -503,6 +503,15 @@ func foo() {
 - [ ] No shadowing of outer variables unintentionally
 - [ ] Loop variables don't leak outside loop (use for-range copy or explicit variable)
 
+## Review Evidence Freshness
+
+### Blocking Findings Must Be Revalidated
+
+- [ ] Re-open every cited `file:line` after drafting a blocking finding and confirm the current source still matches the described problem
+- [ ] For duplicate-test, dead-code, or redundant-coverage findings, name the canonical surviving coverage/reference and verify the allegedly redundant target still exists in current source
+- [ ] If another agent reports that a finding is contradicted by current source, treat the earlier report as stale until the cited lines are re-read and the finding is either confirmed or withdrawn
+- [ ] Do not send `NEEDS WORK` with stale line references or issue text copied forward without revalidation
+
 ## Quick Checklist
 
 For fast reviews, check these critical items:
@@ -519,6 +528,7 @@ For fast reviews, check these critical items:
 10. **Modern idioms** - Uses slices/maps packages where applicable
 11. **Switch statements** - Use switch for multi-way conditionals
 12. **Dead code** - No bare blocks, unreachable code, or leftover references
+13. **Evidence freshness** - Blocking citations re-opened against current source
 
 ## Review Output Format
 
