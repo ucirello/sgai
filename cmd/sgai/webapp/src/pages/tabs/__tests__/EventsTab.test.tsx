@@ -70,7 +70,6 @@ const mockActionRun = mock(() => Promise.resolve({ output: "", running: false })
 const mockStartActionRun = mock(() => Promise.resolve());
 
 const mockTriggerFactoryRefresh = mock(() => {});
-const mockOpenEditorGoal = mock(() => Promise.resolve({ opened: true }));
 const mockAdhoc = mock(() => Promise.resolve({ output: "", running: false }));
 const mockAdhocStatus = mock(() => Promise.resolve({ output: "", running: false }));
 const mockAdhocStop = mock(() => Promise.resolve({ output: "", running: false }));
@@ -131,7 +130,6 @@ describe("EventsTab", () => {
     mockActionRun.mockClear();
     mockStartActionRun.mockClear();
     mockTriggerFactoryRefresh.mockClear();
-    mockOpenEditorGoal.mockClear();
     mockAdhoc.mockClear();
     mockAdhocStatus.mockClear();
     mockAdhocStop.mockClear();
@@ -143,7 +141,6 @@ describe("EventsTab", () => {
       lastFetchedAt: Date.now(),
     }));
     spyOn(factoryStateModule, "triggerFactoryRefresh").mockImplementation(() => mockTriggerFactoryRefresh());
-    spyOn(api.workspaces, "openEditorGoal").mockImplementation((...args) => mockOpenEditorGoal(...args));
     spyOn(api.workspaces, "adhoc").mockImplementation((...args) => mockAdhoc(...args));
     spyOn(api.workspaces, "actionRun").mockImplementation((...args) => mockActionRun(...args));
     spyOn(api.workspaces, "adhocStatus").mockImplementation((...args) => mockAdhocStatus(...args));
@@ -313,11 +310,6 @@ describe("EventsTab", () => {
   });
 
   describe("goal content section", () => {
-    it("does not show GOAL.md section when no goal content", () => {
-      renderEventsTab();
-      expect(screen.queryByText("GOAL.md")).toBeNull();
-    });
-
     it("shows GOAL.md section when goal content is provided", () => {
       renderEventsTab({ goalContent: "# My Goal" });
       expect(screen.getByText("GOAL.md")).toBeTruthy();

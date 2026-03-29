@@ -1,4 +1,4 @@
-import { useState, useTransition, type MouseEvent } from "react";
+import { useState, useTransition } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -258,9 +258,6 @@ export function SessionTab({ workspaceName, pmContent, hasProjectMgmt }: Session
   const [steerError, setSteerError] = useState<string | null>(null);
   const [steerSuccess, setSteerSuccess] = useState(false);
   const [isSteering, startSteerTransition] = useTransition();
-  const [pmOpenError, setPmOpenError] = useState<string | null>(null);
-  const [isPmOpenPending, startPmOpenTransition] = useTransition();
-
   const { workspaces } = useFactoryState();
   const workspace = resolveWorkspaceByName(workspaces, workspaceName);
 
@@ -300,20 +297,6 @@ export function SessionTab({ workspaceName, pmContent, hasProjectMgmt }: Session
       event.preventDefault();
       submitSteer();
     }
-  };
-
-  const handleOpenProjectManagement = (event: MouseEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (!workspaceName || isPmOpenPending) return;
-    setPmOpenError(null);
-    startPmOpenTransition(async () => {
-      try {
-        await api.workspaces.openEditorProjectManagement(workspaceName);
-      } catch (err) {
-        setPmOpenError(err instanceof Error ? err.message : "Failed to open PROJECT_MANAGEMENT.md");
-      }
-    });
   };
 
   return (
@@ -427,19 +410,6 @@ export function SessionTab({ workspaceName, pmContent, hasProjectMgmt }: Session
               aria-hidden="true"
             />
             <span>PROJECT_MANAGEMENT.md</span>
-            <span className="ml-auto">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                title="Open PROJECT_MANAGEMENT.md in editor"
-                aria-label="Open PROJECT_MANAGEMENT.md in editor"
-                onClick={handleOpenProjectManagement}
-                disabled={isPmOpenPending}
-              >
-                📝
-              </Button>
-            </span>
           </summary>
           {pmContent ? (
             <MarkdownContent
@@ -448,11 +418,6 @@ export function SessionTab({ workspaceName, pmContent, hasProjectMgmt }: Session
             />
           ) : (
             <p className="text-sm italic text-muted-foreground p-4">No content available</p>
-          )}
-          {pmOpenError && (
-            <p className="text-xs text-destructive mt-2" role="alert">
-              {pmOpenError}
-            </p>
           )}
         </details>
       )}

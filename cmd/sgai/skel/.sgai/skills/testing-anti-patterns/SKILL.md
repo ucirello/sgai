@@ -1,6 +1,6 @@
 ---
 name: testing-anti-patterns
-description: Use when writing or changing tests, adding mocks, or tempted to add test-only methods to production code - prevents testing mock behavior, production pollution with test-only methods, and mocking without understanding dependencies
+description: Use when writing or changing tests, adding mocks, tempted to add test-only methods to production code, or considering absence tests for deleted helpers, deleted client members, exported API shape, or removed routes. Prevents testing mock behavior, production pollution with test-only methods, mocking without understanding dependencies, and memorial tests whose sole purpose is to prove deleted internal/client surface stays gone while preserving tests for current observable behavior and current public/server contracts such as 404 removed-route checks.
 ---
 
 # Testing Anti-Patterns
@@ -11,6 +11,8 @@ Tests must verify real behavior, not mock behavior. Mocks are a means to isolate
 
 **Core principle:** Test what the code does, not what the mocks do.
 
+**After deletion, test the surviving behavior or public/server contract, not the tombstone of the deleted implementation.**
+
 **Following strict TDD prevents these anti-patterns.**
 
 ## The Iron Laws
@@ -19,6 +21,8 @@ Tests must verify real behavior, not mock behavior. Mocks are a means to isolate
 1. NEVER test mock behavior
 2. NEVER add test-only methods to production classes
 3. NEVER mock without understanding dependencies
+4. NEVER add tests whose sole purpose is to prove deleted internal/client surface stays gone
+5. DO keep tests for current observable behavior and current public/server contracts after deletion
 ```
 
 ## Anti-Pattern 1: Testing Mock Behavior
@@ -251,6 +255,73 @@ TDD cycle:
 4. THEN claim complete
 ```
 
+## Anti-Pattern 6: Memorial Tests for Deleted Code
+
+**The violation:**
+```typescript
+// ❌ BAD: Tombstone test for deleted client surface
+test('openEditorGoal stays deleted', () => {
+  expect('openEditorGoal' in api.workspaces).toBe(false);
+  expect('openEditorProjectManagement' in api.workspaces).toBe(false);
+});
+```
+
+**Why this is wrong:**
+- It tests dead surface area instead of current behavior
+- It locks in code shape after deletion rather than verifying what users or callers observe now
+- It duplicates better coverage that should already exist in UI behavior tests or public/server contract tests
+- It turns deleted code into a maintenance burden by keeping a tombstone around in test form
+
+**The fix:**
+```typescript
+// ✅ GOOD: Verify the current product behavior
+test('goal panel does not render a file-specific Open in Editor button', () => {
+  renderGoalPanel();
+  expect(screen.queryByRole('button', { name: /open in editor/i })).not.toBeInTheDocument();
+});
+
+// ✅ GOOD: Verify the current server contract after route removal
+test('removed file-specific open-editor route returns 404', async () => {
+  const response = await server.inject({
+    method: 'POST',
+    url: '/api/v1/workspaces/test-ws/open-editor/goal',
+  });
+
+  expect(response.statusCode).toBe(404);
+});
+```
+
+### Gate Function
+
+```
+BEFORE adding a test after deleting code:
+  1. Ask: "What current behavior or contract still matters now that this code is gone?"
+  2. Ask: "Does this test describe current observable UI behavior or a current public/server contract?"
+
+  IF yes:
+    Keep or add the behavior/contract test
+    Examples:
+      - Button no longer renders in the UI
+      - Removed route now returns 404
+      - Current API response changed in a user-visible way
+
+  IF the test only proves a deleted helper, deleted client member, or deleted repo-internal export is absent:
+    STOP - Don't add it
+    Delete the memorial test
+
+  IF the surface is a documented external public API contract:
+    Treat that as a public-contract question, not a deleted-internal-surface tombstone test
+```
+
+### Rationalization Table
+
+| Excuse | Reality |
+|--------|---------|
+| "More tests are always safer" | Extra tests that only pin dead surface increase maintenance cost without protecting real behavior. |
+| "It was exported, so we need a regression test proving it stays missing" | Repo-local reachability is not automatically a supported public contract; test observable behavior or actual public/server contract instead. |
+| "Without an absence test someone may re-add it" | Re-adding unused surface is a code-review and cleanup problem unless it changes user-visible or public-contract behavior. |
+| "404 tests for removed routes also mention deleted code, so they must be equally bad" | A 404 check is valid when 404 is the current server contract after removal. |
+
 ## When Mocks Become Too Complex
 
 **Warning signs:**
@@ -270,8 +341,11 @@ TDD cycle:
 2. **Watch it fail** → Confirms test tests real behavior, not mocks
 3. **Minimal implementation** → No test-only methods creep in
 4. **Real dependencies** → You see what the test actually needs before mocking
+5. **Clear contract focus after deletion** → You test surviving behavior and current contracts, not deleted implementation shape
 
 **If you're testing mock behavior, you violated TDD** - you added mocks without watching test fail against real code first.
+
+**If you're writing a tombstone test for deleted internals, you violated TDD's focus on current behavior** - you are preserving dead shape instead of describing surviving behavior.
 
 ## Quick Reference
 
@@ -282,6 +356,7 @@ TDD cycle:
 | Mock without understanding | Understand dependencies first, mock minimally |
 | Incomplete mocks | Mirror real API completely |
 | Tests as afterthought | TDD - tests first |
+| Memorial tests for deleted helpers/client members | Keep only tests for current observable behavior or current public/server contract |
 | Over-complex mocks | Consider integration tests |
 
 ## Red Flags
@@ -292,11 +367,19 @@ TDD cycle:
 - Test fails when you remove mock
 - Can't explain why mock is needed
 - Mocking "just to be safe"
+- "Let's assert the deleted member is undefined"
+- "More tests are always safer"
+- "It used to be exported, so absence itself is the contract"
+- "Let's prove the helper stays gone"
 
 ## The Bottom Line
 
 **Mocks are tools to isolate, not things to test.**
 
+**Deleted code is not a contract by itself.**
+
 If TDD reveals you're testing mock behavior, you've gone wrong.
 
-Fix: Test real behavior or question why you're mocking at all.
+If a deletion-focused test only memorializes dead internal or client surface, you've gone wrong.
+
+Fix: Test real behavior, or keep only the current observable/public-contract checks that still matter after deletion.

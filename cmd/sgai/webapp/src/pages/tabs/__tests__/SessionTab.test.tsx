@@ -13,7 +13,6 @@ beforeEach(() => {
 });
 
 const mockSteer = mock(() => Promise.resolve({ success: true, message: "ok" }));
-const mockOpenEditorPM = mock(() => Promise.resolve({ opened: true }));
 const mockTriggerFactoryRefresh = mock(() => {});
 
 const createDollarBreakdown = (overrides = {}) => ({
@@ -104,7 +103,6 @@ describe("SessionTab", () => {
   beforeEach(() => {
     mockWorkspaces = [createMockWorkspace()];
     mockSteer.mockClear();
-    mockOpenEditorPM.mockClear();
     mockTriggerFactoryRefresh.mockClear();
 
     spyOn(factoryStateModule, "useFactoryState").mockImplementation(() => ({
@@ -114,7 +112,6 @@ describe("SessionTab", () => {
     }));
     spyOn(factoryStateModule, "triggerFactoryRefresh").mockImplementation(() => mockTriggerFactoryRefresh());
     spyOn(api.workspaces, "steer").mockImplementation((...args) => mockSteer(...args));
-    spyOn(api.workspaces, "openEditorProjectManagement").mockImplementation((...args) => mockOpenEditorPM(...args));
     spyOn(markdownContentModule, "MarkdownContent").mockImplementation((...args) => mockMarkdownContent(...args));
   });
 
@@ -436,11 +433,6 @@ describe("SessionTab", () => {
   });
 
   describe("project management section", () => {
-    it("does not show PM section when hasProjectMgmt is false", () => {
-      renderSessionTab({ hasProjectMgmt: false });
-      expect(screen.queryByText("PROJECT_MANAGEMENT.md")).toBeNull();
-    });
-
     it("shows PM section when hasProjectMgmt is true", () => {
       renderSessionTab({ hasProjectMgmt: true, pmContent: "# PM" });
       expect(screen.getByText("PROJECT_MANAGEMENT.md")).toBeTruthy();

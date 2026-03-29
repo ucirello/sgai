@@ -96,8 +96,6 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/workspaces/{name}/steer", s.handleAPISteer)
 	mux.HandleFunc("POST /api/v1/workspaces/{name}/pin", s.handleAPITogglePin)
 	mux.HandleFunc("POST /api/v1/workspaces/{name}/open-editor", s.handleAPIOpenEditor)
-	mux.HandleFunc("POST /api/v1/workspaces/{name}/open-editor/goal", s.handleAPIOpenEditorGoal)
-	mux.HandleFunc("POST /api/v1/workspaces/{name}/open-editor/project-management", s.handleAPIOpenEditorProjectManagement)
 	mux.HandleFunc("GET /api/v1/models", s.handleAPIListModels)
 
 	mux.HandleFunc("GET /api/v1/browse-directories", s.handleAPIBrowseDirectories)
@@ -1798,45 +1796,8 @@ func (s *Server) handleAPIOpenEditor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if errOpen := s.editor.open(workspacePath); errOpen != nil {
-		http.Error(w, fmt.Sprintf("failed to open editor: %v", errOpen), http.StatusInternalServerError)
-		return
-	}
-
-	writeJSON(w, apiOpenEditorResponse{
-		Opened:  true,
-		Editor:  s.editorName,
-		Message: "opened in editor",
-	})
-}
-
-func (s *Server) handleAPIOpenEditorGoal(w http.ResponseWriter, r *http.Request) {
-	s.openEditorForFile(w, r, "GOAL.md")
-}
-
-func (s *Server) handleAPIOpenEditorProjectManagement(w http.ResponseWriter, r *http.Request) {
-	s.openEditorForFile(w, r, filepath.Join(".sgai", "PROJECT_MANAGEMENT.md"))
-}
-
-func (s *Server) openEditorForFile(w http.ResponseWriter, r *http.Request, relPath string) {
-	workspacePath, ok := s.resolveWorkspaceFromPath(w, r)
-	if !ok {
-		return
-	}
-
-	if !s.editorAvailable {
-		http.Error(w, "no editor available", http.StatusServiceUnavailable)
-		return
-	}
-
-	targetPath := filepath.Join(workspacePath, relPath)
-	if _, errStat := os.Stat(targetPath); errStat != nil {
-		http.Error(w, "file not found", http.StatusNotFound)
-		return
-	}
-
-	if errOpen := s.editor.open(targetPath); errOpen != nil {
-		http.Error(w, fmt.Sprintf("failed to open editor: %v", errOpen), http.StatusInternalServerError)
+	if errOpenEditor := s.editor.open(workspacePath); errOpenEditor != nil {
+		http.Error(w, fmt.Errorf("failed to open editor: %w", errOpenEditor).Error(), http.StatusInternalServerError)
 		return
 	}
 

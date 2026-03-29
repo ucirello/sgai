@@ -136,16 +136,6 @@ export const api = {
         `/api/v1/workspaces/${encodeURIComponent(name)}/open-editor`,
         { method: "POST" },
       ),
-    openEditorGoal: (name: string) =>
-      fetchJSON<ApiOpenEditorResponse>(
-        `/api/v1/workspaces/${encodeURIComponent(name)}/open-editor/goal`,
-        { method: "POST" },
-      ),
-    openEditorProjectManagement: (name: string) =>
-      fetchJSON<ApiOpenEditorResponse>(
-        `/api/v1/workspaces/${encodeURIComponent(name)}/open-editor/project-management`,
-        { method: "POST" },
-      ),
     deleteWorkspace: (name: string, operation?: ApiRepositoryOperation) =>
       fetchJSON<ApiDeleteWorkspaceResponse>(
         `/api/v1/workspaces/${encodeURIComponent(name)}/delete`,

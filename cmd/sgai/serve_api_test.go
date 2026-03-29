@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -80,6 +81,16 @@ func todoItemWith(update func(*state.TodoItem)) state.TodoItem {
 func workflowRef(update func(*state.Workflow)) *state.Workflow {
 	wf := workflowWith(update)
 	return &wf
+}
+
+type recordingEditor struct {
+	path string
+	err  error
+}
+
+func (e *recordingEditor) open(path string) error {
+	e.path = path
+	return e.err
 }
 
 func attachSessionCoordinator(t *testing.T, srv *Server, wsDir string, wf *state.Workflow) {
@@ -2117,22 +2128,6 @@ func TestHandleAPIOpenEditor(t *testing.T) {
 	})
 }
 
-func TestHandleAPIOpenEditorGoal(t *testing.T) {
-	t.Run("missingWorkspace", func(t *testing.T) {
-		server, _ := setupTestServer(t)
-		w := serveHTTP(server, "POST", "/api/v1/workspaces/nonexistent/open-editor/goal", "")
-		assert.Equal(t, http.StatusNotFound, w.Code)
-	})
-}
-
-func TestHandleAPIOpenEditorProjectManagement(t *testing.T) {
-	t.Run("missingWorkspace", func(t *testing.T) {
-		server, _ := setupTestServer(t)
-		w := serveHTTP(server, "POST", "/api/v1/workspaces/nonexistent/open-editor/project-management", "")
-		assert.Equal(t, http.StatusNotFound, w.Code)
-	})
-}
-
 func TestHandleAPIAdhocStop(t *testing.T) {
 	t.Run("missingWorkspace", func(t *testing.T) {
 		server, _ := setupTestServer(t)
@@ -2455,28 +2450,6 @@ func TestHandleAPIUpdateGoalValid(t *testing.T) {
 	assert.Equal(t, 200, w.Code)
 }
 
-func TestHandleAPIOpenEditorGoalViaHTTP(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, srv, rootDir, "editgoal-ws")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\ntitle: Compose Full\n---\n# Goal\n"), 0o644))
-	srv.editorAvailable = true
-	srv.editor = newConfigurableEditor("echo")
-
-	w := serveHTTP(srv, "POST", "/api/v1/workspaces/editgoal-ws/open-editor/goal", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestHandleAPIOpenEditorPMViaHTTP(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, srv, rootDir, "editpm-ws")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, ".sgai", "PROJECT_MANAGEMENT.md"), []byte("# PM"), 0o644))
-	srv.editorAvailable = true
-	srv.editor = newConfigurableEditor("echo")
-
-	w := serveHTTP(srv, "POST", "/api/v1/workspaces/editpm-ws/open-editor/project-management", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
 func TestHandleAPISnippetsByLanguageViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, srv, rootDir, "snippet-lang-ws")
@@ -2667,35 +2640,6 @@ func TestOpenEditorNotAvailableViaHTTP(t *testing.T) {
 	srv.editorAvailable = false
 
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/editor-unavail/open-editor", "")
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-}
-
-func TestOpenEditorGoalNotAvailableViaHTTP(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, srv, rootDir, "editor-goal-unavail")
-	srv.editorAvailable = false
-
-	w := serveHTTP(srv, "POST", "/api/v1/workspaces/editor-goal-unavail/open-editor/goal", "")
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-}
-
-func TestOpenEditorGoalFileNotFoundViaHTTP(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, srv, rootDir, "editor-goal-nofile")
-	srv.editorAvailable = true
-	srv.editorName = "test-editor"
-	srv.editor = newConfigurableEditor("echo")
-
-	w := serveHTTP(srv, "POST", "/api/v1/workspaces/editor-goal-nofile/open-editor/goal", "")
-	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
-func TestOpenEditorPMNotAvailableViaHTTP(t *testing.T) {
-	srv, rootDir := setupTestServer(t)
-	_ = setupTestWorkspace(t, srv, rootDir, "editor-pm-unavail")
-	srv.editorAvailable = false
-
-	w := serveHTTP(srv, "POST", "/api/v1/workspaces/editor-pm-unavail/open-editor/project-management", "")
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 }
 
@@ -3822,43 +3766,6 @@ func TestHandleAPIListModelsViaHTTPReturnsModels(t *testing.T) {
 	assert.NotNil(t, resp.Models)
 }
 
-func TestHandleAPIOpenEditorGoalSuccessful(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# test goal"), 0o644))
-	server.editorAvailable = true
-	server.editorName = "test-editor"
-	server.editor = newConfigurableEditor("echo")
-	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/open-editor/goal", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestHandleAPIOpenEditorPMSuccessful(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, server, rootDir, "test-ws")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, ".sgai", "PROJECT_MANAGEMENT.md"), []byte("# PM"), 0o644))
-	server.editorAvailable = true
-	server.editorName = "test-editor"
-	server.editor = newConfigurableEditor("echo")
-	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/open-editor/project-management", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestHandleAPIOpenEditorSuccessful(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, server, rootDir, "test-ws")
-	server.editorAvailable = true
-	server.editorName = "test-editor"
-	editor := newConfigurableEditor("echo")
-	server.editor = editor
-	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/open-editor", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-	var resp apiOpenEditorResponse
-	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
-	assert.True(t, resp.Opened)
-	assert.Equal(t, "test-editor", resp.Editor)
-}
-
 func TestHandleAPISkillDetailWithContent(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, srv, rootDir, "skill-detail")
@@ -4693,64 +4600,18 @@ func TestHandleAPIDeleteWorkspaceNoConfirm(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
-func TestServiceEditorNoEditorAvailable(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	srv.editorAvailable = false
-
-	_, err := srv.openEditorService("/some/path")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no editor available")
-}
-
-func TestServiceEditorGoalFileNotFound(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	srv.editorAvailable = true
-	srv.editor = newConfigurableEditor("echo")
-
-	_, err := srv.openEditorFileService("/nonexistent", "GOAL.md")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "file not found")
-}
-
-func TestServiceEditorGoalSuccess(t *testing.T) {
-	srv, _ := setupTestServer(t)
+func TestHandleAPIOpenEditorFailureViaHTTP(t *testing.T) {
+	srv, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, srv, rootDir, "editor-open-failure")
 	srv.editorAvailable = true
 	srv.editorName = "echo"
-	srv.editor = newConfigurableEditor("echo")
+	editor := &recordingEditor{path: "", err: errors.New("boom")}
+	srv.editor = editor
 
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "GOAL.md"), []byte("# Goal"), 0o644))
-
-	result, err := srv.openEditorFileService(dir, "GOAL.md")
-	require.NoError(t, err)
-	assert.True(t, result.Opened)
-	assert.Equal(t, "echo", result.Editor)
-}
-
-func TestServiceEditorOpenWorkspace(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	srv.editorAvailable = true
-	srv.editor = newConfigurableEditor("echo")
-
-	dir := t.TempDir()
-	result, err := srv.openEditorService(dir)
-	require.NoError(t, err)
-	assert.True(t, result.Opened)
-}
-
-func TestServiceEditorPMService(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	srv.editorAvailable = true
-	srv.editor = newConfigurableEditor("echo")
-
-	dir := t.TempDir()
-	sgaiDir := filepath.Join(dir, ".sgai")
-	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(sgaiDir, "PROJECT_MANAGEMENT.md"), []byte("# PM"), 0o644))
-
-	result, err := srv.openEditorProjectManagementService(dir)
-	require.NoError(t, err)
-	assert.True(t, result.Opened)
+	w := serveHTTP(srv, "POST", "/api/v1/workspaces/editor-open-failure/open-editor", "")
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "failed to open editor: boom")
+	assert.Equal(t, wsDir, editor.path)
 }
 
 func TestHandleAPIOpenEditorViaHTTP(t *testing.T) {
@@ -4758,10 +4619,18 @@ func TestHandleAPIOpenEditorViaHTTP(t *testing.T) {
 	wsDir := setupTestWorkspace(t, srv, rootDir, "editor-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0o644))
 	srv.editorAvailable = true
-	srv.editor = newConfigurableEditor("echo")
+	srv.editorName = "echo"
+	editor := &recordingEditor{path: "", err: nil}
+	srv.editor = editor
 
-	w := serveHTTP(srv, "POST", "/api/v1/workspaces/editor-ws/open-editor", `{"target": "workspace"}`)
+	w := serveHTTP(srv, "POST", "/api/v1/workspaces/editor-ws/open-editor", "")
 	assert.Equal(t, http.StatusOK, w.Code)
+	var resp apiOpenEditorResponse
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	assert.True(t, resp.Opened)
+	assert.Equal(t, "echo", resp.Editor)
+	assert.Equal(t, "opened in editor", resp.Message)
+	assert.Equal(t, wsDir, editor.path)
 }
 
 func TestListModelsServiceFallback(t *testing.T) {
@@ -5219,15 +5088,6 @@ func TestHandleAPIAttachWorkspaceInvalidBody(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
-func TestHandleAPIOpenEditorForWorkspace(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, server, rootDir, "test-ws")
-	server.editorAvailable = true
-	server.editor = newConfigurableEditor("echo")
-	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/open-editor", "")
-	assert.Contains(t, []int{http.StatusOK, http.StatusServiceUnavailable, http.StatusInternalServerError}, w.Code)
-}
-
 func TestHandleAPIDeleteMessageNumericNotFound(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	setupTestWorkspace(t, server, rootDir, "test-ws")
@@ -5454,15 +5314,6 @@ func TestParseAgentIdentityHeaderNewBatch(t *testing.T) {
 		result := parseAgentIdentityHeader(r)
 		assert.Empty(t, result)
 	})
-}
-
-func TestHandleAPIOpenEditorProjectMgmt(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, server, rootDir, "test-ws")
-	server.editorAvailable = true
-	server.editor = newConfigurableEditor("echo")
-	w := serveHTTP(server, "POST", "/api/v1/workspaces/test-ws/open-editor/project-management", "")
-	assert.Contains(t, []int{http.StatusOK, http.StatusNotFound, http.StatusServiceUnavailable, http.StatusInternalServerError}, w.Code)
 }
 
 func TestStartSessionServiceClassification(t *testing.T) {
@@ -5976,34 +5827,6 @@ func TestHandleAPIOpenEditorNotAvailable(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 }
 
-func TestHandleAPIOpenEditorGoalNotAvailable(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, server, rootDir, "ws-editgoal")
-	server.editorAvailable = false
-	w := serveHTTP(server, "POST", "/api/v1/workspaces/ws-editgoal/open-editor/goal", "")
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-}
-
-func TestHandleAPIOpenEditorGoalFileNotFound(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, server, rootDir, "ws-editgoal2")
-	server.editorAvailable = true
-	server.editor = newConfigurableEditor("echo")
-	w := serveHTTP(server, "POST", "/api/v1/workspaces/ws-editgoal2/open-editor/goal", "")
-	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
-func TestHandleAPIOpenEditorGoalSuccess(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, server, rootDir, "ws-editgoal3")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("# Goal"), 0o644))
-	server.editorAvailable = true
-	server.editorName = "echo"
-	server.editor = newConfigurableEditor("echo")
-	w := serveHTTP(server, "POST", "/api/v1/workspaces/ws-editgoal3/open-editor/goal", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
 func TestDeleteMessageServiceSuccess(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, srv, rootDir, "ws-delsvc")
@@ -6088,35 +5911,6 @@ func TestHandleAPISignalStream(t *testing.T) {
 	<-done
 
 	assert.Contains(t, w.Header().Get("Content-Type"), "text/event-stream")
-}
-
-func TestHandleAPIOpenEditorPMNotAvailable(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, server, rootDir, "ws-editpm")
-	server.editorAvailable = false
-	w := serveHTTP(server, "POST", "/api/v1/workspaces/ws-editpm/open-editor/project-management", "")
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-}
-
-func TestHandleAPIOpenEditorPMSuccess(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	wsDir := setupTestWorkspace(t, server, rootDir, "ws-editpm2")
-	require.NoError(t, os.WriteFile(filepath.Join(wsDir, ".sgai", "PROJECT_MANAGEMENT.md"), []byte("# PM"), 0o644))
-	server.editorAvailable = true
-	server.editorName = "echo"
-	server.editor = newConfigurableEditor("echo")
-	w := serveHTTP(server, "POST", "/api/v1/workspaces/ws-editpm2/open-editor/project-management", "")
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestHandleAPIOpenEditorSuccess(t *testing.T) {
-	server, rootDir := setupTestServer(t)
-	setupTestWorkspace(t, server, rootDir, "ws-edit-open")
-	server.editorAvailable = true
-	server.editorName = "echo"
-	server.editor = newConfigurableEditor("echo")
-	w := serveHTTP(server, "POST", "/api/v1/workspaces/ws-edit-open/open-editor", "")
-	assert.Equal(t, http.StatusOK, w.Code)
 }
 
 func TestStartSessionAlreadyRunning(t *testing.T) {
