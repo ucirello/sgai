@@ -61,6 +61,9 @@ func main() {
 	case "help", "-h", "--help":
 		printUsage()
 		return
+	case "run":
+		os.Exit(cmdRun(os.Args[2:]))
+		return
 	case "serve":
 		cmdServe(os.Args[2:])
 		return
@@ -83,7 +86,7 @@ func configureSgaiLogger(w io.Writer) {
 
 func requiresOpencode(subcommand string) bool {
 	switch subcommand {
-	case "help", "-h", "--help", "internal-mcp":
+	case "help", "-h", "--help", "internal-mcp", "run":
 		return false
 	default:
 		return true
@@ -94,16 +97,19 @@ func printUsage() {
 	fmt.Println(`sgai - AI-powered software factory
 
 Usage:
-  sgai [--listen-addr addr]    Start web server (default)
+	  sgai [--listen-addr addr]                     Start web server (default)
+	  sgai run [--config path] [--var key=value] <action-name>
 
 Options:
-  --listen-addr   HTTP server listen address (default: 127.0.0.1:8080)
+	  --listen-addr   HTTP server listen address (default: 127.0.0.1:8080)
 
 Examples:
-  sgai
-      Start web UI on localhost:8080
-  sgai --listen-addr 0.0.0.0:8080
-      Start web UI accessible externally`)
+	  sgai
+	      Start web UI on localhost:8080
+	  sgai run --config ./verification/sgai.json --var Name=Ada Summarize
+	      Run a configured action from the CLI
+	  sgai --listen-addr 0.0.0.0:8080
+	      Start web UI accessible externally`)
 }
 
 // runWorkflow executes the main workflow loop for a target directory.
@@ -1488,12 +1494,36 @@ func terminateProcessGroupOnCancel(ctx context.Context, cmd *exec.Cmd, processEx
 	case <-processExited:
 		return
 	}
+	terminateProcessGroup(cmd, processExited, waitForGracefulProcessExit, syscall.Kill)
+}
+
+func terminateProcessGroup(cmd *exec.Cmd, processExited <-chan struct{}, waitForExit func(<-chan struct{}) bool, signalProcessGroup func(int, syscall.Signal) error) {
+	if cmd.Process == nil || processGroupExited(processExited) {
+		return
+	}
 	pgid := -cmd.Process.Pid
-	_ = syscall.Kill(pgid, syscall.SIGTERM)
+	_ = signalProcessGroup(pgid, syscall.SIGTERM)
+	if waitForExit(processExited) || processGroupExited(processExited) {
+		return
+	}
+	_ = signalProcessGroup(pgid, syscall.SIGKILL)
+}
+
+func waitForGracefulProcessExit(processExited <-chan struct{}) bool {
 	select {
-	case <-time.After(gracefulShutdownTimeout):
-		_ = syscall.Kill(pgid, syscall.SIGKILL)
 	case <-processExited:
+		return true
+	case <-time.After(gracefulShutdownTimeout):
+		return processGroupExited(processExited)
+	}
+}
+
+func processGroupExited(processExited <-chan struct{}) bool {
+	select {
+	case <-processExited:
+		return true
+	default:
+		return false
 	}
 }
 

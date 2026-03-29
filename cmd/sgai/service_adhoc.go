@@ -57,6 +57,29 @@ type commandStartSpec struct {
 	alreadyRunningMessage string
 }
 
+type actionCommandSpec struct {
+	command string
+	args    []string
+	stdin   string
+	env     []string
+}
+
+func buildPromptActionCommandSpec(workspacePath, prompt, model string) actionCommandSpec {
+	return actionCommandSpec{
+		command: "opencode",
+		args:    buildAdhocArgs(model),
+		stdin:   prompt,
+		env:     []string{"OPENCODE_CONFIG_DIR=" + filepath.Join(workspacePath, ".sgai")},
+	}
+}
+
+func buildScriptActionCommandSpec(argv []string) (actionCommandSpec, error) {
+	if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" {
+		return actionCommandSpec{}, errors.New("rendered an empty command")
+	}
+	return actionCommandSpec{command: argv[0], args: argv[1:], stdin: "", env: nil}, nil
+}
+
 func (s *Server) adhocStartService(workspacePath, prompt, model string) adhocStartResult {
 	prompt = strings.TrimSpace(prompt)
 	model = strings.TrimSpace(model)
@@ -64,14 +87,14 @@ func (s *Server) adhocStartService(workspacePath, prompt, model string) adhocSta
 		return adhocStartError(errors.New("prompt and model are required"))
 	}
 
-	args := buildAdhocArgs(model)
+	actionSpec := buildPromptActionCommandSpec(workspacePath, prompt, model)
 	return s.startCommandService(workspacePath, &commandStartSpec{
-		command:               "opencode",
-		args:                  args,
-		stdin:                 prompt,
-		env:                   []string{"OPENCODE_CONFIG_DIR=" + filepath.Join(workspacePath, ".sgai")},
+		command:               actionSpec.command,
+		args:                  actionSpec.args,
+		stdin:                 actionSpec.stdin,
+		env:                   actionSpec.env,
 		logLabel:              "adhoc",
-		headerLines:           []string{"$ opencode " + strings.Join(args, " "), "prompt: " + prompt},
+		headerLines:           []string{"$ opencode " + strings.Join(actionSpec.args, " "), "prompt: " + prompt},
 		startedMessage:        "ad-hoc prompt started",
 		alreadyRunningMessage: "ad-hoc prompt already running",
 	})
@@ -88,14 +111,15 @@ func (s *Server) runScriptAction(workspacePath, actionName string, argv []string
 	if s.scriptActionRunner != nil {
 		return s.scriptActionRunner(workspacePath, actionName, argv)
 	}
-	if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" {
-		return adhocStartError(fmt.Errorf("action %q rendered an empty command", actionName))
+	actionSpec, errSpec := buildScriptActionCommandSpec(argv)
+	if errSpec != nil {
+		return adhocStartError(fmt.Errorf("action %q %w", actionName, errSpec))
 	}
 	return s.startCommandService(workspacePath, &commandStartSpec{
-		command:               argv[0],
-		args:                  argv[1:],
-		stdin:                 "",
-		env:                   nil,
+		command:               actionSpec.command,
+		args:                  actionSpec.args,
+		stdin:                 actionSpec.stdin,
+		env:                   actionSpec.env,
 		logLabel:              "action",
 		headerLines:           []string{"action: " + actionName, formatCommandForLog(argv)},
 		startedMessage:        "action started",

@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -5214,20 +5215,59 @@ func TestHandleCompleteStatusCoordinatorNoBlockers(t *testing.T) {
 	assert.Equal(t, state.StatusComplete, result.Status)
 }
 
-func TestTerminateProcessGroupOnCancelWithContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.Command("sleep", "30")
-	require.NoError(t, cmd.Start())
-
+func TestTerminateProcessGroupUsesProcessGroupID(t *testing.T) {
 	exited := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		close(exited)
-	}()
+	var pids []int
+	var signals []syscall.Signal
 
-	cancel()
-	terminateProcessGroupOnCancel(ctx, cmd, exited)
-	<-exited
+	cmd := exec.Command("true")
+	cmd.Process = &os.Process{Pid: 42}
+	terminateProcessGroup(cmd, exited, func(<-chan struct{}) bool {
+		close(exited)
+		return false
+	}, func(pid int, sig syscall.Signal) error {
+		pids = append(pids, pid)
+		signals = append(signals, sig)
+		return nil
+	})
+
+	assert.Equal(t, []int{-42}, pids)
+	assert.Equal(t, []syscall.Signal{syscall.SIGTERM}, signals)
+}
+
+func TestTerminateProcessGroupSkipsSignalsWhenProcessAlreadyExited(t *testing.T) {
+	exited := make(chan struct{})
+	close(exited)
+
+	var signals []syscall.Signal
+	cmd := exec.Command("true")
+	cmd.Process = &os.Process{Pid: 42}
+	terminateProcessGroup(cmd, exited, func(<-chan struct{}) bool {
+		t.Fatal("unexpected grace-period wait")
+		return false
+	}, func(_ int, sig syscall.Signal) error {
+		signals = append(signals, sig)
+		return nil
+	})
+
+	assert.Empty(t, signals)
+}
+
+func TestTerminateProcessGroupSkipsEscalationAfterProcessExit(t *testing.T) {
+	exited := make(chan struct{})
+
+	var signals []syscall.Signal
+	cmd := exec.Command("true")
+	cmd.Process = &os.Process{Pid: 42}
+	terminateProcessGroup(cmd, exited, func(<-chan struct{}) bool {
+		close(exited)
+		return false
+	}, func(_ int, sig syscall.Signal) error {
+		signals = append(signals, sig)
+		return nil
+	})
+
+	assert.Equal(t, []syscall.Signal{syscall.SIGTERM}, signals)
 }
 
 func TestExportSessionMissingBinary(t *testing.T) {

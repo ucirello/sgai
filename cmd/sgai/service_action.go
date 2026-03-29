@@ -3,43 +3,32 @@ package main
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 )
 
-func (s *Server) actionRunService(workspacePath, actionName string, values map[string]string) adhocStartResult {
-	actionName = strings.TrimSpace(actionName)
-	if actionName == "" {
-		return adhocStartError(errors.New("action name is required"))
-	}
-
-	config, errFind := findActionConfigByName(workspacePath, actionName)
-	if errFind != nil {
-		return adhocStartError(errFind)
-	}
-
-	parsed, errValidate := validateAndParseAction(&config)
-	if errValidate != nil {
-		return adhocStartError(errValidate)
-	}
-
-	rendered, errRender := renderParsedAction(&parsed, values)
-	if errRender != nil {
-		return adhocStartError(fmt.Errorf("action %q %w", actionName, errRender))
-	}
-
-	if parsed.kind == actionKindPrompt {
-		return s.runPromptAction(workspacePath, rendered, parsed.model)
-	}
-
-	argv, errSplit := splitActionCommand(rendered)
-	if errSplit != nil {
-		return adhocStartError(fmt.Errorf("action %q rendered an invalid command: %w", actionName, errSplit))
-	}
-	return s.runScriptAction(workspacePath, actionName, argv)
+type actionExecutionPlan struct {
+	workspacePath string
+	actionName    string
+	parsed        parsedAction
+	rendered      string
+	argv          []string
 }
 
-func findActionConfigByName(workspacePath, actionName string) (actionConfig, error) {
-	configs, errLoad := loadActionConfigs(workspacePath)
+func (s *Server) actionRunService(workspacePath, actionName string, values map[string]string) adhocStartResult {
+	plan, errPrepare := prepareActionExecution(workspacePath, "", actionName, values, nil)
+	if errPrepare != nil {
+		return adhocStartError(errPrepare)
+	}
+
+	if plan.parsed.kind == actionKindPrompt {
+		return s.runPromptAction(plan.workspacePath, plan.rendered, plan.parsed.model)
+	}
+	return s.runScriptAction(plan.workspacePath, plan.actionName, plan.argv)
+}
+
+func findActionConfigByNameWithConfigPath(workspacePath, configPath, actionName string) (actionConfig, error) {
+	configs, errLoad := loadActionConfigsFromConfigPath(workspacePath, configPath)
 	if errLoad != nil {
 		return actionConfig{}, errLoad
 	}
@@ -53,6 +42,79 @@ func findActionConfigByName(workspacePath, actionName string) (actionConfig, err
 		}
 	}
 	return actionConfig{}, fmt.Errorf("action %q not found", actionName)
+}
+
+func prepareActionExecution(workspacePath, configPath, actionName string, values map[string]string, promptForMissing func(string) (string, error)) (actionExecutionPlan, error) {
+	actionName = strings.TrimSpace(actionName)
+	if actionName == "" {
+		return actionExecutionPlan{}, errors.New("action name is required")
+	}
+
+	config, errFind := findActionConfigByNameWithConfigPath(workspacePath, configPath, actionName)
+	if errFind != nil {
+		return actionExecutionPlan{}, errFind
+	}
+
+	parsed, errValidate := validateAndParseAction(&config)
+	if errValidate != nil {
+		return actionExecutionPlan{}, errValidate
+	}
+
+	resolvedValues, errResolve := resolveActionValues(&parsed, values, promptForMissing)
+	if errResolve != nil {
+		return actionExecutionPlan{}, errResolve
+	}
+
+	rendered, errRender := renderParsedAction(&parsed, resolvedValues)
+	if errRender != nil {
+		return actionExecutionPlan{}, fmt.Errorf("action %q %w", actionName, errRender)
+	}
+
+	plan := actionExecutionPlan{
+		workspacePath: workspacePath,
+		actionName:    actionName,
+		parsed:        parsed,
+		rendered:      rendered,
+		argv:          nil,
+	}
+
+	if parsed.kind != actionKindScript {
+		return plan, nil
+	}
+
+	argv, errSplit := splitActionCommand(rendered)
+	if errSplit != nil {
+		return actionExecutionPlan{}, fmt.Errorf("action %q rendered an invalid command: %w", actionName, errSplit)
+	}
+	plan.argv = argv
+	return plan, nil
+}
+
+func resolveActionValues(parsed *parsedAction, values map[string]string, promptForMissing func(string) (string, error)) (map[string]string, error) {
+	resolvedValues := cloneActionValues(values)
+	if promptForMissing == nil {
+		return resolvedValues, nil
+	}
+	for _, name := range parsed.variables {
+		if _, exists := resolvedValues[name]; exists {
+			continue
+		}
+		value, errPrompt := promptForMissing(name)
+		if errPrompt != nil {
+			return nil, fmt.Errorf("prompting for %s: %w", name, errPrompt)
+		}
+		resolvedValues[name] = value
+	}
+	return resolvedValues, nil
+}
+
+func cloneActionValues(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return map[string]string{}
+	}
+	cloned := make(map[string]string, len(values))
+	maps.Copy(cloned, values)
+	return cloned
 }
 
 func splitActionCommand(command string) ([]string, error) {
