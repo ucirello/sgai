@@ -256,25 +256,28 @@ sgai --help
 
 ---
 
-## Step 3: Create Workspace and Demo Project
+## Step 3: Create the Factory Root and an Attached Demo Project
 
-Create the following directory structure relative to the current working directory. The `sgai` directory is the root from which `sgai serve` is started. Each subdirectory (like `TodoApp`) is a workspace that appears in the dashboard. The dashboard label comes from `GOAL.md` frontmatter `title`; when `GOAL.md` is missing or has no frontmatter, SGAI falls back to the workspace directory name.
+Create the following directory structure relative to the current working directory. The `sgai` directory is the start directory from which `sgai serve` is launched. The demo project lives beside it as a separate repository/workspace and is pre-attached by writing its absolute path into SGAI's external attachment config file, so it is already visible when SGAI starts.
 
 ```
 ./sgai/
-  TodoApp/
-    GOAL.md
-    .sgai/
   INSTALLATIONS_NOTES.md
+./TodoApp/
+  GOAL.md
+  .sgai/
+
+$CONFIG_HOME/sgai/
+  external.json
 ```
 
 **Create directories:**
 
 ```sh
-mkdir -p ./sgai/TodoApp/.sgai
+mkdir -p ./sgai ./TodoApp/.sgai
 ```
 
-**Create `./sgai/TodoApp/GOAL.md`** with this content. The `title` field is required and is the user-facing repository label; SGAI does not derive that label from markdown headings:
+**Create `./TodoApp/GOAL.md`** with this content. The `title` field is required and is the user-facing repository label; SGAI does not derive that label from markdown headings:
 
 ```markdown
 ---
@@ -310,11 +313,25 @@ Build a simple command-line todo application.
 - [ ] Add basic error handling
 ```
 
+**Pre-attach `./TodoApp` before SGAI starts** by writing its absolute path into SGAI's external attachment config:
+
+```sh
+if [ "$(uname -s)" = "Darwin" ]; then
+  CONFIG_HOME="$HOME/Library/Application Support"
+else
+  CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+fi
+CONFIG_DIR="$CONFIG_HOME/sgai"
+mkdir -p "$CONFIG_DIR"
+TODO_APP_PATH="$(cd ./TodoApp && pwd)"
+printf '["%s"]\n' "$TODO_APP_PATH" > "$CONFIG_DIR/external.json"
+```
+
 **Create `./sgai/INSTALLATIONS_NOTES.md`** — write a file with these sections:
 
 1. A title: "SGAI Installation Notes"
 2. A blockquote constraint: "when INSTALLATIONS_NOTES.md is present, read that file to understand how to start sgai"
-3. A "How to Start SGAI" section explaining to navigate to the `sgai/` directory (the root that contains workspaces like `TodoApp/`) and run `sgai serve`. Workspaces inside `sgai/` will appear in the dashboard at http://localhost:8080.
+3. A "How to Start SGAI" section explaining to navigate to the `sgai/` directory and run `sgai serve`. Mention that `TodoApp` is already attached through SGAI's external attachment config, so it should appear in the dashboard at http://localhost:8080 without any manual attach step.
 4. A "How to Stop SGAI" section explaining how to find and kill the process (`ps aux | grep 'sgai serve'` then `kill <PID>`).
 5. A "How to Restart SGAI" section with: `cd sgai && sgai serve`
 6. A "Troubleshooting" section noting that if `sgai` is not found, add Go binaries to PATH: `export PATH="$PATH:$(go env GOPATH)/bin"`
@@ -325,9 +342,13 @@ Verify the directory structure:
 
 ```sh
 ls -la ./sgai/
-ls -la ./sgai/TodoApp/
-ls -la ./sgai/TodoApp/.sgai/
-cat ./sgai/TodoApp/GOAL.md
+ls -la ./TodoApp/
+ls -la ./TodoApp/.sgai/
+cat ./TodoApp/GOAL.md
+if [ "$(uname -s)" = "Darwin" ]; then CONFIG_HOME="$HOME/Library/Application Support"; else CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"; fi
+CONFIG_DIR="$CONFIG_HOME/sgai"
+ls -la "$CONFIG_DIR"
+cat "$CONFIG_DIR/external.json"
 cat ./sgai/INSTALLATIONS_NOTES.md
 ```
 
@@ -335,7 +356,7 @@ cat ./sgai/INSTALLATIONS_NOTES.md
 
 ## Step 4: Start SGAI
 
-Start `sgai serve` from the `sgai/` directory (not from a workspace subdirectory). This is the root directory that contains workspaces — `sgai serve` discovers them automatically and shows them in the dashboard.
+Start `sgai serve` from the `sgai/` directory. Because SGAI's external attachment config already contains the absolute path to `./TodoApp`, the demo project should appear immediately when the server comes up.
 
 **Determine the best persistence method for the current platform and start sgai:**
 
@@ -364,6 +385,9 @@ ps aux | grep 'sgai serve'
 
 # Try reaching the dashboard
 curl -s http://localhost:8080 > /dev/null && echo "SGAI is running" || echo "SGAI is not responding"
+
+# Confirm the attached demo project is present
+curl -s http://localhost:8080/api/v1/state | rg 'Todo App|TodoApp'
 ```
 
 Update `./sgai/INSTALLATIONS_NOTES.md` to reflect the actual persistence method used, so future sessions know how to restart sgai.
@@ -372,7 +396,7 @@ Update `./sgai/INSTALLATIONS_NOTES.md` to reflect the actual persistence method 
 
 ## Done
 
-SGAI is installed and running. Open [http://localhost:8080](http://localhost:8080) in your browser to access the web dashboard and start working on the TodoApp project.
+SGAI is installed and running. Open [http://localhost:8080](http://localhost:8080) in your browser. The TodoApp demo project should already be attached and ready for the human partner to start.
 
 
 ---
