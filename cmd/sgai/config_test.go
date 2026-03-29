@@ -172,6 +172,35 @@ func TestLoadProjectConfig(t *testing.T) {
 	}
 }
 
+func TestLoadProjectConfigPathWrapsPermissionError(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), configFileName)
+	require.NoError(t, os.WriteFile(configPath, []byte(`{"defaultModel":"test"}`), 0o600))
+	require.NoError(t, os.Chmod(configPath, 0))
+	t.Cleanup(func() {
+		_ = os.Chmod(configPath, 0o600)
+	})
+
+	_, errLoad := loadProjectConfigPath(configPath)
+
+	require.Error(t, errLoad)
+	assert.Contains(t, errLoad.Error(), configPath)
+	assert.ErrorIs(t, errLoad, os.ErrPermission)
+}
+
+func TestLoadProjectConfigPathWrapsJSONTypeError(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), configFileName)
+	require.NoError(t, os.WriteFile(configPath, []byte(`{"actions":"bad"}`), 0o644))
+
+	_, errLoad := loadProjectConfigPath(configPath)
+
+	require.Error(t, errLoad)
+	assert.Contains(t, errLoad.Error(), "invalid JSON type")
+	var errType *json.UnmarshalTypeError
+	require.ErrorAs(t, errLoad, &errType)
+	require.NotNil(t, errType)
+	assert.Equal(t, "actions", errType.Field)
+}
+
 func TestValidateProjectConfig(t *testing.T) {
 	tests := []struct {
 		name        string

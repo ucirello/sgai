@@ -54,30 +54,36 @@ type projectConfig struct {
 }
 
 func loadProjectConfig(dir string) (*projectConfig, error) {
-	configPath := filepath.Join(dir, configFileName)
+	return loadProjectConfigFile(filepath.Join(dir, configFileName), true)
+}
 
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+func loadProjectConfigPath(configPath string) (*projectConfig, error) {
+	return loadProjectConfigFile(configPath, false)
+}
+
+func loadProjectConfigFile(configPath string, allowMissing bool) (*projectConfig, error) {
+	data, errRead := os.ReadFile(configPath)
+	if errRead != nil {
+		if os.IsNotExist(errRead) {
+			if allowMissing {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("reading config file %s: %w", configPath, errRead)
 		}
-		if os.IsPermission(err) {
-			return nil, fmt.Errorf("permission denied reading config file: %s", configPath)
-		}
-		return nil, fmt.Errorf("reading config file %s: %w", configPath, err)
+		return nil, fmt.Errorf("reading config file %s: %w", configPath, errRead)
 	}
 
 	var config projectConfig
-	if err := json.Unmarshal(data, &config); err != nil {
-		if errSyntax, ok := err.(*json.SyntaxError); ok {
+	if errUnmarshal := json.Unmarshal(data, &config); errUnmarshal != nil {
+		if errSyntax, ok := errUnmarshal.(*json.SyntaxError); ok {
 			return nil, fmt.Errorf("invalid JSON syntax in config file %s at offset %d: %w",
-				configPath, errSyntax.Offset, err)
+				configPath, errSyntax.Offset, errUnmarshal)
 		}
-		if errUnmarshal, ok := err.(*json.UnmarshalTypeError); ok {
-			return nil, fmt.Errorf("invalid JSON type in config file %s at field %s: expected %s, got %s",
-				configPath, errUnmarshal.Field, errUnmarshal.Type, errUnmarshal.Value)
+		if errType, ok := errUnmarshal.(*json.UnmarshalTypeError); ok {
+			return nil, fmt.Errorf("invalid JSON type in config file %s at field %s: expected %s, got %s: %w",
+				configPath, errType.Field, errType.Type, errType.Value, errUnmarshal)
 		}
-		return nil, fmt.Errorf("parsing config file %s: %w", configPath, err)
+		return nil, fmt.Errorf("parsing config file %s: %w", configPath, errUnmarshal)
 	}
 
 	return &config, nil

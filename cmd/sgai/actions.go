@@ -30,7 +30,19 @@ type parsedAction struct {
 }
 
 func loadActionConfigs(workspacePath string) ([]actionConfig, error) {
-	config, errLoad := loadProjectConfig(workspacePath)
+	return loadActionConfigsFromConfigPath(workspacePath, "")
+}
+
+func loadActionConfigsFromConfigPath(workspacePath, configPath string) ([]actionConfig, error) {
+	var (
+		config  *projectConfig
+		errLoad error
+	)
+	if strings.TrimSpace(configPath) == "" {
+		config, errLoad = loadProjectConfig(workspacePath)
+	} else {
+		config, errLoad = loadProjectConfigPath(configPath)
+	}
 	if errLoad != nil {
 		return nil, errLoad
 	}
