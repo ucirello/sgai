@@ -58,40 +58,15 @@ export const Workbench: Plugin = async ({ directory }) => {
 
       if (input.event.type === "session.compacted") {
         try {
-          const sessionID = input.event.properties.sessionID;
-          const currentAgent = process.env.OPENCODE_AGENT_NAME || "unknown";
-
-          let currentState: any;
-          try {
-            const content = await readFile(stateFilePath, 'utf8');
-            currentState = JSON.parse(content);
-          } catch (error) {
-            currentState = { messages: [], messageHistory: [] };
-          }
-
-          const pendingMessages = (currentState.messages || []).filter(
-            (msg: any) => msg.toAgent === currentAgent
-          );
-
-          let inboxPeek = "";
-          if (pendingMessages.length > 0) {
-            inboxPeek = `\n\n**Inbox Preview (${pendingMessages.length} pending message(s)):**\n`;
-            inboxPeek += pendingMessages.map((msg: any) => {
-              const subject = msg.body.split('\n')[0];
-              return `- From: ${msg.fromAgent} | To: ${msg.toAgent} | Subject: ${subject}`;
-            }).join('\n');
-            inboxPeek += `\n\nYou MUST call \`check_inbox()\` to read these messages.`;
-          }
-
           await input.client.session.prompt({
-            path: { id: sessionID },
+            path: { id: input.event.properties.sessionID },
             body: {
               parts: [{
                 type: "text",
                 text: `🔄 **Conversation Compacted**\n\n` +
                       `To maintain context within limits, earlier messages have been summarized.\n\n` +
-                      `You MUST re-read @GOAL.md and @.sgai/PROJECT_MANAGEMENT.md before continuing.` +
-                      inboxPeek,
+                      `You MUST re-read @GOAL.md and @.sgai/PROJECT_MANAGEMENT.md before continuing.\n\n` +
+                      `You MUST call \`check_inbox()\` to read these messages.`,
                 metadata: {
                   source: "compaction-detector",
                   timestamp: Date.now()
@@ -102,30 +77,6 @@ export const Workbench: Plugin = async ({ directory }) => {
         } catch (error: any) {
           console.error("\033[1m|\033[0m  \033[0;31mWorkbench\033[0m   Error handling compaction: " + error.message + "\033[0m");
         }
-      }
-    },
-    "tool.execute.before": async (input: any, output: any) => {
-      let currentAgent = "unknown";
-      try {
-        const content = await readFile(stateFilePath, 'utf8');
-        const state = JSON.parse(content);
-        currentAgent = state.currentAgent || "unknown";
-      } catch (error) {
-        // State file doesn't exist or is invalid - use fallback
-      }
-
-      const isWriteTool = input.tool === "edit" || input.tool === "write";
-      const targetPath = output?.args?.filePath || "";
-      const isGoalFile = targetPath.endsWith("GOAL.md") || targetPath.includes("/GOAL.md");
-
-      if (isWriteTool && isGoalFile && currentAgent !== "coordinator") {
-        throw new Error(
-          `GOAL.md is protected and can only be modified by the coordinator agent.\n\n` +
-          `You are currently running as '${currentAgent}'.\n\n` +
-          `If you need to request changes to GOAL.md, use the send_message tool:\n` +
-          `  send_message({ toAgent: "coordinator", body: "Please update GOAL.md to ..." })\n\n` +
-          `The coordinator will review your request and make the appropriate changes.`
-        );
       }
     }
   }

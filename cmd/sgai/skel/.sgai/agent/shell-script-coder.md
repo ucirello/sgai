@@ -2,6 +2,8 @@
 description: Writes shell scripts based on requirements. Expert in POSIX-compliant scripting with proper argument handling.
 mode: primary
 permission:
+  edit:
+    "*/GOAL.md": deny
   doom_loop: deny
   external_directory: deny
   question: deny

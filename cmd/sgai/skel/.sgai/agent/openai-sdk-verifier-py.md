@@ -2,6 +2,8 @@
 description: Use this agent to verify that a Python OpenAI Agents SDK application is properly configured, follows SDK best practices and documentation recommendations, and is ready for deployment or testing. This agent should be invoked after a Python OpenAI SDK app has been created or modified.
 mode: all
 permission:
+  edit:
+    "*/GOAL.md": deny
   doom_loop: deny
   external_directory: deny
   question: deny

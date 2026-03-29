@@ -2,6 +2,8 @@
 description: Expert Go backend developer for building production-quality APIs, CLI tools, and services with idiomatic Go patterns
 mode: primary
 permission:
+  edit:
+    "*/GOAL.md": deny
   doom_loop: deny
   external_directory: deny
   question: deny

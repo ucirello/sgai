@@ -2,6 +2,8 @@
 description: Website developer specializing in building marketing sites, landing pages, and institutional websites with Go backends, responsive CSS frameworks, and SEO best practices
 mode: primary
 permission:
+  edit:
+    "*/GOAL.md": deny
   doom_loop: deny
   external_directory: deny
   question: deny
