@@ -328,6 +328,22 @@ function renderDashboard(initialRoute = "/") {
   return render(dashboardTestView(initialRoute));
 }
 
+function getTopLevelSidebarMenus(): HTMLElement[] {
+  return Array.from(document.querySelectorAll("ul[data-sidebar='menu']")).filter(
+    (menu) => menu.closest("li[data-sidebar='menu-item']") === null,
+  ) as HTMLElement[];
+}
+
+function getMenuRowLabels(menu: Element): string[] {
+  return Array.from(menu.children).map((item) => {
+    const label = item.querySelector("a[href] span.flex-1")?.textContent?.trim();
+    if (!label) {
+      throw new Error("Expected sidebar menu row label");
+    }
+    return label;
+  });
+}
+
 describe("Dashboard", () => {
   beforeEach(() => {
     mockDeleteWorkspace.mockClear();
@@ -450,8 +466,7 @@ describe("Dashboard", () => {
         expect(ws2Elements.length).toBeGreaterThan(0);
       });
 
-      const expandButtons = screen.getAllByRole("button", { name: /forks for /i });
-      await user.click(expandButtons[0]);
+      await user.click(screen.getByRole("button", { name: /expand forks for workspace two title/i }));
 
       await waitFor(() => {
         const forkElements = screen.queryAllByText("Workspace Two Fork Title");
@@ -685,8 +700,7 @@ describe("Dashboard", () => {
         expect(expandButtons.length).toBeGreaterThan(0);
       });
 
-      const expandButtons = screen.getAllByRole("button", { name: /forks for /i });
-      await user.click(expandButtons[0]);
+      await user.click(screen.getByRole("button", { name: /expand forks for workspace two title/i }));
 
       await waitFor(() => {
         const forkElements = screen.queryAllByText("Workspace Two Fork Title");
@@ -720,8 +734,7 @@ describe("Dashboard", () => {
         expect(expandButtons.length).toBeGreaterThan(0);
       });
 
-      const expandButtons = screen.getAllByRole("button", { name: /forks for /i });
-      await user.click(expandButtons[0]);
+      await user.click(screen.getByRole("button", { name: /expand forks for workspace two title/i }));
 
       await waitFor(() => {
         const forkElements = screen.queryAllByText("Workspace Two Fork Title");
@@ -913,8 +926,7 @@ describe("Dashboard", () => {
         expect(ws2Elements.length).toBeGreaterThan(0);
       });
 
-      const expandButtons = screen.getAllByRole("button", { name: /forks for /i });
-      await user.click(expandButtons[0]);
+      await user.click(screen.getByRole("button", { name: /expand forks for workspace two title/i }));
 
       await waitFor(() => {
         const forkElements = screen.queryAllByText("Workspace Two Fork Title");
@@ -929,6 +941,191 @@ describe("Dashboard", () => {
         const ws2Elements = screen.queryAllByText("Workspace Two Title");
         expect(ws2Elements.length).toBeGreaterThan(0);
       });
+    });
+
+    it("sorts each left-tree render realm by the visible label using natural ordering", async () => {
+      const user = userEvent.setup();
+
+      mockWorkspaces = [
+        createMockWorkspace({
+          name: "pinned-10",
+          dir: "/workspaces/pinned-10",
+          pinned: true,
+          isRoot: true,
+          title: "Pinned 10",
+          forks: [
+            {
+              name: "pinned-10-fork-10",
+              dir: "/workspaces/pinned-10-fork-10",
+              running: false,
+              needsInput: false,
+              inProgress: false,
+              pinned: true,
+              title: "Pinned 10/Fork 10",
+            },
+            {
+              name: "pinned-10-fork-2",
+              dir: "/workspaces/pinned-10-fork-2",
+              running: false,
+              needsInput: false,
+              inProgress: false,
+              pinned: true,
+              title: "Pinned 10/Fork 2",
+            },
+          ],
+        }),
+        createMockWorkspace({
+          name: "pinned-10-fork-10",
+          dir: "/workspaces/pinned-10-fork-10",
+          pinned: true,
+          isFork: true,
+          title: "Pinned 10/Fork 10",
+          repositoryAction: createRepositoryAction({
+            repositoryMode: "fork",
+            entryPoint: "choose",
+            allowedOperations: ["detach", "delete"],
+            defaultOperation: "",
+          }),
+        }),
+        createMockWorkspace({
+          name: "pinned-10-fork-2",
+          dir: "/workspaces/pinned-10-fork-2",
+          pinned: true,
+          isFork: true,
+          title: "Pinned 10/Fork 2",
+          repositoryAction: createRepositoryAction({
+            repositoryMode: "fork",
+            entryPoint: "choose",
+            allowedOperations: ["detach", "delete"],
+            defaultOperation: "",
+          }),
+        }),
+        createMockWorkspace({
+          name: "pinned-2",
+          dir: "/workspaces/pinned-2",
+          pinned: true,
+          isRoot: true,
+          title: "Pinned 2",
+        }),
+        createMockWorkspace({
+          name: "in-progress-10",
+          dir: "/workspaces/in-progress-10",
+          inProgress: true,
+          title: "In Progress 10",
+        }),
+        createMockWorkspace({
+          name: "in-progress-2",
+          dir: "/workspaces/in-progress-2",
+          inProgress: true,
+          title: "In Progress 2",
+        }),
+        createMockWorkspace({
+          name: "main-10",
+          dir: "/workspaces/main-10",
+          isRoot: true,
+          title: "Main 10",
+          forks: [
+            {
+              name: "main-10-fork-10",
+              dir: "/workspaces/main-10-fork-10",
+              running: false,
+              needsInput: false,
+              inProgress: false,
+              pinned: false,
+              title: "Main 10/Fork 10",
+            },
+            {
+              name: "main-10-fork-2",
+              dir: "/workspaces/main-10-fork-2",
+              running: false,
+              needsInput: false,
+              inProgress: false,
+              pinned: false,
+              title: "Main 10/Fork 2",
+            },
+          ],
+        }),
+        createMockWorkspace({
+          name: "main-2",
+          dir: "/workspaces/main-2",
+          title: "Main 2",
+        }),
+        createMockWorkspace({
+          name: "orphan-root",
+          dir: "/workspaces/orphan-root",
+          isRoot: true,
+          title: "Pinned 1",
+          forks: [
+            {
+              name: "orphan-pinned-fork",
+              dir: "/workspaces/orphan-pinned-fork",
+              running: false,
+              needsInput: false,
+              inProgress: false,
+              pinned: true,
+              title: "Pinned 1/Fork",
+            },
+          ],
+        }),
+        createMockWorkspace({
+          name: "orphan-pinned-fork",
+          dir: "/workspaces/orphan-pinned-fork",
+          pinned: true,
+          isFork: true,
+          title: "Pinned 1/Fork",
+          repositoryAction: createRepositoryAction({
+            repositoryMode: "fork",
+            entryPoint: "choose",
+            allowedOperations: ["detach", "delete"],
+            defaultOperation: "",
+          }),
+        }),
+      ];
+
+      renderDashboard();
+
+      await waitFor(() => {
+        const topLevelMenus = getTopLevelSidebarMenus();
+        expect(topLevelMenus.length).toBe(3);
+      });
+
+      const [pinnedMenu, inProgressMenu, mainMenu] = getTopLevelSidebarMenus();
+
+      await user.click(within(pinnedMenu!).getByRole("button", { name: "Expand forks for Pinned 10" }));
+      await user.click(within(mainMenu!).getByRole("button", { name: "Expand forks for Main 10" }));
+
+      expect(getMenuRowLabels(pinnedMenu!)).toEqual([
+        "Pinned 1/Fork",
+        "Pinned 2",
+        "Pinned 10",
+      ]);
+      expect(getMenuRowLabels(inProgressMenu!)).toEqual([
+        "In Progress 2",
+        "In Progress 10",
+      ]);
+      expect(getMenuRowLabels(mainMenu!)).toEqual([
+        "In Progress 2",
+        "In Progress 10",
+        "Main 2",
+        "Main 10",
+        "Pinned 1",
+        "Pinned 2",
+        "Pinned 10",
+      ]);
+
+      const pinnedRootItem = Array.from(pinnedMenu!.children).find((item) => item.textContent?.includes("Pinned 10"));
+      const mainRootItem = Array.from(mainMenu!.children).find((item) => item.textContent?.includes("Main 10"));
+
+      expect(pinnedRootItem?.querySelector("ul[data-sidebar='menu']")).toBeTruthy();
+      expect(mainRootItem?.querySelector("ul[data-sidebar='menu']")).toBeTruthy();
+      expect(getMenuRowLabels(pinnedRootItem!.querySelector("ul[data-sidebar='menu']")!)).toEqual([
+        "Pinned 10/Fork 2",
+        "Pinned 10/Fork 10",
+      ]);
+      expect(getMenuRowLabels(mainRootItem!.querySelector("ul[data-sidebar='menu']")!)).toEqual([
+        "Main 10/Fork 2",
+        "Main 10/Fork 10",
+      ]);
     });
   });
 
@@ -1122,8 +1319,7 @@ describe("Dashboard", () => {
         expect(expandButtons.length).toBeGreaterThan(0);
       });
 
-      const expandButtons = screen.getAllByRole("button", { name: /forks for /i });
-      await user.click(expandButtons[0]);
+      await user.click(screen.getByRole("button", { name: /expand forks for workspace two title/i }));
 
       await waitFor(() => {
         const forkElements = screen.queryAllByText("Workspace Two Fork Title");
