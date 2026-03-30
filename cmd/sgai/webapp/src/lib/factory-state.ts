@@ -284,6 +284,11 @@ export function triggerFactoryRefresh(): void {
   store.triggerRefresh();
 }
 
+export function getFactoryStateSnapshot(): FactoryStateSnapshot {
+  const store = getFactoryStateStore();
+  return store.getSnapshot();
+}
+
 export function useFactoryState(): FactoryStateSnapshot {
   const store = getFactoryStateStore();
   return useSyncExternalStore(

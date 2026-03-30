@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -6,9 +6,8 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { FocusableTooltipText } from "@/components/FocusableTooltipText";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { api, ApiError } from "@/lib/api";
-import { triggerFactoryRefresh, useFactoryState } from "@/lib/factory-state";
+import { getFactoryStateSnapshot, triggerFactoryRefresh } from "@/lib/factory-state";
 import { getRepositoryTitle } from "@/lib/repository-title";
-import { resolveWorkspaceByName } from "@/lib/workspace-identity";
 import { ArrowLeft, Save, Loader2, Check } from "lucide-react";
 import { Link } from "react-router";
 
@@ -21,6 +20,7 @@ export function EditGoal(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
+  const [workspaceSnapshot] = useState(() => getFactoryStateSnapshot());
   const redirectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadedGoalTargetRef = useRef<string | null>(null);
   const routeErrorRef = useRef<HTMLDivElement | null>(null);
@@ -30,29 +30,20 @@ export function EditGoal(): JSX.Element {
   const titleRef = useRef<HTMLHeadingElement | null>(null);
   const goalRequestRef = useRef<{
     target: string;
-    promise: ReturnType<typeof api.workspaces.getGoal>;
+      promise: ReturnType<typeof api.workspaces.getGoal>;
   } | null>(null);
-  const { workspaces, fetchStatus, lastFetchedAt } = useFactoryState();
-  const workspace = useMemo(
-    () => resolveWorkspaceByName(workspaces, workspaceRouteName),
-    [workspaces, workspaceRouteName],
-  );
+  const matchingWorkspaces = workspaceSnapshot.workspaces.filter((candidate) => candidate.name === workspaceRouteName);
+  const isAmbiguousWorkspaceRoute = matchingWorkspaces.length > 1;
+  const workspace = matchingWorkspaces.length === 1 ? (matchingWorkspaces[0] ?? null) : null;
   const workspaceName = workspace?.name ?? workspaceRouteName;
   const workspaceLabel = getRepositoryTitle(workspace ?? { name: workspaceName });
-  const isWorkspaceStatePending = lastFetchedAt === null && fetchStatus !== "error";
-  const isAmbiguousWorkspaceRoute =
-    !workspace
-    && workspaces.filter((candidate) => candidate.name === workspaceRouteName).length > 1;
-  const routeError = fetchStatus === "error"
-    ? "Failed to load workspace state"
-    : isAmbiguousWorkspaceRoute
-      ? "Workspace route is ambiguous."
-      : "Workspace not found.";
+  const routeError = isAmbiguousWorkspaceRoute ? "Workspace route is ambiguous." : "Workspace not found.";
   const dir = workspace?.dir ?? "";
-  const goalTarget = workspace?.name ?? "";
+  const goalTarget = isAmbiguousWorkspaceRoute ? "" : workspaceName;
   const hasLoadedGoal = goalTarget !== "" && loadedGoalTargetRef.current === goalTarget;
   const workspaceReturnTarget = workspace?.name ?? workspaceRouteName ?? workspaceName;
   const workspaceDetailPath = `/workspaces/${encodeURIComponent(workspaceReturnTarget)}`;
+  const showRouteError = goalTarget === "";
 
   useEffect(() => {
     return () => {
@@ -67,9 +58,9 @@ export function EditGoal(): JSX.Element {
       loadedGoalTargetRef.current = null;
       goalRequestRef.current = null;
       setError(null);
-      setIsLoading(isWorkspaceStatePending);
+      setIsLoading(false);
     }
-  }, [goalTarget, isWorkspaceStatePending]);
+  }, [goalTarget]);
 
   useEffect(() => {
     if (!goalTarget || loadedGoalTargetRef.current === goalTarget) {
@@ -127,7 +118,7 @@ export function EditGoal(): JSX.Element {
       return;
     }
 
-    if (!workspace) {
+    if (showRouteError) {
       routeErrorRef.current?.focus();
       return;
     }
@@ -142,7 +133,7 @@ export function EditGoal(): JSX.Element {
     }
 
     titleRef.current?.focus();
-  }, [isLoading, workspace, hasLoadedGoal, error, goalTarget]);
+  }, [isLoading, showRouteError, hasLoadedGoal, error]);
 
   const handleRetryLoad = useCallback(() => {
     if (!goalTarget || isLoading) {
@@ -221,7 +212,7 @@ export function EditGoal(): JSX.Element {
     );
   }
 
-  if (!workspace) {
+  if (showRouteError) {
     return (
       <div className="fixed inset-0 z-[60] flex flex-col bg-background">
         <div className="flex items-center gap-3 px-4 py-2 border-b bg-background shrink-0">
