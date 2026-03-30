@@ -221,6 +221,11 @@ describe("EditGoal", () => {
       fetchStatus: mockFetchStatus,
       lastFetchedAt: mockLastFetchedAt,
     }));
+    spyOn(factoryStateModule, "getFactoryStateSnapshot").mockImplementation(() => ({
+      workspaces: mockWorkspaces,
+      fetchStatus: mockFetchStatus,
+      lastFetchedAt: mockLastFetchedAt,
+    }));
     spyOn(factoryStateModule, "triggerFactoryRefresh").mockImplementation(() => mockTriggerFactoryRefresh());
     spyOn(api.workspaces, "getGoal").mockImplementation((...args) => mockGetGoal(...args));
     spyOn(api.workspaces, "updateGoal").mockImplementation((...args) => mockUpdateGoal(...args));
@@ -241,6 +246,20 @@ describe("EditGoal", () => {
 
       await waitFor(() => {
         expect(mockGetGoal).toHaveBeenCalledWith("test-workspace");
+      });
+    });
+
+    it("loads goal content from the route even when workspace metadata is unavailable", async () => {
+      mockWorkspaces = [];
+
+      renderEditGoal();
+
+      await waitFor(() => {
+        expect(mockGetGoal).toHaveBeenCalledWith("test-workspace");
+      });
+
+      await waitFor(() => {
+        expect((screen.getByTestId("markdown-textarea") as HTMLTextAreaElement).value).toContain("# Test Goal");
       });
     });
 
