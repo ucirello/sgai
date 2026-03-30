@@ -36,6 +36,12 @@ import {
 } from "@/lib/workspace-identity";
 
 type ForkEntry = NonNullable<ApiWorkspaceEntry["forks"]>[number];
+type WorkspaceLabelSource = Pick<ApiWorkspaceEntry, "name" | "dir"> & Partial<Pick<ApiWorkspaceEntry, "title" | "computedTitle">>;
+
+const naturalWorkspaceLabelCollator = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: "base",
+});
 
 function workspaceToForkEntry(ws: ApiWorkspaceEntry): ForkEntry {
   return {
@@ -63,6 +69,94 @@ function getOrphanPinnedForkDisplayLabel(
   }
 
   return `${rootLabel}/${forkLabel}`;
+}
+
+function sortByVisibleLabel<T>(
+  items: readonly T[],
+  getLabel: (item: T) => string,
+  getKey: (item: T) => string,
+): T[] {
+  return items
+    .map((item) => ({ item, label: getLabel(item), key: getKey(item) }))
+    .sort((left, right) => {
+      const labelComparison = naturalWorkspaceLabelCollator.compare(left.label, right.label);
+      if (labelComparison !== 0) {
+        return labelComparison;
+      }
+
+      return naturalWorkspaceLabelCollator.compare(left.key, right.key);
+    })
+    .map(({ item }) => item);
+}
+
+function getWorkspaceLabelSource(
+  workspace: WorkspaceLabelSource,
+  workspaceLookup: Map<string, ApiWorkspaceEntry>,
+): Pick<ApiWorkspaceEntry, "name" | "dir" | "title" | "computedTitle"> {
+  const fullWorkspace = workspaceLookup.get(workspace.dir);
+
+  if (fullWorkspace) {
+    return fullWorkspace;
+  }
+
+  return {
+    ...workspace,
+    title: workspace.title ?? "",
+  };
+}
+
+function getVisibleWorkspaceLabel(
+  workspace: WorkspaceLabelSource,
+  workspaceLookup: Map<string, ApiWorkspaceEntry>,
+  workspaceNameDisambiguators: Map<string, string>,
+): string {
+  return getWorkspaceDisplayLabel(
+    getWorkspaceLabelSource(workspace, workspaceLookup),
+    workspaceNameDisambiguators,
+  );
+}
+
+function getForkLabelSource(
+  fork: ForkEntry,
+  workspaceLookup: Map<string, ApiWorkspaceEntry>,
+): WorkspaceLabelSource {
+  const fullWorkspace = workspaceLookup.get(fork.dir);
+
+  return {
+    ...(fullWorkspace ?? fork),
+    title: fork.title || fullWorkspace?.title || "",
+    computedTitle: fork.computedTitle || fullWorkspace?.computedTitle || "",
+  };
+}
+
+function getVisibleForkLabel(
+  fork: ForkEntry,
+  workspaceLookup: Map<string, ApiWorkspaceEntry>,
+  workspaceNameDisambiguators: Map<string, string>,
+): string {
+  return getWorkspaceDisplayLabel(
+    getForkLabelSource(fork, workspaceLookup),
+    workspaceNameDisambiguators,
+  );
+}
+
+function getVisibleOrphanPinnedForkLabel(
+  fork: ApiWorkspaceEntry,
+  rootWorkspace: Pick<ApiWorkspaceEntry, "name" | "dir">,
+  workspaceLookup: Map<string, ApiWorkspaceEntry>,
+  workspaceNameDisambiguators: Map<string, string>,
+): string {
+  const rootEntry = workspaceLookup.get(rootWorkspace.dir);
+  const forkEntry = workspaceLookup.get(fork.dir);
+  const fallbackRootWorkspace = { ...rootWorkspace, title: "", computedTitle: "" };
+  const rootWorkspaceLabelSource = rootEntry ?? fallbackRootWorkspace;
+  const forkWorkspaceLabelSource = forkEntry ?? fork;
+  const rootLabel = getWorkspaceDisplayLabel(rootWorkspaceLabelSource, workspaceNameDisambiguators);
+  const forkLabel = getWorkspaceDisplayLabel(forkWorkspaceLabelSource, workspaceNameDisambiguators);
+  const rootBaseLabel = getWorkspaceBaseLabel(rootWorkspaceLabelSource);
+  const forkBaseLabel = getWorkspaceBaseLabel(forkWorkspaceLabelSource);
+
+  return getOrphanPinnedForkDisplayLabel(rootLabel, forkLabel, rootBaseLabel, forkBaseLabel);
 }
 
 function WorkspaceTreeSkeleton() {
@@ -141,12 +235,7 @@ function ForkItem({
   const navigate = useNavigate();
   const forkSelected = isSameWorkspace(fork, selectedWorkspace);
   const forkFullEntry = workspaceLookup.get(fork.dir);
-  const forkLabelSource = {
-    ...(forkFullEntry ?? fork),
-    title: fork.title || forkFullEntry?.title || "",
-    computedTitle: fork.computedTitle || forkFullEntry?.computedTitle || "",
-  };
-  const forkLabel = getWorkspaceDisplayLabel(forkLabelSource, workspaceNameDisambiguators);
+  const forkLabel = getVisibleForkLabel(fork, workspaceLookup, workspaceNameDisambiguators);
   const showTechnicalName = forkLabel !== fork.name;
   const handleActionCompleted = useCallback(() => {
     if (isSameWorkspace(fork, selectedWorkspace) && rootWorkspace) {
@@ -213,9 +302,17 @@ function WorkspaceTreeItem({
   const navigate = useNavigate();
   const fullWorkspace = workspaceLookup.get(workspace.dir);
   const forks = fullWorkspace?.forks || workspace.forks || [];
-  const hasForks = forks.length > 0;
+  const sortedForks = useMemo(
+    () => sortByVisibleLabel(
+      forks,
+      (fork) => getVisibleForkLabel(fork, workspaceLookup, workspaceNameDisambiguators),
+      (fork) => fork.dir,
+    ),
+    [forks, workspaceLookup, workspaceNameDisambiguators],
+  );
+  const hasForks = sortedForks.length > 0;
   const isSelected = isSameWorkspace(workspace, selectedWorkspace);
-  const hasForkSelected = forks.some((fork) => isSameWorkspace(fork, selectedWorkspace));
+  const hasForkSelected = sortedForks.some((fork) => isSameWorkspace(fork, selectedWorkspace));
   const [expanded, setExpanded] = useState(() => isSelected || hasForkSelected);
 
   useEffect(() => {
@@ -224,7 +321,7 @@ function WorkspaceTreeItem({
     }
   }, [isSelected, hasForkSelected]);
 
-  const displayText = getWorkspaceDisplayLabel(fullWorkspace ?? workspace, workspaceNameDisambiguators);
+  const displayText = getVisibleWorkspaceLabel(workspace, workspaceLookup, workspaceNameDisambiguators);
   const showTechnicalName = displayText !== workspace.name;
   const handleActionCompleted = useCallback(() => {
     if (isSameWorkspace(workspace, selectedWorkspace)) {
@@ -287,7 +384,7 @@ function WorkspaceTreeItem({
       {hasForks && expanded && (
         <div className="ml-2.5 pl-4 relative before:content-[''] before:absolute before:left-2.5 before:top-0 before:bottom-2 before:w-0.5 before:bg-border before:rounded-sm">
           <SidebarMenu>
-            {forks.map((fork) => (
+            {sortedForks.map((fork) => (
               <ForkItem
                 key={fork.dir}
                 fork={fork}
@@ -319,7 +416,7 @@ function InProgressItem({
 }: InProgressItemProps) {
   const isSelected = isSameWorkspace(workspace, selectedWorkspace);
   const fullWorkspace = workspaceLookup.get(workspace.dir);
-  const displayText = getWorkspaceDisplayLabel(fullWorkspace ?? workspace, workspaceNameDisambiguators);
+  const displayText = getVisibleWorkspaceLabel(workspace, workspaceLookup, workspaceNameDisambiguators);
   const showTechnicalName = displayText !== workspace.name;
 
   return (
@@ -374,7 +471,15 @@ function PinnedTreeItem({
   const navigate = useNavigate();
   const fullWorkspace = workspaceLookup.get(workspace.dir);
   const isSelected = isSameWorkspace(workspace, selectedWorkspace);
-  const hasForkSelected = pinnedForks.some((fork) => isSameWorkspace(fork, selectedWorkspace));
+  const sortedPinnedForks = useMemo(
+    () => sortByVisibleLabel(
+      pinnedForks,
+      (fork) => getVisibleForkLabel(fork, workspaceLookup, workspaceNameDisambiguators),
+      (fork) => fork.dir,
+    ),
+    [pinnedForks, workspaceLookup, workspaceNameDisambiguators],
+  );
+  const hasForkSelected = sortedPinnedForks.some((fork) => isSameWorkspace(fork, selectedWorkspace));
   const [expanded, setExpanded] = useState(() => isSelected || hasForkSelected);
 
   useEffect(() => {
@@ -383,7 +488,7 @@ function PinnedTreeItem({
     }
   }, [isSelected, hasForkSelected]);
 
-  const displayText = getWorkspaceDisplayLabel(fullWorkspace ?? workspace, workspaceNameDisambiguators);
+  const displayText = getVisibleWorkspaceLabel(workspace, workspaceLookup, workspaceNameDisambiguators);
   const showTechnicalName = displayText !== workspace.name;
   const handleActionCompleted = useCallback(() => {
     if (isSameWorkspace(workspace, selectedWorkspace)) {
@@ -394,7 +499,7 @@ function PinnedTreeItem({
   return (
     <SidebarMenuItem className="mb-0.5">
       <div className="flex items-center gap-0 group/row">
-        {pinnedForks.length > 0 ? (
+        {sortedPinnedForks.length > 0 ? (
           <Button
             variant="ghost"
             size="icon"
@@ -443,10 +548,10 @@ function PinnedTreeItem({
         />
       </div>
 
-      {pinnedForks.length > 0 && expanded && (
+      {sortedPinnedForks.length > 0 && expanded && (
         <div className="ml-2.5 pl-4 relative before:content-[''] before:absolute before:left-2.5 before:top-0 before:bottom-2 before:w-0.5 before:bg-border before:rounded-sm">
           <SidebarMenu>
-            {pinnedForks.map((fork) => (
+            {sortedPinnedForks.map((fork) => (
               <ForkItem
                 key={fork.dir}
                 fork={fork}
@@ -481,15 +586,14 @@ function OrphanPinnedForkItem({
   const navigate = useNavigate();
   const forkSelected = isSameWorkspace(fork, selectedWorkspace);
   const forkFullEntry = workspaceLookup.get(fork.dir);
-  const rootEntry = workspaceLookup.get(rootWorkspace.dir);
-  const fallbackRootWorkspace = { ...rootWorkspace, title: "", computedTitle: "" };
-  const rootWorkspaceLabelSource = rootEntry ?? fallbackRootWorkspace;
-  const forkWorkspaceLabelSource = forkFullEntry ?? fork;
-  const rootLabel = getWorkspaceDisplayLabel(rootWorkspaceLabelSource, workspaceNameDisambiguators);
-  const forkLabel = getWorkspaceDisplayLabel(forkWorkspaceLabelSource, workspaceNameDisambiguators);
-  const rootBaseLabel = getWorkspaceBaseLabel(rootWorkspaceLabelSource);
-  const forkBaseLabel = getWorkspaceBaseLabel(forkWorkspaceLabelSource);
-  const displayLabel = getOrphanPinnedForkDisplayLabel(rootLabel, forkLabel, rootBaseLabel, forkBaseLabel);
+  const rootLabel = getVisibleWorkspaceLabel(rootWorkspace, workspaceLookup, workspaceNameDisambiguators);
+  const forkLabel = getVisibleWorkspaceLabel(fork, workspaceLookup, workspaceNameDisambiguators);
+  const displayLabel = getVisibleOrphanPinnedForkLabel(
+    fork,
+    rootWorkspace,
+    workspaceLookup,
+    workspaceNameDisambiguators,
+  );
   const showTechnicalName = forkLabel !== fork.name;
   const handleActionCompleted = useCallback(() => {
     if (isSameWorkspace(fork, selectedWorkspace)) {
@@ -586,28 +690,47 @@ function PinnedSection({
     return { pinnedRoots, forkGroups, orphanForks };
   }, [pinned, forkParentLookup]);
 
-  if (pinned.length === 0) return null;
+  const pinnedRows = useMemo(() => {
+    return sortByVisibleLabel(
+      [
+        ...pinnedRootsAndForks.pinnedRoots.map((workspace) => ({ kind: "root" as const, workspace })),
+        ...pinnedRootsAndForks.orphanForks.map(({ fork, rootWorkspace }) => ({
+          kind: "orphan-fork" as const,
+          fork,
+          rootWorkspace,
+        })),
+      ],
+      (item) => item.kind === "root"
+        ? getVisibleWorkspaceLabel(item.workspace, workspaceLookup, workspaceNameDisambiguators)
+        : getVisibleOrphanPinnedForkLabel(
+          item.fork,
+          item.rootWorkspace,
+          workspaceLookup,
+          workspaceNameDisambiguators,
+        ),
+      (item) => item.kind === "root" ? item.workspace.dir : item.fork.dir,
+    );
+  }, [pinnedRootsAndForks, workspaceLookup, workspaceNameDisambiguators]);
 
-  const { pinnedRoots, forkGroups, orphanForks } = pinnedRootsAndForks;
+  if (pinned.length === 0) return null;
 
   return (
     <div className="mb-3 pb-2 border-b" role="region" aria-label="Pinned">
       <SidebarMenu>
-        {pinnedRoots.map((root) => (
+        {pinnedRows.map((item) => item.kind === "root" ? (
           <PinnedTreeItem
-            key={root.dir}
-            workspace={root}
+            key={item.workspace.dir}
+            workspace={item.workspace}
             selectedWorkspace={selectedWorkspace}
             workspaceLookup={workspaceLookup}
-            pinnedForks={forkGroups.get(root.dir) || []}
+            pinnedForks={pinnedRootsAndForks.forkGroups.get(item.workspace.dir) || []}
             workspaceNameDisambiguators={workspaceNameDisambiguators}
           />
-        ))}
-        {orphanForks.map(({ fork, rootWorkspace }) => (
+        ) : (
           <OrphanPinnedForkItem
-            key={fork.dir}
-            fork={fork}
-            rootWorkspace={rootWorkspace}
+            key={item.fork.dir}
+            fork={item.fork}
+            rootWorkspace={item.rootWorkspace}
             selectedWorkspace={selectedWorkspace}
             workspaceLookup={workspaceLookup}
             workspaceNameDisambiguators={workspaceNameDisambiguators}
@@ -634,13 +757,21 @@ function InProgressSection({
   const inProgress = useMemo(() => {
     return workspaces.filter((w) => (w.inProgress || w.running) && !w.pinned);
   }, [workspaces]);
+  const sortedInProgress = useMemo(
+    () => sortByVisibleLabel(
+      inProgress,
+      (workspace) => getVisibleWorkspaceLabel(workspace, workspaceLookup, workspaceNameDisambiguators),
+      (workspace) => workspace.dir,
+    ),
+    [inProgress, workspaceLookup, workspaceNameDisambiguators],
+  );
 
   if (inProgress.length === 0) return null;
 
   return (
     <div className="mb-3 pb-2 border-b" role="region" aria-label="In progress">
       <SidebarMenu>
-        {inProgress.map((w) => (
+        {sortedInProgress.map((w) => (
           <InProgressItem
             key={w.dir}
             workspace={w}
@@ -687,6 +818,14 @@ function WorkspaceList({ workspaces, selectedWorkspace }: WorkspaceListProps) {
   const deduplicatedWorkspaces = useMemo(() => {
     return deduplicateByDir(workspaces);
   }, [workspaces]);
+  const sortedTopLevelWorkspaces = useMemo(
+    () => sortByVisibleLabel(
+      deduplicatedWorkspaces.filter((workspace) => !workspace.isFork),
+      (workspace) => getVisibleWorkspaceLabel(workspace, workspaceLookup, workspaceNameDisambiguators),
+      (workspace) => workspace.dir,
+    ),
+    [deduplicatedWorkspaces, workspaceLookup, workspaceNameDisambiguators],
+  );
 
   return (
     <>
@@ -705,7 +844,7 @@ function WorkspaceList({ workspaces, selectedWorkspace }: WorkspaceListProps) {
       />
       <SidebarMenu>
         {deduplicatedWorkspaces.length > 0 ? (
-          deduplicatedWorkspaces.filter((w) => !w.isFork).map((workspace) => (
+          sortedTopLevelWorkspaces.map((workspace) => (
             <WorkspaceTreeItem
               key={workspace.dir}
               workspace={workspace}
