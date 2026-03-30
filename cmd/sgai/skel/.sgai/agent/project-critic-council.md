@@ -65,9 +65,16 @@ Log both the changed domains and the requested quality report targets, including
 
 **CRITICAL: Skip Preliminary Research Phase if not Quality Report Target is available**
 
-### Step P2: Send Probing Messages
+### Step P2: Reuse Recent Reports Before Probing
 
-For each requested and available target agent, send a quality report request:
+Before sending any probe, inspect the coordinator request, your inbox, and `.sgai/PROJECT_MANAGEMENT.md` for a fresh reviewer report that already matches the changed domain and current scope.
+- Treat a report from the current session as fresh when it covers the same domain, the same checked GOAL scope, and `.sgai/PROJECT_MANAGEMENT.md` does not record a later relevant code or validation change after that report.
+- If a fresh matching report already exists, log it as collected evidence and DO NOT request a duplicate report.
+- Only request a fresh report when the earlier report is missing, stale, contradicted, or scoped to different changes.
+
+### Step P3: Send Probing Messages Only For Missing Evidence
+
+For each still-missing requested and available target agent, send a quality report request:
 
 ```
 sgai_send_message({
@@ -76,27 +83,30 @@ sgai_send_message({
 })
 ```
 
-### Step P3: Yield Control
+### Step P4: Yield Control Only When New Probes Were Sent
 
-After sending all probing messages, set `status: agent-done` so the system routes to each reviewer agent to produce their reports.
+After sending any new probing messages, set `status: agent-done` so the system routes to each reviewer agent to produce their reports.
+
+If every requested reviewer target was already covered by a fresh matching report, skip the yield and continue directly to Step P6.
 
 Do not notify the coordinator at this point; reviewer collection is still internal council work, not a verdict.
 
-### Step P4: Resume and Collect
+### Step P5: Resume and Collect
 
-When re-activated, call `sgai_check_inbox()` to read quality reports from the reviewer agents.
+When re-activated after sending fresh probes, call `sgai_check_inbox()` to read quality reports from the reviewer agents.
 
-### Step P5: Gate Check
+### Step P6: Gate Check
 
-Verify that all requested reviewer agents responded:
-- Log which agents sent reports
-- Log which agents are missing
+Verify that all requested reviewer agents are covered by either a reused fresh report or a new response:
+- Log which agents sent new reports
+- Log which agents were satisfied by reused reports
+- Log which agents are still missing
 - Note any missing reports as a gap in the evaluation evidence
 - If any requested report is still missing, you may not issue a final `Pass` verdict yet.
 - Prefer yielding again to collect the missing requested report.
 - If a verdict must be issued despite the missing report, carry the gap into the verdict as `Concern` or `Block`; never treat missing requested evidence as compatible with `Pass`.
 
-### Step P6: Proceed to Conclave
+### Step P7: Proceed to Conclave
 
 Only NOW proceed to the Council Protocol (Steps 0-5) below. Use the collected quality reports as additional evidence during the Evaluation and Aggregation steps. If any requested report is still missing, your final verdict must stay non-`Pass` until that gap is resolved.
 
@@ -114,7 +124,7 @@ sgai_send_message({
 
 - The FrontMan sends a single Aggregation message back to the coordinator exactly once.
 - This is the only coordinator-facing council message for that request.
-- Send it only after Steps P1-P6 and Steps 0-5 are fully complete.
+- Send it only after Steps P1-P7 and Steps 0-5 are fully complete.
 - Do not send any separate status, pre-verdict, post-verdict, or "aggregation complete" coordinator message.
 - If you are NOT the FrontMan, do NOT message the coordinator.
 
