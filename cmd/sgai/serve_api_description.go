@@ -150,11 +150,10 @@ func setGoalFrontmatterTitle(mapping *yaml.Node, title string) bool {
 }
 
 func prependGoalFrontmatterTitle(mapping *yaml.Node, title string) {
-	titleNodes := []*yaml.Node{
+	mapping.Content = append([]*yaml.Node{
 		{Kind: yaml.ScalarNode, Tag: "!!str", Value: "title"},
 		{Kind: yaml.ScalarNode, Tag: "!!str", Value: title},
-	}
-	mapping.Content = append(titleNodes, mapping.Content...)
+	}, mapping.Content...)
 }
 
 func frontmatterWithLineEnding(content, lineEnding []byte) []byte {
