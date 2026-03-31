@@ -24,6 +24,7 @@ import { Loader2, Inbox, Link as LinkIcon } from "lucide-react";
 import { WorkspaceRepositoryAction } from "@/components/WorkspaceRepositoryAction";
 import { useFactoryState } from "@/lib/factory-state";
 import { useSidebarResize } from "@/hooks/useSidebarResize";
+import { collectWorkspaceStatusEntries, deduplicateByDir } from "@/lib/pending-response";
 import { cn } from "@/lib/utils";
 import type { ApiWorkspaceEntry } from "@/lib/factory-state";
 import {
@@ -861,42 +862,13 @@ function WorkspaceList({ workspaces, selectedWorkspace }: WorkspaceListProps) {
   );
 }
 
-interface WorkspaceStatusEntry {
-  name: string;
-  dir: string;
-  running: boolean;
-  needsInput: boolean;
-}
-
-function deduplicateByDir<T extends { dir: string }>(workspaces: T[]): T[] {
-  const seen = new Set<string>();
-  return workspaces.filter((w) => {
-    if (seen.has(w.dir)) return false;
-    seen.add(w.dir);
-    return true;
-  });
-}
-
-function collectAllWorkspaces(workspaces: ApiWorkspaceEntry[]): WorkspaceStatusEntry[] {
-  const all: WorkspaceStatusEntry[] = [];
-  for (const w of workspaces) {
-    all.push(w);
-    if (w.forks) {
-      for (const fork of w.forks) {
-        all.push(fork);
-      }
-    }
-  }
-  return deduplicateByDir(all);
-}
-
 interface SidebarHeaderIndicatorsProps {
   workspaces: ApiWorkspaceEntry[];
 }
 
 function SidebarHeaderIndicators({ workspaces }: SidebarHeaderIndicatorsProps) {
   const navigate = useNavigate();
-  const allWorkspaces = useMemo(() => collectAllWorkspaces(workspaces), [workspaces]);
+  const allWorkspaces = useMemo(() => collectWorkspaceStatusEntries(workspaces), [workspaces]);
 
   const needsInputCount = useMemo(
     () => allWorkspaces.filter((w) => w.needsInput).length,
