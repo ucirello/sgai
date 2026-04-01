@@ -25,7 +25,7 @@ import { canCreateForkFromWorkspace } from "@/lib/workspace-forks";
 import { useWorkspacePageState } from "@/lib/workspace-page-state";
 import { useAdhocRun } from "@/hooks/useAdhocRun";
 import { ChevronRight, Square } from "lucide-react";
-import type { ApiWorkspaceEntry, ApiActionEntry, ApiWorkspaceIDEState } from "@/types";
+import type { ApiWorkspaceEntry, ApiActionEntry } from "@/types";
 import { cn } from "@/lib/utils";
 import {
   buildWorkspaceGoalEditPath,
@@ -39,8 +39,6 @@ const LogTab = lazy(() => import("./tabs/LogTab").then((m) => ({ default: m.LogT
 const RunTab = lazy(() => import("./tabs/RunTab").then((m) => ({ default: m.RunTab })));
 const EventsTab = lazy(() => import("./tabs/EventsTab").then((m) => ({ default: m.EventsTab })));
 const ForksTab = lazy(() => import("./tabs/ForksTab").then((m) => ({ default: m.ForksTab })));
-const IDETab = lazy(() => import("./tabs/IDETab").then((m) => ({ default: m.IDETab })));
-
 
 function parseExecTime(value: string | undefined | null): number | null {
   if (!value) return null;
@@ -84,7 +82,6 @@ function WorkspaceDetailSkeleton() {
 const TABS = [
   { key: "progress", label: "Progress" },
   { key: "fork", label: "Fork" },
-  { key: "ide", label: "IDE" },
   { key: "log", label: "Log" },
   { key: "messages", label: "Messages" },
   { key: "internals", label: "Internals" },
@@ -94,7 +91,6 @@ const TABS = [
 const ROOT_TABS = [
   { key: "forks", label: "Forks" },
   { key: "fork", label: "Fork" },
-  { key: "ide", label: "IDE" },
 ] as const;
 
 const DEFAULT_TAB = TABS[0].key;
@@ -128,18 +124,13 @@ interface TabNavProps {
   isRoot: boolean;
   hasForks: boolean;
   showForkTab: boolean;
-  ideAvailable: boolean;
 }
 
-function TabNav({ workspace, activeTab, isRoot, hasForks, showForkTab, ideAvailable }: TabNavProps) {
+function TabNav({ workspace, activeTab, isRoot, hasForks, showForkTab }: TabNavProps) {
   const tabs = isRoot && hasForks
-    ? ROOT_TABS.filter((tab) => {
-        if (tab.key === "ide" && !ideAvailable) return false;
-        return true;
-      })
+    ? ROOT_TABS
     : TABS.filter((tab) => {
         if (tab.key === "fork" && !showForkTab) return false;
-        if (tab.key === "ide" && !ideAvailable) return false;
         return true;
       });
 
@@ -234,6 +225,7 @@ export function WorkspaceDetail(): JSX.Element | null {
   const showForkTab = canCreateForkFromWorkspace(detail);
   const ideAvailable = detail?.ide?.available ?? false;
   const redirectTab = resolveRedirectTab({ requestedTab, isForkedRoot, showForkTab });
+  const idePageUrl = `/workspaces/${encodeURIComponent(detail?.name ?? "")}/ide`;
   const activeTab = redirectTab ?? requestedTab;
 
   useEffect(() => {
@@ -444,6 +436,13 @@ export function WorkspaceDetail(): JSX.Element | null {
                       Open in Editor
                     </Button>
                   )}
+                  {ideAvailable && (
+                    <Button asChild size="sm" variant="outline">
+                      <a href={idePageUrl} target="_blank" rel="noopener noreferrer" aria-label="Open IDE (opens in new tab)">
+                        Open IDE
+                      </a>
+                    </Button>
+                  )}
                   <Button
                     type="button"
                     size="sm"
@@ -585,6 +584,13 @@ export function WorkspaceDetail(): JSX.Element | null {
                       Open in Editor
                     </Button>
                   )}
+                  {ideAvailable && (
+                    <Button asChild size="sm" variant="outline">
+                      <a href={idePageUrl} target="_blank" rel="noopener noreferrer" aria-label="Open IDE (opens in new tab)">
+                        Open IDE
+                      </a>
+                    </Button>
+                  )}
                   <Button
                     type="button"
                     size="sm"
@@ -660,7 +666,6 @@ export function WorkspaceDetail(): JSX.Element | null {
             isRoot={detail.isRoot}
             hasForks={hasForks}
             showForkTab={showForkTab}
-            ideAvailable={ideAvailable}
           />
 
         </div>
@@ -677,7 +682,6 @@ export function WorkspaceDetail(): JSX.Element | null {
                     onActionClick={onActionClick}
                     isActionRunning={isActionRunning}
                     showForkTab={showForkTab}
-                    ideState={detail.ide}
                   />
                 </Suspense>
               )}
@@ -689,7 +693,6 @@ export function WorkspaceDetail(): JSX.Element | null {
                 activeTab={activeTab}
                 detail={detail}
                 showForkTab={showForkTab}
-                ideState={detail.ide}
               />
             </Suspense>
           )}
@@ -785,14 +788,12 @@ function TabContent({
   onActionClick,
   isActionRunning,
   showForkTab,
-  ideState,
 }: {
   activeTab: string;
   detail: ApiWorkspaceEntry;
   onActionClick?: (action: ApiActionEntry, variables: Record<string, string>, targetWorkspaceName: string) => void;
   isActionRunning?: boolean;
   showForkTab: boolean;
-  ideState?: ApiWorkspaceIDEState;
 }) {
   switch (activeTab) {
     case "progress":
@@ -813,8 +814,6 @@ function TabContent({
       );
     case "fork":
       return showForkTab ? <InlineForkEditor key={detail.name} workspaceName={detail.name} /> : <NotYetAvailable pageName="Fork Tab" />;
-    case "ide":
-      return <IDETab workspaceName={detail.name} ideState={ideState} />;
     case "log":
       return <LogTab lines={detail.log ?? []} />;
     case "messages":

@@ -41,6 +41,9 @@ const EditGoal = lazy(() =>
 const AdhocOutput = lazy(() =>
   import("./pages/AdhocOutput").then((m) => ({ default: m.AdhocOutput })),
 );
+const StandaloneIDEPage = lazy(() =>
+  import("./pages/StandaloneIDEPage").then((m) => ({ default: m.StandaloneIDEPage })),
+);
 
 function PageSkeleton() {
   return (
@@ -92,6 +95,11 @@ function createRouteErrorElement() {
 }
 
 export const router = createBrowserRouter([
+  {
+    path: "/workspaces/:name/ide",
+    element: withSuspense(StandaloneIDEPage),
+    errorElement: createRouteErrorElement(),
+  },
   {
     path: "/",
     element: <App />,
