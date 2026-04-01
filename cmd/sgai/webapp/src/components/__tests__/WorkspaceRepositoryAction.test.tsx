@@ -323,6 +323,75 @@ describe("WorkspaceRepositoryAction", () => {
     await expectFocusRestoreAfterCancel("tree", "Choose action for fork demo-fork");
   });
 
+  it("renders tree detach triggers as text glyphs instead of svg icons", () => {
+    render(
+      <WorkspaceRepositoryAction
+        workspace={createWorkspace({
+          repositoryAction: createRepositoryAction({
+            repositoryMode: "standalone",
+            entryPoint: "confirm",
+            allowedOperations: ["detach"],
+            defaultOperation: "detach",
+          }),
+        })}
+        context="tree"
+      />,
+    );
+
+    const trigger = screen.getByRole("button", { name: "Detach demo-fork" });
+
+    expect(trigger.textContent?.trim()).toBe("⊘");
+    expect(trigger.querySelector("svg")).toBeNull();
+  });
+
+  it("renders chooser tree triggers as text glyphs instead of svg icons", () => {
+    render(
+      <WorkspaceRepositoryAction
+        workspace={createWorkspace()}
+        context="tree"
+      />,
+    );
+
+    const trigger = screen.getByRole("button", { name: "Choose action for fork demo-fork" });
+
+    expect(trigger.textContent?.trim()).toBe("⋯");
+    expect(trigger.querySelector("svg")).toBeNull();
+  });
+
+  it("renders delete tree triggers as text glyphs instead of svg icons", () => {
+    render(
+      <WorkspaceRepositoryAction
+        workspace={createWorkspace({
+          repositoryAction: createRepositoryAction({
+            repositoryMode: "standalone",
+            entryPoint: "confirm",
+            allowedOperations: ["delete"],
+            defaultOperation: "delete",
+          }),
+        })}
+        context="tree"
+      />,
+    );
+
+    const trigger = screen.getByRole("button", { name: "Delete demo-fork" });
+
+    expect(trigger.textContent?.trim()).toBe("✕");
+    expect(trigger.querySelector("svg")).toBeNull();
+  });
+
+  it("keeps fork-row chooser triggers as svg icons", () => {
+    render(
+      <WorkspaceRepositoryAction
+        workspace={createWorkspace()}
+        context="fork-row"
+      />,
+    );
+
+    const trigger = screen.getByRole("button", { name: "Choose action for fork demo-fork" });
+
+    expect(trigger.querySelector("svg")).toBeTruthy();
+  });
+
   it("restores focus to the fork-row trigger after cancel", async () => {
     await expectFocusRestoreAfterCancel("fork-row", "Choose action for fork demo-fork");
   });

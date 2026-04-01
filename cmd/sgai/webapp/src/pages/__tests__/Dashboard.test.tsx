@@ -32,6 +32,17 @@ async function waitForForksRedirect(expectedPath: string) {
   });
 }
 
+function getTreeIndicatorSlot(link: HTMLElement, index: number) {
+  const indicatorGroup = within(link).getByRole("group");
+  const slots = indicatorGroup.querySelectorAll("span");
+  const slot = slots[index];
+  if (!slot) {
+    throw new Error(`Expected tree indicator slot ${index}`);
+  }
+
+  return slot;
+}
+
 const createRepositoryAction = (overrides: Record<string, unknown> = {}) => ({
   repositoryMode: "standalone",
   entryPoint: "confirm",
@@ -344,6 +355,43 @@ function getMenuRowLabels(menu: Element): string[] {
   });
 }
 
+function getTreeRowByLabel(label: string): HTMLElement {
+  const links = screen.getAllByRole("link", { name: new RegExp(label, "i") });
+  const link = links[0];
+
+  if (!link) {
+    throw new Error(`Expected tree link for ${label}`);
+  }
+
+  const row = link.closest("li[data-sidebar='menu-item']");
+
+  if (!(row instanceof HTMLElement)) {
+    throw new Error(`Expected tree row for ${label}`);
+  }
+
+  return row;
+}
+
+function getTreeActionSlot(row: HTMLElement): HTMLElement {
+  const slot = row.querySelector('[data-slot="workspace-tree-action-slot"]');
+
+  if (!(slot instanceof HTMLElement)) {
+    throw new Error("Expected workspace tree action slot");
+  }
+
+  return slot;
+}
+
+function getTreeTrailingRail(row: HTMLElement): HTMLElement {
+  const rail = row.querySelector('[data-slot="workspace-tree-trailing-action-rail"]');
+
+  if (!(rail instanceof HTMLElement)) {
+    throw new Error("Expected workspace tree trailing action rail");
+  }
+
+  return rail;
+}
+
 describe("Dashboard", () => {
   beforeEach(() => {
     mockDeleteWorkspace.mockClear();
@@ -399,13 +447,175 @@ describe("Dashboard", () => {
       });
     });
 
-    it("displays external workspace indicator", async () => {
+    it("does not display an external workspace indicator in the tree", async () => {
       renderDashboard();
 
+      const workspaceLinks = await screen.findAllByRole("link", { name: /Needs Input Fallback Title/i });
+      const workspaceLink = workspaceLinks[0];
+      if (!workspaceLink) {
+        throw new Error("Expected needs-input workspace link");
+      }
+
+      expect(within(workspaceLink).queryByLabelText("External workspace")).toBeNull();
+    });
+
+    it("renders a fixed-order unicode glyph rail for fully flagged workspaces", async () => {
+      mockWorkspaces = [createMockWorkspace({
+        name: "indicator-workspace",
+        dir: "/path/to/indicator-workspace",
+        title: "Indicator Workspace",
+        running: true,
+        needsInput: true,
+        pinned: true,
+        external: true,
+      })];
+
+      renderDashboard();
+
+      const indicatorLinks = await screen.findAllByRole("link", { name: /Indicator Workspace/i });
+      const indicatorLink = indicatorLinks[0];
+      if (!indicatorLink) {
+        throw new Error("Expected indicator workspace link");
+      }
+
+      expect(indicatorLink.textContent).toContain("▲●■");
+      expect(indicatorLink.querySelectorAll("svg").length).toBe(0);
+      expect(within(indicatorLink).getByRole("group", { name: "Running: on, Waiting for response: on, Pinned: on" })).toBeTruthy();
+      expect(within(indicatorLink).getByLabelText("Running")).toBeTruthy();
+      expect(within(indicatorLink).getByLabelText("Waiting for response")).toBeTruthy();
+      expect(within(indicatorLink).getByLabelText("Pinned")).toBeTruthy();
+      expect(within(indicatorLink).queryByLabelText("External workspace")).toBeNull();
+    });
+
+    it("keeps pinned at the rightmost slot in the unicode glyph rail", async () => {
+      mockWorkspaces = [createMockWorkspace({
+        name: "pinned-order-workspace",
+        dir: "/path/to/pinned-order-workspace",
+        title: "Pinned Order Workspace",
+        running: true,
+        needsInput: false,
+        pinned: true,
+      })];
+
+      renderDashboard();
+
+      const workspaceLinks = await screen.findAllByRole("link", { name: /Pinned Order Workspace/i });
+      const workspaceLink = workspaceLinks[0];
+      if (!workspaceLink) {
+        throw new Error("Expected pinned-order workspace link");
+      }
+
+      expect(workspaceLink.textContent).toContain("▲○■");
+      expect(within(workspaceLink).getByRole("group", { name: "Running: on, Waiting for response: off, Pinned: on" })).toBeTruthy();
+      expect(getTreeIndicatorSlot(workspaceLink, 0).textContent).toBe("▲");
+      expect(getTreeIndicatorSlot(workspaceLink, 1).textContent).toBe("○");
+      expect(getTreeIndicatorSlot(workspaceLink, 2).textContent).toBe("■");
+      expect(getTreeIndicatorSlot(workspaceLink, 1).getAttribute("title")).toBeNull();
+    });
+
+    it("renders the running-only unicode glyph rail state", async () => {
+      mockWorkspaces = [createMockWorkspace({
+        name: "running-only-workspace",
+        dir: "/path/to/running-only-workspace",
+        title: "Running Only Workspace",
+        running: true,
+        needsInput: false,
+        pinned: false,
+      })];
+
+      renderDashboard();
+
+      const workspaceLinks = await screen.findAllByRole("link", { name: /Running Only Workspace/i });
+      const workspaceLink = workspaceLinks[0];
+      if (!workspaceLink) {
+        throw new Error("Expected running-only workspace link");
+      }
+
+      expect(workspaceLink.textContent).toContain("▲○□");
+      expect(within(workspaceLink).getByRole("group", { name: "Running: on, Waiting for response: off, Pinned: off" })).toBeTruthy();
+      expect(within(workspaceLink).getByLabelText("Running")).toBeTruthy();
+      expect(within(workspaceLink).queryByLabelText("Waiting for response")).toBeNull();
+      expect(within(workspaceLink).queryByLabelText("Pinned")).toBeNull();
+      expect(getTreeIndicatorSlot(workspaceLink, 1).textContent).toBe("○");
+      expect(getTreeIndicatorSlot(workspaceLink, 2).textContent).toBe("□");
+      expect(getTreeIndicatorSlot(workspaceLink, 1).getAttribute("title")).toBeNull();
+      expect(getTreeIndicatorSlot(workspaceLink, 2).getAttribute("title")).toBeNull();
+    });
+
+    it("renders the pinned-only unicode glyph rail state with pinned rightmost", async () => {
+      mockWorkspaces = [createMockWorkspace({
+        name: "pinned-only-workspace",
+        dir: "/path/to/pinned-only-workspace",
+        title: "Pinned Only Workspace",
+        running: false,
+        needsInput: false,
+        pinned: true,
+      })];
+
+      renderDashboard();
+
+      const workspaceLinks = await screen.findAllByRole("link", { name: /Pinned Only Workspace/i });
+      const workspaceLink = workspaceLinks[0];
+      if (!workspaceLink) {
+        throw new Error("Expected pinned-only workspace link");
+      }
+
+      expect(workspaceLink.textContent).toContain("△○■");
+      expect(within(workspaceLink).getByRole("group", { name: "Running: off, Waiting for response: off, Pinned: on" })).toBeTruthy();
+      expect(within(workspaceLink).queryByLabelText("Running")).toBeNull();
+      expect(within(workspaceLink).queryByLabelText("Waiting for response")).toBeNull();
+      expect(within(workspaceLink).getByLabelText("Pinned")).toBeTruthy();
+      expect(getTreeIndicatorSlot(workspaceLink, 0).textContent).toBe("△");
+      expect(getTreeIndicatorSlot(workspaceLink, 1).textContent).toBe("○");
+      expect(getTreeIndicatorSlot(workspaceLink, 0).getAttribute("title")).toBeNull();
+      expect(getTreeIndicatorSlot(workspaceLink, 1).getAttribute("title")).toBeNull();
+    });
+
+    it("keeps inactive tree indicator slots visible for alignment", async () => {
+      renderDashboard();
+
+      const workspaceLinks = await screen.findAllByRole("link", { name: /Needs Input Fallback Title/i });
+      const workspaceLink = workspaceLinks[0];
+      if (!workspaceLink) {
+        throw new Error("Expected needs-input workspace link");
+      }
+
+      expect(workspaceLink.textContent).toContain("△●□");
+      expect(within(workspaceLink).getByRole("group", { name: "Running: off, Waiting for response: on, Pinned: off" })).toBeTruthy();
+      expect(within(workspaceLink).queryByLabelText("Running")).toBeNull();
+      expect(within(workspaceLink).getByLabelText("Waiting for response")).toBeTruthy();
+      expect(within(workspaceLink).queryByLabelText("Pinned")).toBeNull();
+      expect(getTreeIndicatorSlot(workspaceLink, 0).textContent).toBe("△");
+      expect(getTreeIndicatorSlot(workspaceLink, 2).textContent).toBe("□");
+      expect(getTreeIndicatorSlot(workspaceLink, 0).getAttribute("title")).toBeNull();
+      expect(getTreeIndicatorSlot(workspaceLink, 2).getAttribute("title")).toBeNull();
+    });
+
+    it("shows a glyph tooltip without also opening the row tooltip", async () => {
+      const user = userEvent.setup();
+
+      mockWorkspaces = [createMockWorkspace({
+        name: "glyph-hover-workspace",
+        dir: "/path/to/glyph-hover-workspace",
+        title: "Glyph Hover Workspace",
+        pinned: true,
+      })];
+
+      renderDashboard();
+
+      const workspaceLinks = await screen.findAllByRole("link", { name: /Glyph Hover Workspace/i });
+      const workspaceLink = workspaceLinks[0];
+      if (!workspaceLink) {
+        throw new Error("Expected glyph-hover workspace link");
+      }
+
+      await user.hover(within(workspaceLink).getByLabelText("Pinned"));
+
       await waitFor(() => {
-        const externalIndicators = screen.queryAllByLabelText("External workspace");
-        expect(externalIndicators.length).toBeGreaterThan(0);
+        expect(screen.getAllByText("Pinned: on").length).toBeGreaterThan(0);
       });
+
+      expect(screen.queryAllByText("Name: glyph-hover-workspace")).toHaveLength(0);
     });
 
     it("shows running indicator for active workspaces", async () => {
@@ -503,6 +713,43 @@ describe("Dashboard", () => {
         const detachButtons = screen.queryAllByLabelText("Detach workspace-1");
         expect(detachButtons.length).toBeGreaterThan(0);
       });
+    });
+
+    it("uses an explicit right-side rail for trailing tree actions while keeping detach scoped to the left slot", async () => {
+      const user = userEvent.setup();
+      renderDashboard();
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Workspace One Title").length).toBeGreaterThan(0);
+        expect(screen.getAllByText("Workspace Two Title").length).toBeGreaterThan(0);
+      });
+
+      const actionRow = getTreeRowByLabel("Workspace One Title");
+      const actionLink = within(actionRow).getByRole("link", { name: /Workspace One Title/i });
+      const actionSlot = getTreeActionSlot(actionRow);
+      const actionTrailingRail = getTreeTrailingRail(actionRow);
+
+      expect(within(actionSlot).getByRole("button", { name: "Detach workspace-1" })).toBeTruthy();
+      expect(actionSlot.compareDocumentPosition(actionLink) & Node.DOCUMENT_POSITION_FOLLOWING).toBeGreaterThan(0);
+      expect(actionLink.compareDocumentPosition(actionTrailingRail) & Node.DOCUMENT_POSITION_FOLLOWING).toBeGreaterThan(0);
+      expect(within(actionTrailingRail).queryByRole("button")).toBeNull();
+
+      await user.click(screen.getByRole("button", { name: /expand forks for workspace two title/i }));
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Workspace Two Fork Title").length).toBeGreaterThan(0);
+      });
+
+      const forkRow = getTreeRowByLabel("Workspace Two Fork Title");
+      const forkLink = within(forkRow).getByRole("link", { name: /Workspace Two Fork Title/i });
+      const forkTrailingRail = getTreeTrailingRail(forkRow);
+      const forkActionButton = within(forkRow).getByRole("button", { name: "Choose action for fork workspace-2-fork-1" });
+
+      expect(forkRow.querySelector('[data-slot="workspace-tree-action-slot"]')).toBeNull();
+      expect(forkLink.compareDocumentPosition(forkTrailingRail) & Node.DOCUMENT_POSITION_FOLLOWING).toBeGreaterThan(0);
+      expect(within(forkTrailingRail).getByRole("button", { name: "Choose action for fork workspace-2-fork-1" })).toBe(forkActionButton);
+      expect(forkActionButton.textContent?.trim()).toBe("⋯");
+      expect(forkActionButton.querySelector("svg")).toBeNull();
     });
 
     it("opens detach confirmation dialog for detach-only workspaces", async () => {
@@ -683,9 +930,9 @@ describe("Dashboard", () => {
       await waitFor(() => {
         const runningIndicator = screen.queryAllByLabelText("Running");
         const needsInputIndicator = screen.queryAllByLabelText("Waiting for response");
-        const externalIndicator = screen.queryAllByLabelText("External workspace");
+        const pinnedIndicator = screen.queryAllByLabelText("Pinned");
 
-        expect(runningIndicator.length + needsInputIndicator.length + externalIndicator.length).toBeGreaterThan(0);
+        expect(runningIndicator.length + needsInputIndicator.length + pinnedIndicator.length).toBeGreaterThan(0);
       });
     });
   });
@@ -861,13 +1108,16 @@ describe("Dashboard", () => {
   });
 
   describe("external repository handling", () => {
-    it("displays external indicator for external repositories", async () => {
+    it("does not show an external tree indicator for external repositories", async () => {
       renderDashboard();
 
-      await waitFor(() => {
-        const externalIndicators = screen.queryAllByLabelText("External workspace");
-        expect(externalIndicators.length).toBeGreaterThan(0);
-      });
+      const workspaceLinks = await screen.findAllByRole("link", { name: /Needs Input Fallback Title/i });
+      const workspaceLink = workspaceLinks[0];
+      if (!workspaceLink) {
+        throw new Error("Expected needs-input workspace link");
+      }
+
+      expect(within(workspaceLink).queryByLabelText("External workspace")).toBeNull();
     });
 
     it("uses detach copy for external repository removal affordances", async () => {
