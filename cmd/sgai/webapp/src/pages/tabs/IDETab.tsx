@@ -10,13 +10,15 @@ type IDELoadState = "idle" | "starting" | "ready" | "error";
 interface IDETabProps {
   workspaceName: string;
   ideState?: ApiWorkspaceIDEState;
+  fullPage?: boolean;
 }
 
-function IDETabSkeleton() {
+function IDETabSkeleton({ fullPage }: { fullPage?: boolean }) {
+  const heightClass = fullPage ? "h-[calc(100vh-3rem)]" : "h-[60vh]";
   return (
     <div className="space-y-4">
       <Skeleton className="h-8 w-48" />
-      <Skeleton className="h-[60vh] w-full rounded-xl" />
+      <Skeleton className={`${heightClass} w-full rounded-xl`} />
     </div>
   );
 }
@@ -57,18 +59,19 @@ function IDEErrorNotice({ message, onRetry }: { message: string; onRetry: () => 
   );
 }
 
-function IDEStartingNotice() {
+function IDEStartingNotice({ fullPage }: { fullPage?: boolean }) {
+  const heightClass = fullPage ? "h-[calc(100vh-3rem)]" : "h-[60vh]";
   return (
     <div className="space-y-4" aria-busy="true">
       <p className="text-sm text-muted-foreground">
         Starting IDE session…
       </p>
-      <Skeleton className="h-[60vh] w-full rounded-xl" />
+      <Skeleton className={`${heightClass} w-full rounded-xl`} />
     </div>
   );
 }
 
-export function IDETab({ workspaceName, ideState }: IDETabProps): JSX.Element {
+export function IDETab({ workspaceName, ideState, fullPage }: IDETabProps): JSX.Element {
   const [loadState, setLoadState] = useState<IDELoadState>("idle");
   const [errorMessage, setErrorMessage] = useState("");
   const [proxyPath, setProxyPath] = useState<string | null>(null);
@@ -124,7 +127,7 @@ export function IDETab({ workspaceName, ideState }: IDETabProps): JSX.Element {
   }, [ideState, ideAvailable, loadState, requestIDEAccess]);
 
   if (!ideState) {
-    return <IDETabSkeleton />;
+    return <IDETabSkeleton fullPage={fullPage} />;
   }
 
   if (!ideAvailable) {
@@ -136,13 +139,15 @@ export function IDETab({ workspaceName, ideState }: IDETabProps): JSX.Element {
   }
 
   if (loadState === "ready" && proxyPath) {
+    const iframeHeight = fullPage ? "calc(100vh - 3rem)" : "75vh";
+    const iframeRounding = fullPage ? "" : "rounded-xl";
     return (
       <div className="space-y-0">
         <iframe
           src={proxyPath}
           title={`IDE for ${workspaceName}`}
-          className="w-full border rounded-xl"
-          style={{ height: "75vh" }}
+          className={`w-full border ${iframeRounding}`}
+          style={{ height: iframeHeight }}
           referrerPolicy="no-referrer"
           allow="clipboard-read; clipboard-write"
         />
@@ -150,5 +155,5 @@ export function IDETab({ workspaceName, ideState }: IDETabProps): JSX.Element {
     );
   }
 
-  return <IDEStartingNotice />;
+  return <IDEStartingNotice fullPage={fullPage} />;
 }

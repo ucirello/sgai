@@ -174,6 +174,10 @@ const server = Bun.serve({
       return proxyToAPI(request, pathname);
     }
 
+    if (/^\/workspaces\/[^/]+\/ide-proxy(\/|$)/.test(pathname)) {
+      return proxyToAPI(request, pathname);
+    }
+
     if (latestBuildError) {
       return new Response(latestBuildError, {
         status: 500,
@@ -195,5 +199,5 @@ const server = Bun.serve({
 });
 
 console.log(`Dev server running at http://127.0.0.1:${server.port}`);
-console.log(`Proxying /api/* to ${API_TARGET}`);
+console.log(`Proxying /api/* and /workspaces/*/ide-proxy/* to ${API_TARGET}`);
 console.log(`Serving bundled assets from ${devDistDir}`);

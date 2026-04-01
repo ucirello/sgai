@@ -3,9 +3,13 @@ import { render, screen } from "@testing-library/react";
 import { Navigate, RouterProvider, createMemoryRouter } from "react-router";
 import { router } from "../router";
 
+function findAppRoute() {
+  return router.routes.find((route) => route.path === "/")!;
+}
+
 describe("router", () => {
   it("redirects /workspaces/new to the external attachment flow", () => {
-    const rootRoute = router.routes[0];
+    const rootRoute = findAppRoute();
     const newWorkspaceRoute = rootRoute.children?.find((route) => route.path === "workspaces/new");
 
     expect(newWorkspaceRoute).toBeTruthy();
@@ -15,22 +19,29 @@ describe("router", () => {
   });
 
   it("keeps workspace detail on the catch-all workspace route", () => {
-    const rootRoute = router.routes[0];
+    const rootRoute = findAppRoute();
     const workspaceRoute = rootRoute.children?.find((route) => route.path === "workspaces/:name/*");
 
     expect(workspaceRoute).toBeTruthy();
   });
 
   it("defines custom error boundaries for the app shell and workspace routes", () => {
-    const rootRoute = router.routes[0];
+    const rootRoute = findAppRoute();
     const workspaceRoute = rootRoute.children?.find((route) => route.path === "workspaces/:name/*");
 
     expect(rootRoute.errorElement).toBeTruthy();
     expect(workspaceRoute?.errorElement).toBeTruthy();
   });
 
+  it("defines standalone IDE page route outside the app shell", () => {
+    const ideRoute = router.routes.find((route) => route.path === "/workspaces/:name/ide");
+
+    expect(ideRoute).toBeTruthy();
+    expect(ideRoute?.errorElement).toBeTruthy();
+  });
+
   it("renders a product-safe recovery UI instead of the default developer error page", async () => {
-    const rootRoute = router.routes[0];
+    const rootRoute = findAppRoute();
     const consoleErrorSpy = spyOn(console, "error").mockImplementation(() => {});
 
     function Boom() {
