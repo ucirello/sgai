@@ -1888,4 +1888,119 @@ describe("WorkspaceDetail", () => {
       });
     });
   });
+
+  describe("forked-root IDE tab visibility", () => {
+    it("shows IDE tab for forked-root workspaces when IDE is available", async () => {
+      mockWorkspaces = [createMockWorkspace({
+        isRoot: true,
+        forks: [{
+          name: "test-workspace-fork",
+          dir: "/path/to/test-workspace-fork",
+          running: false,
+          needsInput: false,
+          inProgress: false,
+          pinned: false,
+          title: "Fork 1",
+        }],
+        ide: {
+          available: true,
+          running: false,
+          accessPath: "/api/v1/workspaces/workspace-id/ide/access",
+          proxyPath: "/workspaces/workspace-id/ide-proxy/",
+        },
+      })];
+
+      renderWorkspaceDetailRouter("/workspaces/test-workspace/forks");
+
+      await waitFor(() => {
+        expect(screen.getByRole("link", { name: "Forks" })).toBeTruthy();
+        expect(screen.getByRole("link", { name: "Fork" })).toBeTruthy();
+        expect(screen.getByRole("link", { name: "IDE" })).toBeTruthy();
+      });
+    });
+
+    it("hides IDE tab for forked-root workspaces when IDE is unavailable", async () => {
+      mockWorkspaces = [createMockWorkspace({
+        isRoot: true,
+        forks: [{
+          name: "test-workspace-fork",
+          dir: "/path/to/test-workspace-fork",
+          running: false,
+          needsInput: false,
+          inProgress: false,
+          pinned: false,
+          title: "Fork 1",
+        }],
+        ide: {
+          available: false,
+          running: false,
+          reason: "docker unavailable",
+        },
+      })];
+
+      renderWorkspaceDetailRouter("/workspaces/test-workspace/forks");
+
+      await waitFor(() => {
+        expect(screen.getByRole("link", { name: "Forks" })).toBeTruthy();
+        expect(screen.getByRole("link", { name: "Fork" })).toBeTruthy();
+      });
+
+      expect(screen.queryByRole("link", { name: "IDE" })).toBeNull();
+    });
+
+    it("allows forked-root workspaces to navigate to IDE tab", async () => {
+      mockWorkspaces = [createMockWorkspace({
+        isRoot: true,
+        forks: [{
+          name: "test-workspace-fork",
+          dir: "/path/to/test-workspace-fork",
+          running: false,
+          needsInput: false,
+          inProgress: false,
+          pinned: false,
+          title: "Fork 1",
+        }],
+        ide: {
+          available: true,
+          running: false,
+          accessPath: "/api/v1/workspaces/workspace-id/ide/access",
+          proxyPath: "/workspaces/workspace-id/ide-proxy/",
+        },
+      })];
+
+      const { router } = renderWorkspaceDetailRouter("/workspaces/test-workspace/ide");
+
+      await waitFor(() => {
+        expect(router.state.location.pathname).toBe("/workspaces/test-workspace/ide");
+        expect(screen.getByRole("link", { name: "IDE" })).toBeTruthy();
+      });
+    });
+
+    it("shows IDE unavailable notice for forked-root when IDE is unavailable on /ide route", async () => {
+      mockWorkspaces = [createMockWorkspace({
+        isRoot: true,
+        forks: [{
+          name: "test-workspace-fork",
+          dir: "/path/to/test-workspace-fork",
+          running: false,
+          needsInput: false,
+          inProgress: false,
+          pinned: false,
+          title: "Fork 1",
+        }],
+        ide: {
+          available: false,
+          running: false,
+          reason: "docker unavailable",
+        },
+      })];
+
+      renderWorkspaceDetailRouter("/workspaces/test-workspace/ide");
+
+      await waitFor(() => {
+        expect(screen.getByText("IDE unavailable")).toBeTruthy();
+        expect(screen.getByText(/docker unavailable/)).toBeTruthy();
+      });
+    });
+  });
 });

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -149,6 +150,7 @@ func (s *signalSubscriber) nextPendingEvent() (signalEvent, bool) {
 }
 
 func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/v1/state", s.handleAPIState)
 	mux.HandleFunc("GET /api/v1/signal", s.handleSignalStream)
 	mux.HandleFunc("GET /api/v1/workspaces", s.handleAPIWorkspaceList)
 	mux.HandleFunc("GET /api/v1/workspaces/{name}/state", s.handleAPIWorkspaceState)
@@ -178,6 +180,8 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/workspaces/{name}/workflow.svg", s.handleAPIWorkflowSVG)
 	mux.HandleFunc("POST /api/v1/workspaces/{name}/steer", s.handleAPISteer)
 	mux.HandleFunc("POST /api/v1/workspaces/{name}/pin", s.handleAPITogglePin)
+	mux.HandleFunc("GET /api/v1/workspaces/{id}/ide", s.handleAPIIDEStatus)
+	mux.HandleFunc("POST /api/v1/workspaces/{id}/ide/access", s.handleAPIIDEAccess)
 	mux.HandleFunc("POST /api/v1/workspaces/{name}/open-editor", s.handleAPIOpenEditor)
 	mux.HandleFunc("GET /api/v1/models", s.handleAPIListModels)
 
@@ -226,6 +230,10 @@ func (s *Server) handleSignalStream(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+type apiFactoryState struct {
+	Workspaces []apiWorkspaceFullState `json:"workspaces"`
 }
 
 type apiWorkspaceListResponse struct {
@@ -308,6 +316,7 @@ type apiWorkspaceFullState struct {
 	Actions           []apiActionEntry            `json:"actions,omitempty"`
 	ActionConfigError string                      `json:"actionConfigError,omitempty"`
 	RepositoryAction  apiRepositoryAction         `json:"repositoryAction"`
+	IDE               apiWorkspaceIDEState        `json:"ide"`
 }
 
 func (s *Server) handleAPIWorkspaceList(w http.ResponseWriter, _ *http.Request) {
@@ -347,6 +356,33 @@ func (s *Server) resolveWorkspacePageFromPath(w http.ResponseWriter, r *http.Req
 		return "", false
 	}
 	return workspacePath, true
+}
+
+func (s *Server) handleAPIState(w http.ResponseWriter, r *http.Request) {
+	if ok := s.ensureBrowserSession(w, r); !ok {
+		return
+	}
+	if cached, ok := s.stateCache.get("state"); ok {
+		writeJSON(w, cached)
+		return
+	}
+	factoryState, _ := s.stateFlight.do("state", func() (apiFactoryState, error) {
+		if cached, ok := s.stateCache.get("state"); ok {
+			return cached, nil
+		}
+		s.mu.Lock()
+		genBefore := s.stateGeneration
+		s.mu.Unlock()
+		result := s.buildFullFactoryState()
+		s.mu.Lock()
+		genAfter := s.stateGeneration
+		s.mu.Unlock()
+		if genBefore == genAfter {
+			s.stateCache.set("state", result)
+		}
+		return result, nil
+	})
+	writeJSON(w, factoryState)
 }
 
 func (s *Server) loadWorkspaceListResponse() apiWorkspaceListResponse {
@@ -401,6 +437,25 @@ func (s *Server) loadWorkspaceState(dir string) state.Workflow {
 		return emptyState
 	}
 	return s.workspaceCoordinator(dir).State()
+}
+
+func (s *Server) buildFullFactoryState() apiFactoryState {
+	groups, errScan := s.scanWorkspaceGroups()
+	if errScan != nil {
+		return apiFactoryState{Workspaces: nil}
+	}
+
+	allWorkspaces := workspaceInfos(groups)
+	workspaces := make([]apiWorkspaceFullState, len(allWorkspaces))
+	var wg sync.WaitGroup
+	for i, ws := range allWorkspaces {
+		wg.Go(func() {
+			workspaces[i] = s.buildWorkspaceFullState(ws, groups)
+		})
+	}
+	wg.Wait()
+
+	return apiFactoryState{Workspaces: workspaces}
 }
 
 func (s *Server) buildWorkspaceListResponse() apiWorkspaceListResponse {
@@ -615,6 +670,7 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 		Actions:           actionState.Actions,
 		ActionConfigError: actionState.ConfigError,
 		RepositoryAction:  repositoryAction.api(ws.DirName),
+		IDE:               s.buildWorkspaceIDEState(context.Background(), ws.Directory),
 	}
 
 	if ws.IsRoot {
@@ -705,7 +761,7 @@ func (s *Server) spaMiddleware(mux *http.ServeMux) http.Handler {
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isAPIRoute(r.URL.Path) {
+		if isBackendPassthroughRoute(r.URL.Path) {
 			mux.ServeHTTP(w, r)
 			return
 		}
@@ -720,12 +776,20 @@ func (s *Server) spaMiddleware(mux *http.ServeMux) http.Handler {
 			return
 		}
 
+		if ok := s.ensureBrowserSession(w, r); !ok {
+			return
+		}
+
 		serveReactIndex(w, webappFS)
 	})
 }
 
 func isAPIRoute(urlPath string) bool {
 	return strings.HasPrefix(urlPath, "/api/") || strings.HasPrefix(urlPath, "/mcp/")
+}
+
+func isBackendPassthroughRoute(urlPath string) bool {
+	return isAPIRoute(urlPath) || isIDEProxyRoute(urlPath)
 }
 
 func isStaticAsset(urlPath string) bool {

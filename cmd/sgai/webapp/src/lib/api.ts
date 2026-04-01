@@ -24,6 +24,7 @@ import type {
   ApiDetachWorkspaceResponse,
   ApiBrowseDirectoriesResponse,
   ApiRepositoryOperation,
+  ApiIDEStatusResponse,
 } from "../types";
 
 class ApiError extends Error {
@@ -170,6 +171,17 @@ export const api = {
       fetchJSON<void>(`/api/v1/workspaces/${encodeURIComponent(name)}/reset`, {
         method: "POST",
       }),
+    ideStatus: (name: string) =>
+      fetchJSON<ApiIDEStatusResponse>(
+        `/api/v1/workspaces/${encodeURIComponent(name)}/ide`,
+      ),
+    ideAccess: (workspaceOrPath: string) =>
+      fetchJSON<ApiIDEStatusResponse>(
+        workspaceOrPath.startsWith("/")
+          ? workspaceOrPath
+          : `/api/v1/workspaces/${encodeURIComponent(workspaceOrPath)}/ide/access`,
+        { method: "POST" },
+      ),
   },
 
   browse: {

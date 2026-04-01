@@ -150,6 +150,8 @@ func isEditorAvailable(command string) bool {
 type Server struct {
 	mu                sync.Mutex
 	sessions          map[string]*session
+	ideSessions       map[string]*ideSession
+	browserSessions   map[string]*browserSession
 	everStartedDirs   map[string]bool
 	pinnedDirs        map[string]bool
 	pinnedConfigDir   string
@@ -161,6 +163,11 @@ type Server struct {
 	editorName        string
 	editor            editorOpener
 	shutdownCtx       context.Context
+	ideRuntime        ideRuntime
+	ideNow            func() time.Time
+	ideAccessTTL      time.Duration
+	ideIdleTimeout    time.Duration
+	browserSessionTTL time.Duration
 
 	signals *signalBroker
 
@@ -179,6 +186,12 @@ type Server struct {
 	workspaceListCache  *ttlCache[string, apiWorkspaceListResponse]
 	workspacePageFlight singleflight[string, apiWorkspaceFullState]
 	workspacePageCache  *ttlCache[string, apiWorkspaceFullState]
+	stateFlight         singleflight[string, apiFactoryState]
+	stateCache          *ttlCache[string, apiFactoryState]
+	ideStatusFlight     singleflight[string, ideRuntimeStatus]
+	ideStatusCache      *ttlCache[string, ideRuntimeStatus]
+	ideStartFlight      singleflight[string, ideSessionStartResult]
+	stateGeneration     uint64
 
 	goalTitleComposer      func(workspacePath string, goalContent []byte) (string, error)
 	goalTitleReadFile      func(path string) ([]byte, error)
@@ -208,6 +221,8 @@ func NewServer(rootDir string, paths serverPaths, editorConfig string) *Server {
 	return &Server{
 		mu:                     sync.Mutex{},
 		sessions:               make(map[string]*session),
+		ideSessions:            make(map[string]*ideSession),
+		browserSessions:        make(map[string]*browserSession),
 		everStartedDirs:        make(map[string]bool),
 		pinnedDirs:             make(map[string]bool),
 		pinnedConfigDir:        paths.pinnedConfigDir,
@@ -215,6 +230,11 @@ func NewServer(rootDir string, paths serverPaths, editorConfig string) *Server {
 		externalConfigDir:      paths.externalConfigDir,
 		adhocStates:            make(map[string]*adhocPromptState),
 		shutdownCtx:            context.Background(),
+		ideRuntime:             newDockerIDERuntime(),
+		ideNow:                 time.Now,
+		ideAccessTTL:           defaultIDEAccessTTL,
+		ideIdleTimeout:         defaultIDEIdleTimeout,
+		browserSessionTTL:      defaultBrowserSessionTTL,
 		signals:                newSignalBroker(),
 		rootDir:                absRootDir,
 		editorAvailable:        editorAvail,
@@ -226,6 +246,8 @@ func NewServer(rootDir string, paths serverPaths, editorConfig string) *Server {
 		svgCache:               newTTLCache[string, string](10 * time.Second),
 		workspaceListCache:     newTTLCache[string, apiWorkspaceListResponse](3 * time.Second),
 		workspacePageCache:     newTTLCache[string, apiWorkspaceFullState](3 * time.Second),
+		stateCache:             newTTLCache[string, apiFactoryState](30 * time.Second),
+		ideStatusCache:         newTTLCache[string, ideRuntimeStatus](defaultIDEStatusTTL),
 		promptActionRunner:     nil,
 		scriptActionRunner:     nil,
 		workspaceScanFlight:    singleflight[string, []workspaceGroup]{mu: sync.Mutex{}, calls: nil},
@@ -233,6 +255,10 @@ func NewServer(rootDir string, paths serverPaths, editorConfig string) *Server {
 		svgFlight:              singleflight[string, string]{mu: sync.Mutex{}, calls: nil},
 		workspaceListFlight:    singleflight[string, apiWorkspaceListResponse]{mu: sync.Mutex{}, calls: nil},
 		workspacePageFlight:    singleflight[string, apiWorkspaceFullState]{mu: sync.Mutex{}, calls: nil},
+		stateFlight:            singleflight[string, apiFactoryState]{mu: sync.Mutex{}, calls: nil},
+		ideStatusFlight:        singleflight[string, ideRuntimeStatus]{mu: sync.Mutex{}, calls: nil},
+		ideStartFlight:         singleflight[string, ideSessionStartResult]{mu: sync.Mutex{}, calls: nil},
+		stateGeneration:        0,
 		goalTitleComposer:      defaultGoalTitleComposer,
 		goalTitleReadFile:      os.ReadFile,
 		goalTitleRepairMu:      sync.Mutex{},
@@ -725,6 +751,7 @@ func cmdServe(args []string) {
 
 	mux := http.NewServeMux()
 	srv.registerAPIRoutes(mux)
+	srv.registerIDERoutes(mux)
 	externalMCPHandler, errExternalMCP := buildExternalMCPHandler(srv)
 	if errExternalMCP != nil {
 		log.Println("failed to build external MCP handler:", errExternalMCP)

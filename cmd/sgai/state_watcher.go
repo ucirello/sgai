@@ -28,9 +28,11 @@ func (s *Server) stateWatcherLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			s.stopAllIDESessions(context.Background())
 			return
 		case <-ticker.C:
 			s.pollWorkspaceStates(snapshots)
+			s.cleanupIdleIDESessions(s.ideNow())
 		}
 	}
 }
