@@ -84,6 +84,20 @@ If you find zero actionable suggestions, send a `RETRO_COMPLETE:` message and ex
 
 You do NOT call `ask_user_question` directly. Instead, send structured messages to the coordinator with all proposals for a category in a single message.
 
+**The coordinator relay is literal and prompt-native:**
+- The coordinator strips only the `RETRO_QUESTION ...:` prefix.
+- Everything after that prefix is copied verbatim into the human-facing `question` field.
+- The coordinator parses your selection list into `choices` by reading the selectable bullet items.
+- If the prefix contains `[MULTI-SELECT]`, the coordinator sets `multiSelect=true`; otherwise it defaults to `false`.
+- There is NO paraphrasing fallback.
+
+**Therefore every `RETRO_QUESTION` message you send MUST:**
+1. Put every human-visible word after the prefix exactly as the human should read it.
+2. Use `RETRO_QUESTION [MULTI-SELECT]:` when more than one choice may be approved; otherwise use `RETRO_QUESTION:`.
+3. Keep the question body self-contained, because the coordinator will not add context, rewrite it, or clean it up for you.
+4. End with a selection list that contains one selectable item per bullet line using `- `.
+5. Keep each bullet item's text stable and explicit, because those bullet lines become the `choices` entries.
+
 **For each non-empty category, send ONE message:**
 
 ```
@@ -93,7 +107,7 @@ sgai_send_message({
 })
 ```
 
-Then set status to `agent-done` to yield control. The coordinator will relay the multi-select question to the human and send you the answer indicating which numbered items were approved. When all categories have been presented and responses received, apply approved changes and send:
+Then set status to `agent-done` to yield control. The coordinator will relay the exact post-prefix body to the human, parse the bullet list into `choices`, and send you the answer indicating which numbered items were approved. When all categories have been presented and responses received, apply approved changes and send:
 
 ```
 sgai_send_message({
@@ -172,7 +186,7 @@ If you cannot produce observations for all 4 categories, you MUST re-read the ar
 
 You have access to:
 
-- **`send_message`** / **`check_inbox`** / **`check_outbox`** — Your primary interaction tools. Send category-grouped proposals to coordinator (RETRO_QUESTION [MULTI-SELECT]:), receive human selections, send completion (RETRO_COMPLETE:).
+- **`send_message`** / **`check_inbox`** / **`check_outbox`** — Your primary interaction tools. Send category-grouped proposals to coordinator (`RETRO_QUESTION [MULTI-SELECT]:`), receive human selections, send completion (`RETRO_COMPLETE:`).
 - **`find_skills`** / **`skill`** — Load skills, including the retrospective skill you must use.
 - **`update_workflow_state`** — Signal progress and yield control (`agent-done`).
 - **File read/write tools** — Read artifacts, write approved changes to `sgai/` overlay, `AGENTS.md`, and `.sgai/SGAI_NOTES.md`.

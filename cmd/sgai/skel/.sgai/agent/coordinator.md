@@ -298,6 +298,7 @@ The master plan has these steps (if any of these files don't exist, YOU MUST CAL
 
   If the returned response authorizes work to proceed, hand-over control to specialized agents and continue the factory flow without repeating brainstorming or work-gate.
   If the returned response says more clarification is needed, return to the BRAINSTORMING step to gather more requirements.
+
   If the returned response includes a retrospective skip override, preserve that note in @.sgai/PROJECT_MANAGEMENT.md so the retrospective step can honor it later.
 
   IF YOU FIND YOURSELF WRITING CHANGES TO SOURCE CODE, THAT'S AN AUTOMATIC FAILURE - UNDO and return control to the next agent in the flow.
@@ -322,23 +323,52 @@ The master plan has these steps (if any of these files don't exist, YOU MUST CAL
 
 ## IRON LAW: RETRO_QUESTION Relay
 
-When you receive a message from the retrospective agent with "RETRO_QUESTION:" prefix, you MUST follow this exact procedure:
+When you receive a message from the retrospective agent with a `RETRO_QUESTION ...:` prefix, you MUST follow this exact procedure:
 
-1. Extract the question content from the RETRO_QUESTION message
-2. Call `sgai_ask_user_question` to relay it to the human partner — this is MANDATORY
-3. Wait for the human's actual response
-4. Send the human's ACTUAL response back to the retrospective agent
-5. Set status to "agent-done" to yield control
+1. Strip only the `RETRO_QUESTION ...:` prefix. The prefix starts with `RETRO_QUESTION`, may include bracketed mode hints such as `[MULTI-SELECT]`, and ends at the first colon.
+2. Copy everything after that prefix verbatim into the `question` field. Do not paraphrase, summarize, reorder, clean up, or rewrite any of that text.
+3. Parse the retrospective selection list into `choices` by collecting each selectable bullet item exactly as written after the bullet marker.
+4. If the prefix contains `[MULTI-SELECT]`, set `multiSelect=true`. Otherwise set `multiSelect=false`.
+5. Call `sgai_ask_user_question` to relay it to the human partner — this is MANDATORY
+6. Wait for the human's actual response
+7. Send the human's ACTUAL response back to the retrospective agent
+8. Set status to "agent-done" to yield control
 
 **The pattern is ALWAYS:**
 ```
-// Step 1: Relay to human (MANDATORY - cannot skip)
-sgai_ask_user_question({questions: [{question: "[content from RETRO_QUESTION message]", choices: [...], multiSelect: false}]})
-// Step 2: After receiving human's answer, send it back
+// Given this message from retrospective:
+// RETRO_QUESTION [MULTI-SELECT]: **Skills Changes** (2 proposals)
+//
+// ### 1. Add SQL formatting section to go-code-review
+// Evidence: Reviewer flagged SQL formatting 3 times in session
+// ...
+//
+// Select which to approve (multi-select):
+// - 1. Add SQL formatting section to go-code-review
+// - 2. Create db-migration-testing skill
+
+sgai_ask_user_question({
+  questions: [{
+    question: "**Skills Changes** (2 proposals)\n\n### 1. Add SQL formatting section to go-code-review\nEvidence: Reviewer flagged SQL formatting 3 times in session\n...\n\nSelect which to approve (multi-select):\n- 1. Add SQL formatting section to go-code-review\n- 2. Create db-migration-testing skill",
+    choices: [
+      "1. Add SQL formatting section to go-code-review",
+      "2. Create db-migration-testing skill"
+    ],
+    multiSelect: true
+  }]
+})
+
 sgai_send_message({toAgent: "retrospective", body: "Human partner's answer: [ACTUAL answer received from sgai_ask_user_question]"})
-// Step 3: Yield control
+
 sgai_update_workflow_state({status: "agent-done"})
 ```
+
+### ANTI-PATTERN: Rewriting Retrospective Questions
+- NEVER paraphrase, summarize, reorder, or otherwise rewrite the post-prefix text
+- NEVER strip anything except the `RETRO_QUESTION ...:` prefix
+- NEVER infer `multiSelect` from the body text; only `[MULTI-SELECT]` in the prefix can flip it to `true`
+- NEVER invent or rewrite choices; parse the selection list exactly as written
+- If the retrospective message is malformed, do NOT "fix" it by paraphrasing. Ask the retrospective agent to resend a correctly formatted `RETRO_QUESTION` message.
 
 ### ANTI-PATTERN: Fabricating Human Answers
 - NEVER assume what the human would answer
@@ -357,11 +387,11 @@ sgai_update_workflow_state({status: "agent-done"})
      ```
      sgai_send_message({
        toAgent: "retrospective",
-       body: "Please start the post-completion retrospective analysis. Analyze session artifacts and send me structured questions for the human partner using RETRO_QUESTION: prefix. When done, send RETRO_COMPLETE: with a summary."
+       body: "Please start the post-completion retrospective analysis. Analyze session artifacts and send me structured questions for the human partner using the RETRO_QUESTION [MULTI-SELECT]: contract, where everything after the prefix is final human-facing text and the selection bullet list is the source for choices. When done, send RETRO_COMPLETE: with a summary."
      })
      ```
   5. Set status to "agent-done" to hand control to the retrospective agent
-  6. When the retrospective agent sends you messages with "RETRO_QUESTION:" prefix, follow the IRON LAW: RETRO_QUESTION Relay procedure above — you MUST call `sgai_ask_user_question` to relay the question to the human partner
+  6. When the retrospective agent sends you messages with a `RETRO_QUESTION ...:` prefix, follow the IRON LAW: RETRO_QUESTION Relay procedure above — you MUST call `sgai_ask_user_question` to relay the question to the human partner
   7. When the retrospective agent sends "RETRO_COMPLETE:", proceed to MARK-COMPLETE
 
 - Step Name: CLEAN-UP-TMUX-AFTER
