@@ -3496,6 +3496,7 @@ func TestExecuteAgentProcessFlushesBufferedTextOnInterrupt(t *testing.T) {
 	ring := newRingWriter()
 	workflow := newTestWorkflow()
 	resultCh := make(chan processResult, 1)
+	var result processResult
 	go func() {
 		_, _, errState := executeAgentProcess(ctx, &cfg, []string{"run"}, "", "[test]", ring, &workflow)
 		resultCh <- processResult{errState: errState}
@@ -3514,12 +3515,15 @@ func TestExecuteAgentProcessFlushesBufferedTextOnInterrupt(t *testing.T) {
 
 	cancel()
 
-	select {
-	case result := <-resultCh:
-		require.NotNil(t, result.errState)
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for interrupted agent process")
-	}
+	require.Eventually(t, func() bool {
+		select {
+		case result = <-resultCh:
+			return true
+		default:
+			return false
+		}
+	}, gracefulShutdownTimeout+time.Second, 10*time.Millisecond)
+	require.NotNil(t, result.errState)
 
 	assert.Contains(t, logBuf.String(), "interrupted buffered text")
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -59,6 +60,13 @@ func TestAdhocStartServiceAlreadyRunningReturnsExisting(t *testing.T) {
 	require.NoError(t, result.Error)
 	assert.True(t, result.Running)
 	assert.Contains(t, result.Output, "test output")
+}
+
+func TestBuildPromptActionCommandSpecUsesOnlyWorkspaceConfigDirEnv(t *testing.T) {
+	workspacePath := "/tmp/test-workspace"
+	spec := buildPromptActionCommandSpec(workspacePath, "summarize", "openai/gpt-5.4")
+
+	assert.Equal(t, []string{"OPENCODE_CONFIG_DIR=" + filepath.Join(workspacePath, ".sgai")}, spec.env)
 }
 
 func TestGetAdhocStateCreation(t *testing.T) {

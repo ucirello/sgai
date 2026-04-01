@@ -2,6 +2,18 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 
+function workbenchSGAIMCPCommand() {
+  const sgaiBinPath = process.env.SGAI_BIN_PATH?.trim();
+  const sgaiMCPURL = process.env.SGAI_MCP_URL?.trim();
+  const sgaiAgentIdentity = process.env.SGAI_AGENT_IDENTITY?.trim();
+
+  if (!sgaiBinPath || !sgaiMCPURL || !sgaiAgentIdentity) {
+    return null;
+  }
+
+  return [sgaiBinPath, "internal-mcp", sgaiMCPURL, sgaiAgentIdentity];
+}
+
 export const Workbench: Plugin = async ({ directory }) => {
   const stateFilePath = join(directory, ".sgai", "state.json");
 
@@ -16,21 +28,17 @@ export const Workbench: Plugin = async ({ directory }) => {
       config.instructions?.unshift(directory + "/.sgai/AGENTS.md");
       config.model = "opencode/big-pickle";
 
-      // Configure MCP server for sgai custom tools via local stdio bridge
-      if (!config.mcp) {
-        config.mcp = {};
+      const sgaiMCPCommand = workbenchSGAIMCPCommand();
+      if (sgaiMCPCommand) {
+        if (!config.mcp) {
+          config.mcp = {};
+        }
+        config.mcp.sgai = {
+          type: "local",
+          command: sgaiMCPCommand,
+        };
       }
-      config.mcp.sgai = {
-        type: "local",
-        command: [
-          process.env.SGAI_BIN_PATH || "",
-          "internal-mcp",
-          process.env.SGAI_MCP_URL || "",
-          process.env.SGAI_AGENT_IDENTITY || ""
-        ]
-      };
     },
-    // Tools are now provided by the MCP server configured above
     tool: {},
     event: async (input: { event: any; client: any }) => {
       if (input.event.type === "todo.updated") {
