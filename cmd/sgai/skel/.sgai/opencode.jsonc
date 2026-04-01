@@ -9,7 +9,9 @@
                                 "@playwright/mcp@latest",
                                 "--ignore-https-errors",
                                 "--isolated",
-                                "--caps=vision"
+                                "--caps=vision",
+                                "--caps=devtools",
+                                "--caps=testing"
                         ]
                 },
                 "context7": {
