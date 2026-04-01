@@ -35,14 +35,10 @@ import {
   isSameWorkspace,
   resolveWorkspaceByName,
 } from "@/lib/workspace-identity";
+import { sortByVisibleLabel } from "@/lib/workspace-sort";
 
 type ForkEntry = NonNullable<ApiWorkspaceEntry["forks"]>[number];
 type WorkspaceLabelSource = Pick<ApiWorkspaceEntry, "name" | "dir"> & Partial<Pick<ApiWorkspaceEntry, "title" | "computedTitle">>;
-
-const naturalWorkspaceLabelCollator = new Intl.Collator(undefined, {
-  numeric: true,
-  sensitivity: "base",
-});
 
 function workspaceToForkEntry(ws: ApiWorkspaceEntry): ForkEntry {
   return {
@@ -70,24 +66,6 @@ function getOrphanPinnedForkDisplayLabel(
   }
 
   return `${rootLabel}/${forkLabel}`;
-}
-
-function sortByVisibleLabel<T>(
-  items: readonly T[],
-  getLabel: (item: T) => string,
-  getKey: (item: T) => string,
-): T[] {
-  return items
-    .map((item) => ({ item, label: getLabel(item), key: getKey(item) }))
-    .sort((left, right) => {
-      const labelComparison = naturalWorkspaceLabelCollator.compare(left.label, right.label);
-      if (labelComparison !== 0) {
-        return labelComparison;
-      }
-
-      return naturalWorkspaceLabelCollator.compare(left.key, right.key);
-    })
-    .map(({ item }) => item);
 }
 
 function getWorkspaceLabelSource(

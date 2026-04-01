@@ -473,6 +473,47 @@ describe("ForksTab", () => {
     expect(screen.getByRole("button", { name: /^Delete$/ })).toBeTruthy();
   });
 
+  it("renders forks sorted by visible label matching left-tree order", () => {
+    factoryState.workspaces = [
+      createMockWorkspace({
+        forks: [
+          {
+            name: "workspace-1-fork-c",
+            dir: "/path/to/workspace-1-fork-c",
+            running: false,
+            needsInput: false,
+            inProgress: false,
+            pinned: false,
+            title: "Charlie Fork",
+          },
+          {
+            name: "workspace-1-fork-a",
+            dir: "/path/to/workspace-1-fork-a",
+            running: false,
+            needsInput: false,
+            inProgress: false,
+            pinned: false,
+            title: "Alpha Fork",
+          },
+          {
+            name: "workspace-1-fork-b",
+            dir: "/path/to/workspace-1-fork-b",
+            running: false,
+            needsInput: false,
+            inProgress: false,
+            pinned: false,
+            title: "Bravo Fork",
+          },
+        ],
+      }),
+    ];
+
+    render(forksTabTestView());
+
+    const forkLabels = screen.getAllByText(/^(Alpha|Bravo|Charlie) Fork$/).map((el) => el.textContent);
+    expect(forkLabels).toEqual(["Alpha Fork", "Bravo Fork", "Charlie Fork"]);
+  });
+
   it("hides running fork row actions when backend policy marks them hidden", async () => {
     factoryState.workspaces = [
       createMockWorkspace({
