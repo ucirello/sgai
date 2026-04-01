@@ -20,7 +20,7 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { Loader2, Inbox, Link as LinkIcon } from "lucide-react";
+import { Inbox, Link as LinkIcon } from "lucide-react";
 import { WorkspaceRepositoryAction } from "@/components/WorkspaceRepositoryAction";
 import { useFactoryState } from "@/lib/factory-state";
 import { useSidebarResize } from "@/hooks/useSidebarResize";
@@ -36,6 +36,7 @@ import {
   resolveWorkspaceByName,
 } from "@/lib/workspace-identity";
 import { sortByVisibleLabel } from "@/lib/workspace-sort";
+import type { ApiRepositoryOperation } from "@/types";
 
 type ForkEntry = NonNullable<ApiWorkspaceEntry["forks"]>[number];
 type WorkspaceLabelSource = Pick<ApiWorkspaceEntry, "name" | "dir"> & Partial<Pick<ApiWorkspaceEntry, "title" | "computedTitle">>;
@@ -152,47 +153,220 @@ interface WorkspaceIndicatorFields {
   running: boolean;
   needsInput: boolean;
   pinned: boolean;
-  external?: boolean;
 }
 
 interface WorkspaceIndicatorsProps {
   workspace: WorkspaceIndicatorFields;
 }
 
-function WorkspaceIndicators({ workspace }: WorkspaceIndicatorsProps) {
-  const isActive = workspace.running;
-  const runningLabel = workspace.running ? "Running" : "In progress";
+type WorkspaceIndicatorKey = keyof WorkspaceIndicatorFields;
+
+interface WorkspaceIndicatorDefinition {
+  key: WorkspaceIndicatorKey;
+  label: string;
+  activeToneClassName: string;
+  activeGlyph: string;
+  inactiveGlyph: string;
+}
+
+interface WorkspaceIndicatorSlotProps {
+  active: boolean;
+  label: string;
+  activeToneClassName: string;
+  activeGlyph: string;
+  inactiveGlyph: string;
+}
+
+const workspaceIndicatorDefinitions: readonly WorkspaceIndicatorDefinition[] = [
+  {
+    key: "running",
+    label: "Running",
+    activeToneClassName: "text-emerald-600 dark:text-emerald-400",
+    activeGlyph: "▲",
+    inactiveGlyph: "△",
+  },
+  {
+    key: "needsInput",
+    label: "Waiting for response",
+    activeToneClassName: "text-amber-600 dark:text-amber-400",
+    activeGlyph: "●",
+    inactiveGlyph: "○",
+  },
+  {
+    key: "pinned",
+    label: "Pinned",
+    activeToneClassName: "text-primary",
+    activeGlyph: "■",
+    inactiveGlyph: "□",
+  },
+];
+
+function WorkspaceIndicatorSlot({
+  active,
+  label,
+  activeToneClassName,
+  activeGlyph,
+  inactiveGlyph,
+}: WorkspaceIndicatorSlotProps) {
+  const stateLabel = `${label}: ${active ? "on" : "off"}`;
+  const glyph = active ? activeGlyph : inactiveGlyph;
+  const slot = (
+    <span
+      className={cn(
+        "inline-flex w-4 cursor-help justify-center font-mono text-[0.75rem] font-semibold leading-none",
+        active ? activeToneClassName : "text-muted-foreground/45",
+      )}
+      aria-hidden={!active}
+      aria-label={active ? label : undefined}
+      role={active ? "img" : undefined}
+    >
+      {glyph}
+    </span>
+  );
 
   return (
-    <span className="flex items-center gap-1 shrink-0">
-      {workspace.external && (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <LinkIcon className="h-3 w-3 text-muted-foreground" aria-label="External workspace" title="External workspace" />
-          </TooltipTrigger>
-          <TooltipContent>External workspace</TooltipContent>
-        </Tooltip>
-      )}
-      {isActive && (
-        <Loader2 className="h-3 w-3 text-primary animate-spin" aria-label={runningLabel} title={runningLabel} />
-      )}
-      {workspace.needsInput && (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Inbox className="h-3 w-3 text-primary" aria-label="Waiting for response" title="Waiting for response" />
-          </TooltipTrigger>
-          <TooltipContent>Waiting for response</TooltipContent>
-        </Tooltip>
-      )}
-      {workspace.pinned && (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="text-[0.7rem] opacity-70">📌</span>
-          </TooltipTrigger>
-          <TooltipContent>Pinned</TooltipContent>
-        </Tooltip>
-      )}
+    <Tooltip>
+      <TooltipTrigger asChild>{slot}</TooltipTrigger>
+      <TooltipContent>{stateLabel}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function WorkspaceIndicators({ workspace }: WorkspaceIndicatorsProps) {
+  const indicatorSummary = workspaceIndicatorDefinitions
+    .map(({ key, label }) => `${label}: ${workspace[key] ? "on" : "off"}`)
+    .join(", ");
+
+  return (
+    <span
+      className="ml-2 inline-grid shrink-0 grid-cols-3 items-center justify-items-center gap-0.5"
+      role="group"
+      aria-label={indicatorSummary}
+    >
+      {workspaceIndicatorDefinitions.map(({ key, label, activeToneClassName, activeGlyph, inactiveGlyph }) => (
+        <WorkspaceIndicatorSlot
+          key={key}
+          active={workspace[key]}
+          label={label}
+          activeToneClassName={activeToneClassName}
+          activeGlyph={activeGlyph}
+          inactiveGlyph={inactiveGlyph}
+        />
+      ))}
     </span>
+  );
+}
+
+function useTreeRowTooltipState() {
+  const [rowTooltipOpen, setRowTooltipOpen] = useState(false);
+
+  const handleRowTooltipOpenChange = useCallback((nextOpen: boolean) => {
+    setRowTooltipOpen(nextOpen);
+  }, []);
+
+  const handleLinkFocus = useCallback(() => {
+    setRowTooltipOpen(true);
+  }, []);
+
+  const handleLinkBlur = useCallback(() => {
+    setRowTooltipOpen(false);
+  }, []);
+
+  return {
+    rowTooltipOpen,
+    handleRowTooltipOpenChange,
+    handleLinkFocus,
+    handleLinkBlur,
+  };
+}
+
+interface WorkspaceTreeActionSlotProps {
+  workspace: Pick<ApiWorkspaceEntry, "name" | "dir" | "repositoryAction">;
+  triggerLabelSuffix?: string;
+  onCompleted?: (operation: ApiRepositoryOperation) => void;
+}
+
+interface WorkspaceTreeTrailingActionProps {
+  workspace?: Pick<ApiWorkspaceEntry, "name" | "dir" | "repositoryAction"> | null;
+  triggerLabelSuffix?: string;
+  onCompleted?: (operation: ApiRepositoryOperation) => void;
+}
+
+function usesLeftTreeDetachSlot(
+  workspace: Pick<ApiWorkspaceEntry, "repositoryAction">,
+): boolean {
+  const action = workspace.repositoryAction;
+
+  return Boolean(action && action.entryPoint !== "hidden" && action.presentation.icon === "detach");
+}
+
+function usesTrailingTreeAction(
+  workspace: Pick<ApiWorkspaceEntry, "repositoryAction">,
+): boolean {
+  const action = workspace.repositoryAction;
+
+  return Boolean(action && action.entryPoint !== "hidden" && action.presentation.icon !== "detach");
+}
+
+function WorkspaceTreeActionSlot({
+  workspace,
+  triggerLabelSuffix,
+  onCompleted,
+}: WorkspaceTreeActionSlotProps) {
+  if (!usesLeftTreeDetachSlot(workspace)) {
+    return null;
+  }
+
+  return (
+    <span
+      data-slot="workspace-tree-action-slot"
+      className="mr-1 inline-flex h-6 w-5 shrink-0 items-center justify-center"
+    >
+      <WorkspaceRepositoryAction
+        workspace={workspace}
+        context="tree"
+        triggerLabelSuffix={triggerLabelSuffix}
+        onCompleted={onCompleted}
+      />
+    </span>
+  );
+}
+
+function WorkspaceTreeTrailingRail({ children }: { children?: ReactNode }) {
+  return (
+    <span
+      data-slot="workspace-tree-trailing-action-rail"
+      className="ml-1 inline-flex h-6 w-5 shrink-0 items-center justify-center"
+      aria-hidden={children ? undefined : true}
+    >
+      {children}
+    </span>
+  );
+}
+
+function WorkspaceTreeTrailingAction({
+  workspace,
+  triggerLabelSuffix,
+  onCompleted,
+}: WorkspaceTreeTrailingActionProps) {
+  const showTrailingAction = Boolean(workspace && usesTrailingTreeAction(workspace));
+
+  return (
+    <WorkspaceTreeTrailingRail>
+      {showTrailingAction && workspace ? (
+        <span
+          data-slot="workspace-tree-trailing-action"
+          className="inline-flex h-full w-full items-center justify-center"
+        >
+          <WorkspaceRepositoryAction
+            workspace={workspace}
+            context="tree"
+            triggerLabelSuffix={triggerLabelSuffix}
+            onCompleted={onCompleted}
+          />
+        </span>
+      ) : null}
+    </WorkspaceTreeTrailingRail>
   );
 }
 
@@ -216,6 +390,7 @@ function ForkItem({
   const forkFullEntry = workspaceLookup.get(fork.dir);
   const forkLabel = getVisibleForkLabel(fork, workspaceLookup, workspaceNameDisambiguators);
   const showTechnicalName = forkLabel !== fork.name;
+  const { rowTooltipOpen, handleRowTooltipOpenChange, handleLinkFocus, handleLinkBlur } = useTreeRowTooltipState();
   const handleActionCompleted = useCallback(() => {
     if (isSameWorkspace(fork, selectedWorkspace) && rootWorkspace) {
       navigate(buildWorkspacePath(rootWorkspace, "forks"));
@@ -225,7 +400,14 @@ function ForkItem({
   return (
     <SidebarMenuItem>
       <div className="flex items-center gap-0 group/row">
-        <Tooltip>
+        {forkFullEntry ? (
+          <WorkspaceTreeActionSlot
+            workspace={forkFullEntry}
+            triggerLabelSuffix={workspaceNameDisambiguators.get(forkFullEntry.dir)}
+            onCompleted={handleActionCompleted}
+          />
+        ) : null}
+        <Tooltip open={rowTooltipOpen} onOpenChange={handleRowTooltipOpenChange}>
           <SidebarMenuButton
             asChild
             isActive={forkSelected}
@@ -234,14 +416,18 @@ function ForkItem({
               forkSelected && "border-l-[3px] border-l-primary bg-primary/15 font-medium"
             )}
           >
-            <TooltipTrigger asChild>
-              <Link to={buildWorkspacePath(forkFullEntry ?? fork, "progress")}>
+              <Link
+                to={buildWorkspacePath(forkFullEntry ?? fork, "progress")}
+                onFocus={handleLinkFocus}
+                onBlur={handleLinkBlur}
+              >
+                <TooltipTrigger asChild>
                 <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
                   {forkLabel}
                 </span>
+                </TooltipTrigger>
                 <WorkspaceIndicators workspace={fork} />
               </Link>
-            </TooltipTrigger>
           </SidebarMenuButton>
           <TooltipContent side="right">
             <div className="max-w-xs">
@@ -252,14 +438,11 @@ function ForkItem({
             </div>
           </TooltipContent>
         </Tooltip>
-        {forkFullEntry ? (
-          <WorkspaceRepositoryAction
-            workspace={forkFullEntry}
-            context="tree"
-            triggerLabelSuffix={workspaceNameDisambiguators.get(forkFullEntry.dir)}
-            onCompleted={handleActionCompleted}
-          />
-        ) : null}
+        <WorkspaceTreeTrailingAction
+          workspace={forkFullEntry}
+          triggerLabelSuffix={forkFullEntry ? workspaceNameDisambiguators.get(forkFullEntry.dir) : undefined}
+          onCompleted={handleActionCompleted}
+        />
       </div>
     </SidebarMenuItem>
   );
@@ -302,6 +485,8 @@ function WorkspaceTreeItem({
 
   const displayText = getVisibleWorkspaceLabel(workspace, workspaceLookup, workspaceNameDisambiguators);
   const showTechnicalName = displayText !== workspace.name;
+  const { rowTooltipOpen, handleRowTooltipOpenChange, handleLinkFocus, handleLinkBlur } = useTreeRowTooltipState();
+  const treeActionWorkspace = fullWorkspace ?? workspace;
   const handleActionCompleted = useCallback(() => {
     if (isSameWorkspace(workspace, selectedWorkspace)) {
       navigate("/");
@@ -325,23 +510,32 @@ function WorkspaceTreeItem({
         ) : (
           <span className="w-5 h-5 inline-block shrink-0 mr-1" />
         )}
-        <Tooltip>
+        <WorkspaceTreeActionSlot
+          workspace={treeActionWorkspace}
+          triggerLabelSuffix={workspaceNameDisambiguators.get(treeActionWorkspace.dir)}
+          onCompleted={handleActionCompleted}
+        />
+        <Tooltip open={rowTooltipOpen} onOpenChange={handleRowTooltipOpenChange}>
           <SidebarMenuButton
             asChild
             isActive={isSelected}
             className={cn(
               "flex-1 min-w-0",
-              isSelected && "border-l-[3px] border-l-primary bg-primary/15 font-medium"
+                isSelected && "border-l-[3px] border-l-primary bg-primary/15 font-medium"
             )}
           >
-            <TooltipTrigger asChild>
-              <Link to={buildWorkspacePath(fullWorkspace ?? workspace, "progress")}>
+              <Link
+                to={buildWorkspacePath(treeActionWorkspace, "progress")}
+                onFocus={handleLinkFocus}
+                onBlur={handleLinkBlur}
+              >
+                <TooltipTrigger asChild>
                 <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
                   {displayText}
                 </span>
+                </TooltipTrigger>
                 <WorkspaceIndicators workspace={workspace} />
               </Link>
-            </TooltipTrigger>
           </SidebarMenuButton>
           <TooltipContent side="right">
             <div className="max-w-xs">
@@ -352,10 +546,9 @@ function WorkspaceTreeItem({
             </div>
           </TooltipContent>
         </Tooltip>
-        <WorkspaceRepositoryAction
-          workspace={fullWorkspace ?? workspace}
-          context="tree"
-          triggerLabelSuffix={workspaceNameDisambiguators.get((fullWorkspace ?? workspace).dir)}
+        <WorkspaceTreeTrailingAction
+          workspace={treeActionWorkspace}
+          triggerLabelSuffix={workspaceNameDisambiguators.get(treeActionWorkspace.dir)}
           onCompleted={handleActionCompleted}
         />
       </div>
@@ -397,37 +590,45 @@ function InProgressItem({
   const fullWorkspace = workspaceLookup.get(workspace.dir);
   const displayText = getVisibleWorkspaceLabel(workspace, workspaceLookup, workspaceNameDisambiguators);
   const showTechnicalName = displayText !== workspace.name;
+  const { rowTooltipOpen, handleRowTooltipOpenChange, handleLinkFocus, handleLinkBlur } = useTreeRowTooltipState();
 
   return (
     <SidebarMenuItem>
-      <Tooltip>
-        <SidebarMenuButton
-          asChild
-          isActive={isSelected}
-          className={cn(
-            "ml-2 mb-0.5",
-            !isSelected && "hover:bg-destructive/10",
-            isSelected && "border-l-[3px] border-l-primary bg-primary/15 font-medium"
-          )}
-        >
-          <TooltipTrigger asChild>
-            <Link to={buildWorkspacePath(fullWorkspace ?? workspace, workspace.needsInput ? "respond" : "progress")}>
-              <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-                {displayText}
-              </span>
-              <WorkspaceIndicators workspace={workspace} />
-            </Link>
-          </TooltipTrigger>
-        </SidebarMenuButton>
-        <TooltipContent side="right">
-          <div className="max-w-xs">
-            <div className="font-medium">{displayText}</div>
-            {showTechnicalName && (
-              <div className={tooltipMetadataClassName}>Name: {workspace.name}</div>
+      <div className="flex items-center gap-0 group/row">
+        <Tooltip open={rowTooltipOpen} onOpenChange={handleRowTooltipOpenChange}>
+          <SidebarMenuButton
+            asChild
+            isActive={isSelected}
+            className={cn(
+              "ml-2 mb-0.5 flex-1 min-w-0",
+              !isSelected && "hover:bg-destructive/10",
+              isSelected && "border-l-[3px] border-l-primary bg-primary/15 font-medium"
             )}
-          </div>
-        </TooltipContent>
-      </Tooltip>
+          >
+              <Link
+                to={buildWorkspacePath(fullWorkspace ?? workspace, workspace.needsInput ? "respond" : "progress")}
+                onFocus={handleLinkFocus}
+                onBlur={handleLinkBlur}
+              >
+                <TooltipTrigger asChild>
+                <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
+                  {displayText}
+                </span>
+                </TooltipTrigger>
+                <WorkspaceIndicators workspace={workspace} />
+              </Link>
+          </SidebarMenuButton>
+          <TooltipContent side="right">
+            <div className="max-w-xs">
+              <div className="font-medium">{displayText}</div>
+              {showTechnicalName && (
+                <div className={tooltipMetadataClassName}>Name: {workspace.name}</div>
+              )}
+            </div>
+          </TooltipContent>
+        </Tooltip>
+        <WorkspaceTreeTrailingRail />
+      </div>
     </SidebarMenuItem>
   );
 }
@@ -469,6 +670,8 @@ function PinnedTreeItem({
 
   const displayText = getVisibleWorkspaceLabel(workspace, workspaceLookup, workspaceNameDisambiguators);
   const showTechnicalName = displayText !== workspace.name;
+  const { rowTooltipOpen, handleRowTooltipOpenChange, handleLinkFocus, handleLinkBlur } = useTreeRowTooltipState();
+  const treeActionWorkspace = fullWorkspace ?? workspace;
   const handleActionCompleted = useCallback(() => {
     if (isSameWorkspace(workspace, selectedWorkspace)) {
       navigate("/");
@@ -492,23 +695,32 @@ function PinnedTreeItem({
         ) : (
           <span className="w-5 h-5 inline-block shrink-0 mr-1" />
         )}
-        <Tooltip>
+        <WorkspaceTreeActionSlot
+          workspace={treeActionWorkspace}
+          triggerLabelSuffix={workspaceNameDisambiguators.get(treeActionWorkspace.dir)}
+          onCompleted={handleActionCompleted}
+        />
+        <Tooltip open={rowTooltipOpen} onOpenChange={handleRowTooltipOpenChange}>
           <SidebarMenuButton
             asChild
             isActive={isSelected}
             className={cn(
               "flex-1 min-w-0",
-              isSelected && "border-l-[3px] border-l-primary bg-primary/15 font-medium"
+                isSelected && "border-l-[3px] border-l-primary bg-primary/15 font-medium"
             )}
           >
-            <TooltipTrigger asChild>
-              <Link to={buildWorkspacePath(fullWorkspace ?? workspace, "progress")}>
+              <Link
+                to={buildWorkspacePath(treeActionWorkspace, "progress")}
+                onFocus={handleLinkFocus}
+                onBlur={handleLinkBlur}
+              >
+                <TooltipTrigger asChild>
                 <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
                   {displayText}
                 </span>
+                </TooltipTrigger>
                 <WorkspaceIndicators workspace={workspace} />
               </Link>
-            </TooltipTrigger>
           </SidebarMenuButton>
           <TooltipContent side="right">
             <div className="max-w-xs">
@@ -519,10 +731,9 @@ function PinnedTreeItem({
             </div>
           </TooltipContent>
         </Tooltip>
-        <WorkspaceRepositoryAction
-          workspace={fullWorkspace ?? workspace}
-          context="tree"
-          triggerLabelSuffix={workspaceNameDisambiguators.get((fullWorkspace ?? workspace).dir)}
+        <WorkspaceTreeTrailingAction
+          workspace={treeActionWorkspace}
+          triggerLabelSuffix={workspaceNameDisambiguators.get(treeActionWorkspace.dir)}
           onCompleted={handleActionCompleted}
         />
       </div>
@@ -574,6 +785,7 @@ function OrphanPinnedForkItem({
     workspaceNameDisambiguators,
   );
   const showTechnicalName = forkLabel !== fork.name;
+  const { rowTooltipOpen, handleRowTooltipOpenChange, handleLinkFocus, handleLinkBlur } = useTreeRowTooltipState();
   const handleActionCompleted = useCallback(() => {
     if (isSameWorkspace(fork, selectedWorkspace)) {
       navigate(buildWorkspacePath(rootWorkspace, "forks"));
@@ -584,7 +796,14 @@ function OrphanPinnedForkItem({
     <SidebarMenuItem>
       <div className="flex items-center gap-0 group/row">
         <span className="w-5 h-5 inline-block shrink-0 mr-1" />
-        <Tooltip>
+        {forkFullEntry ? (
+          <WorkspaceTreeActionSlot
+            workspace={forkFullEntry}
+            triggerLabelSuffix={workspaceNameDisambiguators.get(forkFullEntry.dir)}
+            onCompleted={handleActionCompleted}
+          />
+        ) : null}
+        <Tooltip open={rowTooltipOpen} onOpenChange={handleRowTooltipOpenChange}>
           <SidebarMenuButton
             asChild
             isActive={forkSelected}
@@ -593,14 +812,18 @@ function OrphanPinnedForkItem({
               forkSelected && "border-l-[3px] border-l-primary bg-primary/15 font-medium"
             )}
           >
-            <TooltipTrigger asChild>
-              <Link to={buildWorkspacePath(forkFullEntry ?? fork, "progress")}>
+              <Link
+                to={buildWorkspacePath(forkFullEntry ?? fork, "progress")}
+                onFocus={handleLinkFocus}
+                onBlur={handleLinkBlur}
+              >
+                <TooltipTrigger asChild>
                 <span className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
                   {displayLabel}
                 </span>
+                </TooltipTrigger>
                 <WorkspaceIndicators workspace={fork} />
               </Link>
-            </TooltipTrigger>
           </SidebarMenuButton>
           <TooltipContent side="right">
             <div className="max-w-xs">
@@ -612,14 +835,11 @@ function OrphanPinnedForkItem({
             </div>
           </TooltipContent>
         </Tooltip>
-        {forkFullEntry ? (
-          <WorkspaceRepositoryAction
-            workspace={forkFullEntry}
-            context="tree"
-            triggerLabelSuffix={workspaceNameDisambiguators.get(forkFullEntry.dir)}
-            onCompleted={handleActionCompleted}
-          />
-        ) : null}
+        <WorkspaceTreeTrailingAction
+          workspace={forkFullEntry}
+          triggerLabelSuffix={forkFullEntry ? workspaceNameDisambiguators.get(forkFullEntry.dir) : undefined}
+          onCompleted={handleActionCompleted}
+        />
       </div>
     </SidebarMenuItem>
   );

@@ -39,6 +39,12 @@ const repositoryActionIcons: Record<ApiRepositoryActionIcon, LucideIcon> = {
   delete: Trash2,
 };
 
+const treeTriggerGlyphs: Record<ApiRepositoryActionIcon, string> = {
+  choose: "⋯",
+  detach: "⊘",
+  delete: "✕",
+};
+
 function getConfirmOperation(action: ApiRepositoryAction): ApiRepositoryOperation | null {
   if (!action.defaultOperation) {
     return null;
@@ -83,8 +89,8 @@ const TreeTrigger = forwardRef<HTMLButtonElement, TriggerButtonProps>(function T
   className,
   ...props
 }, ref) {
-  const Icon = repositoryActionIcons[icon];
   const isDestructive = tone === "destructive";
+  const glyph = treeTriggerGlyphs[icon];
 
   return (
     <Button
@@ -93,14 +99,16 @@ const TreeTrigger = forwardRef<HTMLButtonElement, TriggerButtonProps>(function T
       variant="ghost"
       size="icon"
       className={cn(
-        "h-6 w-6 shrink-0 rounded p-0.5 opacity-0 transition-opacity focus:opacity-100 group-hover/row:opacity-100",
-        isDestructive ? "hover:bg-destructive/20" : "hover:bg-accent",
+        "h-6 w-5 shrink-0 rounded px-0 font-mono text-[0.75rem] font-semibold leading-none opacity-80 transition-colors hover:opacity-100 focus-visible:opacity-100",
+        isDestructive
+          ? "text-destructive/75 hover:bg-destructive/15 hover:text-destructive"
+          : "text-muted-foreground hover:bg-accent hover:text-foreground",
         className,
       )}
       aria-label={label}
       {...props}
     >
-      <Icon className={`h-3 w-3 text-muted-foreground ${isDestructive ? "hover:text-destructive" : ""}`} />
+      <span aria-hidden="true">{glyph}</span>
     </Button>
   );
 });
