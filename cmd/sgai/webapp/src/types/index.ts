@@ -82,6 +82,7 @@ export interface ApiWorkspaceEntry {
   actionConfigError?: string;
   external?: boolean;
   repositoryAction?: ApiRepositoryAction;
+  ide?: ApiWorkspaceIDEState;
 }
 
 export interface ApiAgentSequenceEntry {
@@ -377,4 +378,35 @@ export interface ApiBrowseDirectoryEntry {
 
 export interface ApiBrowseDirectoriesResponse {
   entries: ApiBrowseDirectoryEntry[];
+}
+
+export interface ApiWorkspaceIDEState {
+  available: boolean;
+  running: boolean;
+  reason?: string;
+  lastError?: string;
+  lastEvent?: string;
+  lastActivity?: string;
+  accessPath?: string;
+  proxyPath?: string;
+}
+
+export interface ApiIDESessionInfo {
+  id: string;
+  createdAt?: string;
+  lastActivity?: string;
+  lastEvent?: string;
+}
+
+export interface ApiIDEStatusResponse {
+  available: boolean;
+  running: boolean;
+  reason?: string;
+  lastError?: string;
+  lastEvent?: string;
+  lastActivity?: string;
+  accessPath?: string;
+  proxyPath?: string;
+  reused?: boolean;
+  session?: ApiIDESessionInfo;
 }
