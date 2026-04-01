@@ -15,6 +15,13 @@ Transform rough ideas into fully-formed designs through structured questioning a
 
 ## The Process
 
+### Preparation: 
+
+- Read GOAL.md
+- Explore Source Code first in order to be able to ask more informed questions in the following phases
+
+IMPORTANT: ALWAYS EXECUTE THE PREPARATION STEPS.
+
 ### Phase 1: Understanding
 - Check current project state in working directory
 - Ask ONE question at a time to refine the idea
