@@ -12,26 +12,45 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	browserSessionCookieName = "sgai_browser_session"
-	ideAccessCookieName      = "sgai_ide_access"
-	ideDockerImage           = "codercom/code-server:latest"
-	ideDockerPort            = "8080/tcp"
-	ideDockerPortFlag        = "8080"
-	ideWorkspaceMountPath    = "/workspace"
-	ideStatusCacheKey        = "ide-status"
-	defaultBrowserSessionTTL = 24 * time.Hour
-	defaultIDEAccessTTL      = 24 * time.Hour
-	defaultIDEIdleTimeout    = 30 * time.Minute
-	defaultIDEStatusTTL      = 5 * time.Second
-	defaultIDERuntimeWait    = 30 * time.Second
-	defaultIDERuntimeProbe   = 200 * time.Millisecond
+	browserSessionCookieName       = "sgai_browser_session"
+	ideAccessCookieName            = "sgai_ide_access"
+	ideDockerImage                 = "codercom/code-server@sha256:ddd9b0b854fec5a3c65ec0095b5c59fb8505ad44d8a18d00d6fcf6a3179692dd"
+	ideDockerPort                  = "8080/tcp"
+	ideDockerPortFlag              = "8080"
+	ideWorkspaceMountPath          = "/workspace"
+	ideWorkspaceStateRoot          = ideWorkspaceMountPath + "/.sgai/code-server"
+	ideWorkspaceHomePath           = ideWorkspaceStateRoot + "/home"
+	ideWorkspaceTempPath           = ideWorkspaceStateRoot + "/tmp"
+	ideWorkspaceConfigPath         = ideWorkspaceStateRoot + "/config"
+	ideWorkspaceDataPath           = ideWorkspaceStateRoot + "/data"
+	ideWorkspaceUserDataPath       = ideWorkspaceStateRoot + "/user-data"
+	ideWorkspaceExtensionsPath     = ideWorkspaceStateRoot + "/extensions"
+	ideWorkspaceBinPath            = ideWorkspaceStateRoot + "/bin"
+	ideWorkspaceCachePath          = ideWorkspaceStateRoot + "/cache"
+	ideWorkspaceEntrypointPath     = ideWorkspaceStateRoot + "/entrypoint.d"
+	ideWorkspaceBootstrapErrorPath = ideWorkspaceStateRoot + "/bootstrap-error"
+	ideDockerDefaultPath           = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	ideJJVersion                   = "0.39.0"
+	ideJJArchiveSHA256AMD64        = "8da8d96e9c8696c21ad47847a63d533e249acb0449d9af0f0562b5ea7b024f04"
+	ideJJArchiveSHA256ARM64        = "15bbb0199adf57929d1e3cd90ae0b47356858cbe374814769815a1fb87d5ad1d"
+	ideJJBinarySHA256AMD64         = "4bf2da7b36705dc9f5c0df98e62789efa7ce8ee3de8d8667c6d50ce52a72f306"
+	ideJJBinarySHA256ARM64         = "ccda0d659adc1f0b72da83b907d0905a1b4ba2a4bb47d917d2815680a73a79e3"
+	ideStatusCacheKey              = "ide-status"
+	defaultBrowserSessionTTL       = 24 * time.Hour
+	defaultIDEAccessTTL            = 24 * time.Hour
+	defaultIDEIdleTimeout          = 30 * time.Minute
+	defaultIDEStatusTTL            = 5 * time.Second
+	defaultIDERuntimeWait          = 30 * time.Second
+	defaultIDERuntimeProbe         = 200 * time.Millisecond
 )
 
 var errIDEUnavailable = errors.New("ide unavailable")
@@ -130,10 +149,16 @@ type apiIDEStatusResponse struct {
 	Session      *apiIDESessionInfo `json:"session,omitempty"`
 }
 
-type dockerIDERuntime struct{}
+type dockerIDERuntime struct {
+	inspectOverride func(context.Context, ideRuntimeTarget) (ideRuntimeTarget, error)
+	probeOverride   func(ideRuntimeTarget) error
+}
 
 func newDockerIDERuntime() *dockerIDERuntime {
-	return &dockerIDERuntime{}
+	return &dockerIDERuntime{
+		inspectOverride: nil,
+		probeOverride:   nil,
+	}
 }
 
 func newIDERuntimeStatus(available bool, reason string) ideRuntimeStatus {
@@ -171,6 +196,9 @@ func (r *dockerIDERuntime) start(ctx context.Context, req ideStartRequest) (ideR
 	if errDockerPath != nil {
 		return newIDERuntimeTarget("", "", 0), fmt.Errorf("looking up docker executable: %w", errDockerPath)
 	}
+	if errPrepare := prepareIDEWorkspaceState(req.WorkspacePath); errPrepare != nil {
+		return newIDERuntimeTarget("", "", 0), fmt.Errorf("preparing ide workspace state: %w", errPrepare)
+	}
 	commandCtx, cancel := context.WithTimeout(ctx, defaultIDERuntimeWait)
 	defer cancel()
 	cmd := exec.CommandContext(commandCtx, dockerPath, buildDockerRunArgs(req)...)
@@ -182,7 +210,7 @@ func (r *dockerIDERuntime) start(ctx context.Context, req ideStartRequest) (ideR
 	if containerID == "" {
 		containerID = req.ContainerName
 	}
-	target, errWait := r.waitForTarget(commandCtx, newIDERuntimeTarget(containerID, "", 0))
+	target, errWait := r.waitForStartedTarget(commandCtx, newIDERuntimeTarget(containerID, "", 0), req.WorkspacePath)
 	if errWait != nil {
 		_ = r.stop(context.Background(), newIDERuntimeTarget(containerID, "", 0))
 		return newIDERuntimeTarget("", "", 0), errWait
@@ -190,14 +218,265 @@ func (r *dockerIDERuntime) start(ctx context.Context, req ideStartRequest) (ideR
 	return target, nil
 }
 
+func prepareIDEWorkspaceState(workspacePath string) error {
+	stateDirs := [][]string{
+		{"home"},
+		{"tmp"},
+		{"config"},
+		{"data"},
+		{"user-data"},
+		{"extensions"},
+		{"bin"},
+		{"cache"},
+		{"entrypoint.d"},
+	}
+	for _, dirParts := range stateDirs {
+		stateDir := ideWorkspaceStatePathOnHost(workspacePath, dirParts...)
+		if errMkdir := os.MkdirAll(stateDir, 0o755); errMkdir != nil {
+			return fmt.Errorf("creating ide workspace state %q: %w", stateDir, errMkdir)
+		}
+	}
+	errorPath := ideWorkspaceStatePathOnHost(workspacePath, "bootstrap-error")
+	if errRemove := os.Remove(errorPath); errRemove != nil && !errors.Is(errRemove, os.ErrNotExist) {
+		return fmt.Errorf("removing stale ide bootstrap error %q: %w", errorPath, errRemove)
+	}
+	scriptPath := ideWorkspaceStatePathOnHost(workspacePath, "entrypoint.d", "10-install-jj")
+	if errWrite := os.WriteFile(scriptPath, []byte(buildIDEJJBootstrapScript()), 0o755); errWrite != nil {
+		return fmt.Errorf("writing ide jj bootstrap script %q: %w", scriptPath, errWrite)
+	}
+	if errChmod := os.Chmod(scriptPath, 0o755); errChmod != nil {
+		return fmt.Errorf("marking ide jj bootstrap script executable %q: %w", scriptPath, errChmod)
+	}
+	if errShell := ensureIDEShellStartupFiles(workspacePath); errShell != nil {
+		return errShell
+	}
+	return nil
+}
+
+func ideWorkspaceStatePathOnHost(workspacePath string, elems ...string) string {
+	parts := append([]string{workspacePath, ".sgai", "code-server"}, elems...)
+	return filepath.Join(parts...)
+}
+
+func buildIDEJJBootstrapScript() string {
+	return fmt.Sprintf(`#!/bin/sh
+set -u
+
+error_file=%q
+bin_dir=%q
+cache_root=%q
+version=%q
+
+fail() {
+  printf '%%s\n' "$1" >&2
+  printf '%%s\n' "$1" > "$error_file"
+  exit 1
+}
+
+file_sha256() {
+  target_path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    hash_output="$(sha256sum "$target_path")" || fail "jj bootstrap failed: hashing $target_path with sha256sum"
+    printf '%%s\n' "${hash_output%%%% *}"
+    return 0
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    hash_output="$(shasum -a 256 "$target_path")" || fail "jj bootstrap failed: hashing $target_path with shasum"
+    printf '%%s\n' "${hash_output%%%% *}"
+    return 0
+  fi
+  fail "jj bootstrap failed: no sha256 tool is available"
+}
+
+matches_sha256() {
+  target_path="$1"
+  expected_sha256="$2"
+  [ "$(file_sha256 "$target_path")" = "$expected_sha256" ]
+}
+
+verify_sha256() {
+  target_path="$1"
+  expected_sha256="$2"
+  matches_sha256 "$target_path" "$expected_sha256" || fail "jj bootstrap failed: checksum mismatch for $target_path"
+}
+
+rm -f "$error_file"
+mkdir -p "$bin_dir" "$cache_root" || fail "jj bootstrap failed: creating workspace state"
+
+arch="$(uname -m)" || fail "jj bootstrap failed: determining architecture"
+case "$arch" in
+  x86_64|amd64)
+    archive_name="jj-v$version-x86_64-unknown-linux-musl.tar.gz"
+    archive_sha256=%q
+    binary_sha256=%q
+    ;;
+  aarch64|arm64)
+    archive_name="jj-v$version-aarch64-unknown-linux-musl.tar.gz"
+    archive_sha256=%q
+    binary_sha256=%q
+    ;;
+  *)
+    fail "jj bootstrap failed: unsupported architecture $arch"
+    ;;
+esac
+
+cache_dir="$cache_root/${archive_name%%.tar.gz}"
+cached_jj="$cache_dir/jj"
+if [ -x "$cached_jj" ]; then
+  if ! matches_sha256 "$cached_jj" "$binary_sha256"; then
+    rm -f "$cached_jj" "$cached_jj.tmp" || fail "jj bootstrap failed: removing invalid cached jj binary"
+  fi
+fi
+if [ ! -x "$cached_jj" ]; then
+  tmp_dir="$cache_dir/tmp.$$"
+  archive_path="$tmp_dir/$archive_name"
+  extracted_dir="$tmp_dir/${archive_name%%.tar.gz}"
+  archive_url="https://github.com/jj-vcs/jj/releases/download/v$version/$archive_name"
+
+  rm -rf "$tmp_dir"
+  mkdir -p "$tmp_dir" "$cache_dir" || fail "jj bootstrap failed: preparing cache directories"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$archive_url" -o "$archive_path" || fail "jj bootstrap failed: downloading $archive_url with curl"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$archive_path" "$archive_url" || fail "jj bootstrap failed: downloading $archive_url with wget"
+  else
+    fail "jj bootstrap failed: neither curl nor wget is available"
+  fi
+	verify_sha256 "$archive_path" "$archive_sha256"
+	tar -xzf "$archive_path" -C "$tmp_dir" || fail "jj bootstrap failed: extracting $archive_name"
+	jj_candidate="$tmp_dir/jj"
+	if [ ! -x "$jj_candidate" ]; then
+	  jj_candidate="$extracted_dir/jj"
+	fi
+	[ -x "$jj_candidate" ] || fail "jj bootstrap failed: extracted archive missing jj binary"
+	verify_sha256 "$jj_candidate" "$binary_sha256"
+	cp "$jj_candidate" "$cached_jj.tmp" || fail "jj bootstrap failed: staging cached jj binary"
+	chmod 0755 "$cached_jj.tmp" || fail "jj bootstrap failed: marking cached jj binary executable"
+	mv "$cached_jj.tmp" "$cached_jj" || fail "jj bootstrap failed: caching jj binary"
+	rm -rf "$tmp_dir"
+fi
+
+verify_sha256 "$cached_jj" "$binary_sha256"
+cp "$cached_jj" "$bin_dir/jj.tmp" || fail "jj bootstrap failed: staging jj in $bin_dir"
+chmod 0755 "$bin_dir/jj.tmp" || fail "jj bootstrap failed: marking jj executable in $bin_dir"
+mv "$bin_dir/jj.tmp" "$bin_dir/jj" || fail "jj bootstrap failed: publishing jj to $bin_dir"
+rm -f "$error_file"
+`, ideWorkspaceBootstrapErrorPath, ideWorkspaceBinPath, ideWorkspaceCachePath, ideJJVersion, ideJJArchiveSHA256AMD64, ideJJBinarySHA256AMD64, ideJJArchiveSHA256ARM64, ideJJBinarySHA256ARM64)
+}
+
+func ensureIDEShellStartupFiles(workspacePath string) error {
+	bashrcPath := ideWorkspaceStatePathOnHost(workspacePath, "home", ".bashrc")
+	if errEnsure := ensureFileContainsBlock(bashrcPath, buildIDEBashRCBlock(), buildIDELegacyBashRCBlock()); errEnsure != nil {
+		return fmt.Errorf("ensuring ide bashrc %q: %w", bashrcPath, errEnsure)
+	}
+	profileBlock := buildIDEProfileBlock()
+	profilePath := ideWorkspaceStatePathOnHost(workspacePath, "home", ".profile")
+	if errEnsure := ensureFileContainsBlock(profilePath, profileBlock); errEnsure != nil {
+		return fmt.Errorf("ensuring ide profile %q: %w", profilePath, errEnsure)
+	}
+	bashProfilePath := ideWorkspaceStatePathOnHost(workspacePath, "home", ".bash_profile")
+	if errEnsure := ensureFileContainsBlock(bashProfilePath, profileBlock); errEnsure != nil {
+		return fmt.Errorf("ensuring ide bash profile %q: %w", bashProfilePath, errEnsure)
+	}
+	return nil
+}
+
+func ensureFileContainsBlock(path, block string, obsoleteBlocks ...string) error {
+	existing, errRead := os.ReadFile(path)
+	if errRead != nil && !errors.Is(errRead, os.ErrNotExist) {
+		return fmt.Errorf("reading file: %w", errRead)
+	}
+	content := buildManagedFileContent(string(existing), block, obsoleteBlocks...)
+	if content == string(existing) {
+		return nil
+	}
+	if errWrite := os.WriteFile(path, []byte(content), 0o644); errWrite != nil {
+		return fmt.Errorf("writing file: %w", errWrite)
+	}
+	return nil
+}
+
+func buildManagedFileContent(content, block string, obsoleteBlocks ...string) string {
+	normalized := strings.ReplaceAll(content, block, "")
+	for _, obsoleteBlock := range obsoleteBlocks {
+		if obsoleteBlock == "" || obsoleteBlock == block {
+			continue
+		}
+		normalized = strings.ReplaceAll(normalized, obsoleteBlock, "")
+	}
+	normalized = strings.TrimSpace(normalized)
+	if normalized != "" {
+		normalized += "\n\n"
+	}
+	return normalized + block + "\n"
+}
+
+func buildIDEBashRCBlock() string {
+	return strings.Join([]string{
+		`case ":$PATH:" in`,
+		`  *":/workspace/.sgai/code-server/bin:"*) ;;`,
+		`  *) export PATH="$PATH:/workspace/.sgai/code-server/bin" ;;`,
+		"esac",
+	}, "\n")
+}
+
+func buildIDELegacyBashRCBlock() string {
+	return strings.Join([]string{
+		`case ":$PATH:" in`,
+		`  *":/workspace/.sgai/code-server/bin:"*) ;;`,
+		`  *) export PATH="/workspace/.sgai/code-server/bin:$PATH" ;;`,
+		"esac",
+	}, "\n")
+}
+
+func buildIDEProfileBlock() string {
+	return strings.Join([]string{
+		`if [ -f "$HOME/.bashrc" ]; then`,
+		`  . "$HOME/.bashrc"`,
+		"fi",
+	}, "\n")
+}
+
+func resolveIDEStartError(workspacePath string, fallbackErr error) error {
+	if fallbackErr == nil {
+		return nil
+	}
+	bootstrapErr, errRead := readIDEBootstrapError(workspacePath)
+	if errRead == nil && bootstrapErr != "" {
+		return errors.New(bootstrapErr)
+	}
+	return fallbackErr
+}
+
+func (r *dockerIDERuntime) waitForStartedTarget(ctx context.Context, target ideRuntimeTarget, workspacePath string) (ideRuntimeTarget, error) {
+	startedTarget, errWait := r.waitForTarget(ctx, target)
+	if errWait != nil {
+		return newIDERuntimeTarget("", "", 0), resolveIDEStartError(workspacePath, errWait)
+	}
+	return startedTarget, nil
+}
+
+func readIDEBootstrapError(workspacePath string) (string, error) {
+	errorPath := ideWorkspaceStatePathOnHost(workspacePath, "bootstrap-error")
+	content, errRead := os.ReadFile(errorPath)
+	if errRead != nil {
+		if errors.Is(errRead, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("reading ide bootstrap error %q: %w", errorPath, errRead)
+	}
+	return strings.TrimSpace(string(content)), nil
+}
+
+func shouldFailIDEStartupWait(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "ide runtime is not running") || strings.Contains(message, "no such container") || strings.Contains(message, "no such object")
+}
+
 func buildDockerRunArgs(req ideStartRequest) []string {
-	workspaceStateRoot := ideWorkspaceMountPath + "/.sgai/code-server"
-	workspaceHomePath := workspaceStateRoot + "/home"
-	workspaceTempPath := workspaceStateRoot + "/tmp"
-	workspaceConfigPath := workspaceStateRoot + "/config"
-	workspaceDataPath := workspaceStateRoot + "/data"
-	workspaceUserDataPath := workspaceStateRoot + "/user-data"
-	workspaceExtensionsPath := workspaceStateRoot + "/extensions"
 	return []string{
 		"run",
 		"--detach",
@@ -208,39 +487,34 @@ func buildDockerRunArgs(req ideStartRequest) []string {
 		"--publish", "127.0.0.1::" + ideDockerPortFlag,
 		"--workdir", ideWorkspaceMountPath,
 		"--volume", req.WorkspacePath + ":" + ideWorkspaceMountPath,
-		"--env", "HOME=" + workspaceHomePath,
-		"--env", "TMPDIR=" + workspaceTempPath,
-		"--env", "XDG_CONFIG_HOME=" + workspaceConfigPath,
-		"--env", "XDG_DATA_HOME=" + workspaceDataPath,
+		"--env", "HOME=" + ideWorkspaceHomePath,
+		"--env", "TMPDIR=" + ideWorkspaceTempPath,
+		"--env", "XDG_CONFIG_HOME=" + ideWorkspaceConfigPath,
+		"--env", "XDG_DATA_HOME=" + ideWorkspaceDataPath,
+		"--env", "ENTRYPOINTD=" + ideWorkspaceEntrypointPath,
+		"--env", "PATH=" + ideDockerDefaultPath,
 		ideDockerImage,
 		"--auth", "none",
 		"--disable-telemetry",
 		"--disable-update-check",
-		"--user-data-dir", workspaceUserDataPath,
-		"--extensions-dir", workspaceExtensionsPath,
+		"--user-data-dir", ideWorkspaceUserDataPath,
+		"--extensions-dir", ideWorkspaceExtensionsPath,
 		ideWorkspaceMountPath,
 	}
 }
 
 func (r *dockerIDERuntime) waitForTarget(ctx context.Context, target ideRuntimeTarget) (ideRuntimeTarget, error) {
-	client := new(http.Client)
-	client.Timeout = time.Second
 	ticker := time.NewTicker(defaultIDERuntimeProbe)
 	defer ticker.Stop()
 	for {
-		inspectedTarget, errInspect := r.inspect(ctx, target)
+		inspectedTarget, errInspect := r.inspectTarget(ctx, target)
 		if errInspect == nil {
-			var probeURL url.URL
-			probeURL.Scheme = "http"
-			probeURL.Host = net.JoinHostPort(inspectedTarget.Host, strconv.Itoa(inspectedTarget.Port))
-			probeURL.Path = "/"
-			resp, errRequest := client.Get(probeURL.String())
-			if errRequest == nil {
-				if errClose := resp.Body.Close(); errClose != nil {
-					return newIDERuntimeTarget("", "", 0), fmt.Errorf("closing ide probe response: %w", errClose)
-				}
+			errProbe := r.probeTarget(inspectedTarget)
+			if errProbe == nil {
 				return inspectedTarget, nil
 			}
+		} else if shouldFailIDEStartupWait(errInspect) {
+			return newIDERuntimeTarget("", "", 0), errInspect
 		}
 		select {
 		case <-ctx.Done():
@@ -248,6 +522,33 @@ func (r *dockerIDERuntime) waitForTarget(ctx context.Context, target ideRuntimeT
 		case <-ticker.C:
 		}
 	}
+}
+
+func (r *dockerIDERuntime) inspectTarget(ctx context.Context, target ideRuntimeTarget) (ideRuntimeTarget, error) {
+	if r.inspectOverride != nil {
+		return r.inspectOverride(ctx, target)
+	}
+	return r.inspect(ctx, target)
+}
+
+func (r *dockerIDERuntime) probeTarget(target ideRuntimeTarget) error {
+	if r.probeOverride != nil {
+		return r.probeOverride(target)
+	}
+	client := new(http.Client)
+	client.Timeout = time.Second
+	var probeURL url.URL
+	probeURL.Scheme = "http"
+	probeURL.Host = net.JoinHostPort(target.Host, strconv.Itoa(target.Port))
+	probeURL.Path = "/"
+	resp, errRequest := client.Get(probeURL.String())
+	if errRequest != nil {
+		return fmt.Errorf("probing ide runtime: %w", errRequest)
+	}
+	if errClose := resp.Body.Close(); errClose != nil {
+		return fmt.Errorf("closing ide probe response: %w", errClose)
+	}
+	return nil
 }
 
 func (r *dockerIDERuntime) inspect(ctx context.Context, target ideRuntimeTarget) (ideRuntimeTarget, error) {

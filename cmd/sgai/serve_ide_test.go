@@ -987,17 +987,142 @@ func TestBuildDockerRunArgsKeepWritablePathsInsideWorkspace(t *testing.T) {
 
 	args := buildDockerRunArgs(req)
 
+	assert.Contains(t, ideDockerImage, "@sha256:")
 	assert.True(t, slices.Contains(args, "--read-only"))
 	assert.True(t, slices.Contains(args, "--tmpfs"))
 	assert.Contains(t, args, "/var/run")
 	assert.True(t, slices.Contains(args, "--env"))
 	assert.Contains(t, args, "HOME=/workspace/.sgai/code-server/home")
 	assert.Contains(t, args, "TMPDIR=/workspace/.sgai/code-server/tmp")
+	assert.Contains(t, args, "ENTRYPOINTD=/workspace/.sgai/code-server/entrypoint.d")
+	assert.Contains(t, args, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	assert.NotContains(t, args, "PATH=/workspace/.sgai/code-server/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	assert.Contains(t, args, "/workspace/.sgai/code-server/user-data")
 	assert.Contains(t, args, "/workspace/.sgai/code-server/extensions")
 	assert.NotContains(t, args, "--base-path")
+	assert.NotContains(t, args, "--entrypoint")
 	assert.NotContains(t, args, "/tmp/sgai-code-server-data")
 	assert.NotContains(t, args, "/tmp/sgai-code-server-extensions")
+}
+
+func TestPrepareIDEWorkspaceStateWritesJJBootstrapScript(t *testing.T) {
+	workspacePath := t.TempDir()
+	errorPath := filepath.Join(workspacePath, ".sgai", "code-server", "bootstrap-error")
+	require.NoError(t, os.MkdirAll(filepath.Dir(errorPath), 0o755))
+	require.NoError(t, os.WriteFile(errorPath, []byte("stale failure"), 0o644))
+
+	require.NoError(t, prepareIDEWorkspaceState(workspacePath))
+
+	_, errStatError := os.Stat(errorPath)
+	require.ErrorIs(t, errStatError, os.ErrNotExist)
+
+	scriptPath := filepath.Join(workspacePath, ".sgai", "code-server", "entrypoint.d", "10-install-jj")
+	scriptInfo, errStatScript := os.Stat(scriptPath)
+	require.NoError(t, errStatScript)
+	assert.NotZero(t, scriptInfo.Mode()&0o111)
+
+	script, errRead := os.ReadFile(scriptPath)
+	require.NoError(t, errRead)
+	scriptText := string(script)
+	assert.Contains(t, scriptText, "error_file=\"/workspace/.sgai/code-server/bootstrap-error\"")
+	assert.Contains(t, scriptText, "bin_dir=\"/workspace/.sgai/code-server/bin\"")
+	assert.Contains(t, scriptText, "cache_root=\"/workspace/.sgai/code-server/cache\"")
+	assert.Contains(t, scriptText, "version=\"0.39.0\"")
+	assert.Contains(t, scriptText, "archive_name=\"jj-v$version-x86_64-unknown-linux-musl.tar.gz\"")
+	assert.Contains(t, scriptText, "archive_name=\"jj-v$version-aarch64-unknown-linux-musl.tar.gz\"")
+	assert.Contains(t, scriptText, "archive_sha256=\"8da8d96e9c8696c21ad47847a63d533e249acb0449d9af0f0562b5ea7b024f04\"")
+	assert.Contains(t, scriptText, "archive_sha256=\"15bbb0199adf57929d1e3cd90ae0b47356858cbe374814769815a1fb87d5ad1d\"")
+	assert.Contains(t, scriptText, "binary_sha256=\"4bf2da7b36705dc9f5c0df98e62789efa7ce8ee3de8d8667c6d50ce52a72f306\"")
+	assert.Contains(t, scriptText, "binary_sha256=\"ccda0d659adc1f0b72da83b907d0905a1b4ba2a4bb47d917d2815680a73a79e3\"")
+	assert.Contains(t, scriptText, "command -v sha256sum")
+	assert.Contains(t, scriptText, "command -v shasum")
+	assert.Contains(t, scriptText, "if [ ! -x \"$cached_jj\" ]; then")
+	assert.Contains(t, scriptText, "if ! matches_sha256 \"$cached_jj\" \"$binary_sha256\"; then")
+	assert.Contains(t, scriptText, "verify_sha256 \"$archive_path\" \"$archive_sha256\"")
+	assert.Contains(t, scriptText, "jj_candidate=\"$tmp_dir/jj\"")
+	assert.Contains(t, scriptText, "jj_candidate=\"$extracted_dir/jj\"")
+	assert.Contains(t, scriptText, "verify_sha256 \"$jj_candidate\" \"$binary_sha256\"")
+	assert.Contains(t, scriptText, "verify_sha256 \"$cached_jj\" \"$binary_sha256\"")
+	assert.Contains(t, scriptText, "cp \"$cached_jj\" \"$bin_dir/jj.tmp\"")
+	assert.Contains(t, scriptText, "jj bootstrap failed")
+	assert.Contains(t, scriptText, "curl -fsSL")
+	assert.Contains(t, scriptText, "wget -qO")
+
+	bashrcPath := filepath.Join(workspacePath, ".sgai", "code-server", "home", ".bashrc")
+	bashrc, errReadBashrc := os.ReadFile(bashrcPath)
+	require.NoError(t, errReadBashrc)
+	assert.Contains(t, string(bashrc), "export PATH=\"$PATH:/workspace/.sgai/code-server/bin\"")
+	assert.NotContains(t, string(bashrc), "export PATH=\"/workspace/.sgai/code-server/bin:$PATH\"")
+
+	profilePath := filepath.Join(workspacePath, ".sgai", "code-server", "home", ".profile")
+	profile, errReadProfile := os.ReadFile(profilePath)
+	require.NoError(t, errReadProfile)
+	assert.Contains(t, string(profile), ". \"$HOME/.bashrc\"")
+
+	bashProfilePath := filepath.Join(workspacePath, ".sgai", "code-server", "home", ".bash_profile")
+	bashProfile, errReadBashProfile := os.ReadFile(bashProfilePath)
+	require.NoError(t, errReadBashProfile)
+	assert.Contains(t, string(bashProfile), ". \"$HOME/.bashrc\"")
+}
+
+func TestPrepareIDEWorkspaceStateRewritesUnsafeBashrcPathBlock(t *testing.T) {
+	workspacePath := t.TempDir()
+	bashrcPath := filepath.Join(workspacePath, ".sgai", "code-server", "home", ".bashrc")
+	require.NoError(t, os.MkdirAll(filepath.Dir(bashrcPath), 0o755))
+	legacyBlock := strings.Join([]string{
+		`case ":$PATH:" in`,
+		`  *":/workspace/.sgai/code-server/bin:"*) ;;`,
+		`  *) export PATH="/workspace/.sgai/code-server/bin:$PATH" ;;`,
+		"esac",
+	}, "\n")
+	original := "export EDITOR=vim\n\n" + legacyBlock + "\n"
+	require.NoError(t, os.WriteFile(bashrcPath, []byte(original), 0o644))
+
+	require.NoError(t, prepareIDEWorkspaceState(workspacePath))
+
+	bashrc, errRead := os.ReadFile(bashrcPath)
+	require.NoError(t, errRead)
+	text := string(bashrc)
+	assert.Contains(t, text, "export EDITOR=vim")
+	assert.Contains(t, text, "export PATH=\"$PATH:/workspace/.sgai/code-server/bin\"")
+	assert.NotContains(t, text, "export PATH=\"/workspace/.sgai/code-server/bin:$PATH\"")
+	assert.Equal(t, 0, strings.Count(text, legacyBlock))
+	assert.Equal(t, 1, strings.Count(text, buildIDEBashRCBlock()))
+}
+
+func TestResolveIDEStartErrorPrefersBootstrapFailure(t *testing.T) {
+	workspacePath := t.TempDir()
+	fallbackErr := errors.New("waiting for ide runtime: context deadline exceeded")
+	want := "jj bootstrap failed: downloading https://example.invalid/jj"
+	errorPath := filepath.Join(workspacePath, ".sgai", "code-server", "bootstrap-error")
+	require.NoError(t, os.MkdirAll(filepath.Dir(errorPath), 0o755))
+	require.NoError(t, os.WriteFile(errorPath, []byte(want+"\n"), 0o644))
+
+	errResolved := resolveIDEStartError(workspacePath, fallbackErr)
+	require.EqualError(t, errResolved, want)
+
+	errFallback := resolveIDEStartError(t.TempDir(), fallbackErr)
+	assert.ErrorIs(t, errFallback, fallbackErr)
+}
+
+func TestWaitForStartedTargetReturnsBootstrapErrorImmediatelyWhenContainerStops(t *testing.T) {
+	workspacePath := t.TempDir()
+	errorPath := filepath.Join(workspacePath, ".sgai", "code-server", "bootstrap-error")
+	require.NoError(t, os.MkdirAll(filepath.Dir(errorPath), 0o755))
+	want := "jj bootstrap failed: extracted archive missing jj binary"
+	require.NoError(t, os.WriteFile(errorPath, []byte(want+"\n"), 0o644))
+
+	runtime := &dockerIDERuntime{
+		inspectOverride: func(context.Context, ideRuntimeTarget) (ideRuntimeTarget, error) {
+			return newIDERuntimeTarget("", "", 0), errors.New("ide runtime is not running")
+		},
+		probeOverride: nil,
+	}
+
+	startedAt := time.Now()
+	_, errWait := runtime.waitForStartedTarget(context.Background(), newIDERuntimeTarget("container-1", "", 0), workspacePath)
+	require.EqualError(t, errWait, want)
+	assert.Less(t, time.Since(startedAt), time.Second)
 }
 
 func TestIsIDEProxyRouteSkipsWorkspaceDetailIDERoute(t *testing.T) {
