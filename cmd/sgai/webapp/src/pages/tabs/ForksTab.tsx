@@ -20,6 +20,7 @@ import {
   getWorkspaceDisplayLabel,
   resolveWorkspaceByName,
 } from "@/lib/workspace-identity";
+import { sortByVisibleLabel } from "@/lib/workspace-sort";
 import { useAdhocRun } from "@/hooks/useAdhocRun";
 import type { ApiForkEntry, ApiActionEntry, ApiWorkspaceEntry } from "@/types";
 
@@ -385,6 +386,23 @@ export function ForksTab({ workspaceName, actions, actionConfigError, onActionCl
     return map;
   }, [allWorkspaces]);
 
+  const sortedForks = useMemo(() => {
+    const rawForks = workspace?.forks ?? [];
+    return sortByVisibleLabel(
+      rawForks,
+      (fork) => {
+        const forkWs = forkWorkspaceLookup.get(fork.dir);
+        const labelSource = {
+          ...(forkWs ?? fork),
+          title: fork.title || forkWs?.title || "",
+          computedTitle: fork.computedTitle || forkWs?.computedTitle || "",
+        };
+        return getWorkspaceDisplayLabel(labelSource, workspaceNameDisambiguators);
+      },
+      (fork) => fork.dir,
+    );
+  }, [workspace?.forks, forkWorkspaceLookup, workspaceNameDisambiguators]);
+
   if (fetchStatus === "fetching" && !workspace) return <ForksTabSkeleton />;
 
   if (!workspace) {
@@ -398,7 +416,7 @@ export function ForksTab({ workspaceName, actions, actionConfigError, onActionCl
     return null;
   }
 
-  const forks = workspace.forks ?? [];
+  const forks = sortedForks;
   const hasActionBar = Boolean((actions && actions.length > 0) || actionConfigError?.trim());
   const workspaceLabel = getWorkspaceDisplayLabel(workspace, workspaceNameDisambiguators);
 
