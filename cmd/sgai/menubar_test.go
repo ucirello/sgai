@@ -457,3 +457,22 @@ func TestToMenuBarItemRepairsMissingGoalTitle(t *testing.T) {
 	item = toMenuBarItem(server, updated(newTestWorkspaceInfo(), func(workspace *workspaceInfo) { workspace.DirName = "test-ws"; workspace.Directory = wsDir }))
 	assert.Equal(t, "Menu Repair Title", item.title)
 }
+
+func TestMenuBarItemsFromServerUsesFreshWorkspaceState(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, server, rootDir, "live-state")
+
+	groups, errScan := server.scanWorkspaceGroups()
+	require.NoError(t, errScan)
+	require.Len(t, groups, 1)
+	assert.False(t, groups[0].Root.Running)
+
+	server.mu.Lock()
+	server.sessions[wsDir] = newTestServeSession(nil, true)
+	server.mu.Unlock()
+
+	items := menuBarItemsFromServer(server)
+	require.Len(t, items, 1)
+	assert.True(t, items[0].running)
+	assert.Equal(t, 1, countRunning(items))
+}
