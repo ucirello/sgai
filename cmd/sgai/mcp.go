@@ -323,6 +323,51 @@ func parseAgentIdentityHeader(r *http.Request) string {
 	return name
 }
 
+type callerContext struct {
+	agentName string
+	modelID   string
+}
+
+func parseCallerContext(r *http.Request, coord *state.Coordinator) callerContext {
+	identity := r.Header.Get(agentIdentityHeader)
+	agentName := resolveCallerAgent(parseAgentIdentityHeader(r), coord)
+	modelID := parseModelIDFromAgentIdentity(identity)
+	if modelID == "" {
+		modelID = currentModelForCaller(coord, agentName)
+	}
+	return callerContext{agentName: agentName, modelID: modelID}
+}
+
+func parseModelIDFromAgentIdentity(identity string) string {
+	if identity == "" {
+		return ""
+	}
+	agentName, rest, found := strings.Cut(identity, "|")
+	if !found || agentName == "" {
+		return ""
+	}
+	model, variant, _ := strings.Cut(rest, "|")
+	if model == "" {
+		return ""
+	}
+	modelSpec := model
+	if variant != "" {
+		modelSpec = model + " (" + variant + ")"
+	}
+	return formatModelID(agentName, modelSpec)
+}
+
+func currentModelForCaller(coord *state.Coordinator, callerAgent string) string {
+	if coord == nil || callerAgent == "" {
+		return ""
+	}
+	currentModel := coord.State().CurrentModel
+	if extractAgentFromModelID(currentModel) != callerAgent {
+		return ""
+	}
+	return currentModel
+}
+
 func resolveCallerAgent(headerAgent string, coord *state.Coordinator) string {
 	if headerAgent == "" {
 		if currentAgent := coord.State().CurrentAgent; currentAgent != "" && currentAgent != "coordinator" {
@@ -357,19 +402,22 @@ func buildMCPHTTPHandler(workingDir string, coord *state.Coordinator, dagAgents 
 }
 
 func buildMCPServer(workingDir string, r *http.Request, coord *state.Coordinator, dagAgents []string, humanTools humanToolCallbacks) (*mcp.Server, error) {
-	agentName := resolveCallerAgent(parseAgentIdentityHeader(r), coord)
-	return buildMCPServerForAgent(workingDir, coord, dagAgents, humanTools, agentName)
+	return buildMCPServerForCaller(workingDir, coord, dagAgents, humanTools, parseCallerContext(r, coord))
 }
 
 func buildMCPServerForAgent(workingDir string, coord *state.Coordinator, dagAgents []string, humanTools humanToolCallbacks, agentName string) (*mcp.Server, error) {
-	server := mcp.NewServer(newMCPImplementation("sgai"), nil)
-	mcpCtx := &mcpContext{workingDir: workingDir, coord: coord, dagAgents: dagAgents, agentName: agentName, humanTools: humanTools}
+	return buildMCPServerForCaller(workingDir, coord, dagAgents, humanTools, callerContext{agentName: agentName, modelID: currentModelForCaller(coord, agentName)})
+}
 
-	if errRegister := registerCommonTools(server, mcpCtx, agentName); errRegister != nil {
+func buildMCPServerForCaller(workingDir string, coord *state.Coordinator, dagAgents []string, humanTools humanToolCallbacks, caller callerContext) (*mcp.Server, error) {
+	server := mcp.NewServer(newMCPImplementation("sgai"), nil)
+	mcpCtx := &mcpContext{workingDir: workingDir, coord: coord, dagAgents: dagAgents, agentName: caller.agentName, modelID: caller.modelID, humanTools: humanTools}
+
+	if errRegister := registerCommonTools(server, mcpCtx, caller.agentName); errRegister != nil {
 		return nil, errRegister
 	}
 
-	if agentName == "coordinator" {
+	if caller.agentName == "coordinator" {
 		if errRegister := registerCoordinatorTools(server, mcpCtx); errRegister != nil {
 			return nil, errRegister
 		}
@@ -490,6 +538,7 @@ type mcpContext struct {
 	coord      *state.Coordinator
 	dagAgents  []string
 	agentName  string
+	modelID    string
 	humanTools humanToolCallbacks
 }
 
@@ -520,7 +569,7 @@ func (c *mcpContext) updateWorkflowStateHandler(_ context.Context, _ *mcp.CallTo
 }
 
 func (c *mcpContext) sendMessageHandler(_ context.Context, _ *mcp.CallToolRequest, args sendMessageArgs) (*mcp.CallToolResult, emptyResult, error) {
-	result, err := sendMessage(c.workingDir, c.coord, c.dagAgents, c.agentName, args.ToAgent, args.Body)
+	result, err := sendMessageForCaller(c.workingDir, c.coord, c.dagAgents, callerContext{agentName: c.agentName, modelID: c.modelID}, args.ToAgent, args.Body)
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
@@ -528,7 +577,7 @@ func (c *mcpContext) sendMessageHandler(_ context.Context, _ *mcp.CallToolReques
 }
 
 func (c *mcpContext) checkInboxHandler(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, emptyResult, error) {
-	result, err := checkInbox(c.coord, c.agentName)
+	result, err := checkInboxForCaller(c.coord, callerContext{agentName: c.agentName, modelID: c.modelID})
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
@@ -536,7 +585,7 @@ func (c *mcpContext) checkInboxHandler(_ context.Context, _ *mcp.CallToolRequest
 }
 
 func (c *mcpContext) checkOutboxHandler(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, emptyResult, error) {
-	result, err := checkOutbox(c.coord, c.agentName)
+	result, err := checkOutboxForCaller(c.coord, callerContext{agentName: c.agentName, modelID: c.modelID})
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
@@ -576,7 +625,16 @@ func (c *mcpContext) projectTodoReadHandler(_ context.Context, _ *mcp.CallToolRe
 }
 
 func (c *mcpContext) askUserQuestionHandler(ctx context.Context, _ *mcp.CallToolRequest, args askUserQuestionArgs) (*mcp.CallToolResult, emptyResult, error) {
-	result, err := c.askUserQuestionResponder()(ctx, c.coord, args)
+	responder := c.askUserQuestionResponder()
+	var (
+		result string
+		err    error
+	)
+	if responder != nil {
+		result, err = responder(ctx, c.coord, args)
+	} else {
+		result, err = askUserQuestionForAgent(ctx, c.coord, c.agentName, args)
+	}
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
@@ -584,7 +642,16 @@ func (c *mcpContext) askUserQuestionHandler(ctx context.Context, _ *mcp.CallTool
 }
 
 func (c *mcpContext) askUserWorkGateHandler(ctx context.Context, _ *mcp.CallToolRequest, args askUserWorkGateArgs) (*mcp.CallToolResult, emptyResult, error) {
-	result, err := c.askUserWorkGateResponder()(ctx, c.coord, args.Summary)
+	responder := c.askUserWorkGateResponder()
+	var (
+		result string
+		err    error
+	)
+	if responder != nil {
+		result, err = responder(ctx, c.coord, args.Summary)
+	} else {
+		result, err = askUserWorkGateForAgent(ctx, c.coord, c.agentName, args.Summary)
+	}
 	if err != nil {
 		return nil, emptyResult{}, err
 	}
@@ -592,20 +659,18 @@ func (c *mcpContext) askUserWorkGateHandler(ctx context.Context, _ *mcp.CallTool
 }
 
 func (c *mcpContext) askUserQuestionResponder() askUserQuestionFunc {
-	if c.humanTools.question != nil {
-		return c.humanTools.question
-	}
-	return askUserQuestion
+	return c.humanTools.question
 }
 
 func (c *mcpContext) askUserWorkGateResponder() askUserWorkGateFunc {
-	if c.humanTools.workGate != nil {
-		return c.humanTools.workGate
-	}
-	return askUserWorkGate
+	return c.humanTools.workGate
 }
 
 func askUserQuestion(ctx context.Context, coord *state.Coordinator, args askUserQuestionArgs) (string, error) {
+	return askUserQuestionForAgent(ctx, coord, "", args)
+}
+
+func askUserQuestionForAgent(ctx context.Context, coord *state.Coordinator, askingAgent string, args askUserQuestionArgs) (string, error) {
 	if coord == nil {
 		return "Error: workflow coordinator not available.", nil
 	}
@@ -615,10 +680,10 @@ func askUserQuestion(ctx context.Context, coord *state.Coordinator, args askUser
 		return askUserQuestionAutoResponse(autoProceedAnswer)(ctx, coord, args)
 	}
 
-	return askUserQuestionInteractive(ctx, coord, args)
+	return askUserQuestionInteractive(ctx, coord, askingAgent, args)
 }
 
-func askUserQuestionInteractive(ctx context.Context, coord *state.Coordinator, args askUserQuestionArgs) (string, error) {
+func askUserQuestionInteractive(ctx context.Context, coord *state.Coordinator, askingAgent string, args askUserQuestionArgs) (string, error) {
 	if coord == nil {
 		return "Error: workflow coordinator not available.", nil
 	}
@@ -628,7 +693,7 @@ func askUserQuestionInteractive(ctx context.Context, coord *state.Coordinator, a
 	}
 
 	question, humanMessage, questionSummary := buildQuestionRequest(args)
-	answer, errWait := waitForHumanResponse(ctx, coord, question, humanMessage, "ask_user_question")
+	answer, errWait := waitForHumanResponse(ctx, coord, question, humanMessage, normalizeHumanInputAgent(coord, askingAgent), "ask_user_question")
 	if errWait != nil {
 		return "", fmt.Errorf("waiting for human response: %w", errWait)
 	}
@@ -684,6 +749,10 @@ func buildQuestionRequest(args askUserQuestionArgs) (question *state.MultiChoice
 }
 
 func askUserWorkGate(ctx context.Context, coord *state.Coordinator, summary string) (string, error) {
+	return askUserWorkGateForAgent(ctx, coord, "", summary)
+}
+
+func askUserWorkGateForAgent(ctx context.Context, coord *state.Coordinator, askingAgent, summary string) (string, error) {
 	if validationErr := validateAskUserWorkGateSummary(summary); validationErr != "" {
 		return validationErr, nil
 	}
@@ -697,10 +766,10 @@ func askUserWorkGate(ctx context.Context, coord *state.Coordinator, summary stri
 		return askUserWorkGateAutoResponse(autoRecordQuestionsAnswer)(ctx, coord, summary)
 	}
 
-	return askUserWorkGateInteractive(ctx, coord, summary)
+	return askUserWorkGateInteractive(ctx, coord, normalizeHumanInputAgent(coord, askingAgent), summary)
 }
 
-func askUserWorkGateInteractive(ctx context.Context, coord *state.Coordinator, summary string) (string, error) {
+func askUserWorkGateInteractive(ctx context.Context, coord *state.Coordinator, askingAgent, summary string) (string, error) {
 	if coord == nil {
 		return "Error: workflow coordinator not available.", nil
 	}
@@ -722,7 +791,7 @@ func askUserWorkGateInteractive(ctx context.Context, coord *state.Coordinator, s
 		IsWorkGate: true,
 	}
 
-	answer, errWait := waitForHumanResponse(ctx, coord, question, questionText, "ask_user_work_gate")
+	answer, errWait := waitForHumanResponse(ctx, coord, question, questionText, askingAgent, "ask_user_work_gate")
 	if errWait != nil {
 		return "", fmt.Errorf("waiting for human response: %w", errWait)
 	}
@@ -749,7 +818,21 @@ func validateAskUserWorkGateSummary(summary string) string {
 	return ""
 }
 
-func waitForHumanResponse(ctx context.Context, coord *state.Coordinator, question *state.MultiChoiceQuestion, humanMessage, toolName string) (string, error) {
+func normalizeHumanInputAgent(coord *state.Coordinator, askingAgent string) string {
+	if strings.TrimSpace(askingAgent) != "" {
+		return askingAgent
+	}
+	if coord == nil {
+		return ""
+	}
+	currentAgent := coord.State().CurrentAgent
+	if hasParallelCurrentAgents(currentAgent) {
+		return ""
+	}
+	return currentAgent
+}
+
+func waitForHumanResponse(ctx context.Context, coord *state.Coordinator, question *state.MultiChoiceQuestion, humanMessage, askingAgent, toolName string) (string, error) {
 	if coord == nil {
 		return "", errors.New("workflow coordinator not available")
 	}
@@ -757,7 +840,7 @@ func waitForHumanResponse(ctx context.Context, coord *state.Coordinator, questio
 	ctxWait, cancel := context.WithTimeout(ctx, humanToolTimeout)
 	defer cancel()
 
-	answer, errWait := coord.AskAndWait(ctxWait, question, humanMessage)
+	answer, errWait := coord.AskAndWait(ctxWait, question, humanMessage, askingAgent)
 	if errWait == nil {
 		return answer, nil
 	}
@@ -790,7 +873,7 @@ func promoteAfterWorkGate(coord *state.Coordinator) error {
 
 func selectHumanToolCallbacks(workingDir string, coord *state.Coordinator) humanToolCallbacks {
 	if coord == nil {
-		return humanToolCallbacks{question: askUserQuestion, workGate: askUserWorkGate}
+		return humanToolCallbacks{question: nil, workGate: nil}
 	}
 
 	switch coord.State().InteractionMode {
@@ -809,7 +892,7 @@ func selectHumanToolCallbacks(workingDir string, coord *state.Coordinator) human
 		}
 	}
 
-	return humanToolCallbacks{question: askUserQuestion, workGate: askUserWorkGate}
+	return humanToolCallbacks{question: nil, workGate: nil}
 }
 
 func readGoalMetadata(workingDir string) GoalMetadata {
@@ -1151,7 +1234,6 @@ func findSnippetsByFuzzyMatch(langDir string, entries []os.DirEntry, query strin
 
 func updateWorkflowState(coord *state.Coordinator, callerAgent string, args updateWorkflowStateArgs) (string, error) {
 	var response string
-	var shouldStartWatchdog bool
 
 	if coord == nil {
 		return "Error: workflow coordinator not available.", nil
@@ -1182,12 +1264,7 @@ func updateWorkflowState(coord *state.Coordinator, callerAgent string, args upda
 			currentState.Progress = []state.ProgressEntry{}
 		}
 
-		if args.Status != "" {
-			currentState.Status = nextStatus
-			shouldStartWatchdog = nextStatus == state.StatusAgentDone
-		}
-
-		currentState.Task = args.Task
+		updateAgentWorkflowState(currentState, callerAgent, nextStatus, args.Status != "", args.Task, true)
 
 		if args.AddProgress != "" {
 			entry := state.ProgressEntry{
@@ -1198,15 +1275,11 @@ func updateWorkflowState(coord *state.Coordinator, callerAgent string, args upda
 			currentState.Progress = append(currentState.Progress, entry)
 		}
 
-		if (currentState.Status == state.StatusComplete || currentState.Status == state.StatusAgentDone) && currentState.Task != "" {
-			currentState.Task = ""
-		}
-
 		if response == "" {
 			response = "State updated successfully.\n"
-			response += fmt.Sprintf("  Status: %s\n", currentState.Status)
-			if currentState.Task != "" {
-				response += fmt.Sprintf("  Current task: %s\n", currentState.Task)
+			response += fmt.Sprintf("  Status: %s\n", visibleWorkflowStatus(currentState))
+			if task := visibleWorkflowTask(currentState); task != "" {
+				response += fmt.Sprintf("  Current task: %s\n", task)
 			}
 			if args.AddProgress != "" {
 				response += fmt.Sprintf("  Added progress note: %s\n", args.AddProgress)
@@ -1223,14 +1296,14 @@ func updateWorkflowState(coord *state.Coordinator, callerAgent string, args upda
 		return response, nil
 	}
 
-	if shouldStartWatchdog {
-		coord.StartAgentDoneWatchdog(coord.AgentCancel())
-	}
-
 	return response, nil
 }
 
 func sendMessage(workingDir string, coord *state.Coordinator, dagAgents []string, callerAgent, toAgent, body string) (string, error) {
+	return sendMessageForCaller(workingDir, coord, dagAgents, callerContext{agentName: callerAgent, modelID: currentModelForCaller(coord, callerAgent)}, toAgent, body)
+}
+
+func sendMessageForCaller(workingDir string, coord *state.Coordinator, dagAgents []string, caller callerContext, toAgent, body string) (string, error) {
 	if coord == nil {
 		return "Error: Could not read state.json. Has the workflow been initialized?", nil
 	}
@@ -1251,9 +1324,9 @@ func sendMessage(workingDir string, coord *state.Coordinator, dagAgents []string
 			currentState.Messages = []state.Message{}
 		}
 
-		fromAgent = callerAgent
-		if currentState.CurrentModel != "" {
-			fromAgent = currentState.CurrentModel
+		fromAgent = caller.agentName
+		if caller.modelID != "" {
+			fromAgent = caller.modelID
 		}
 
 		createdAt := time.Now().UTC().Format(time.RFC3339)
@@ -1267,7 +1340,7 @@ func sendMessage(workingDir string, coord *state.Coordinator, dagAgents []string
 		} else {
 			result = fmt.Sprintf("Sent %d messages successfully to %s.\nFrom: %s\nTo: %s\nBody: %s", len(recipients), toAgent, fromAgent, strings.Join(recipients, ", "), body)
 		}
-		if callerAgent != "coordinator" {
+		if caller.agentName != "coordinator" {
 			result += "\n\nIMPORTANT: To receive a response from the target agent, you MUST yield control by calling sgai_update_workflow_state({status: 'agent-done'}). The target agent cannot run until you yield."
 		}
 	})
@@ -1293,16 +1366,20 @@ func newStateMessage(id int, fromAgent, toAgent, body, createdAt string) state.M
 }
 
 func checkInbox(coord *state.Coordinator, callerAgent string) (string, error) {
+	return checkInboxForCaller(coord, callerContext{agentName: callerAgent, modelID: currentModelForCaller(coord, callerAgent)})
+}
+
+func checkInboxForCaller(coord *state.Coordinator, caller callerContext) (string, error) {
 	if coord == nil {
 		return "Error: Could not read state.json. Has the workflow been initialized?", nil
 	}
 
 	snapshot := coord.State()
-	currentModel := snapshot.CurrentModel
+	currentModel := caller.modelID
 
 	var unreadMessages []state.Message
 	for i := range snapshot.Messages {
-		if messageMatchesRecipient(&snapshot.Messages[i], callerAgent, currentModel) && !snapshot.Messages[i].Read {
+		if messageMatchesRecipient(&snapshot.Messages[i], caller.agentName, currentModel) && !snapshot.Messages[i].Read {
 			unreadMessages = append(unreadMessages, snapshot.Messages[i])
 		}
 	}
@@ -1314,10 +1391,13 @@ func checkInbox(coord *state.Coordinator, callerAgent string) (string, error) {
 	timestamp := time.Now().Format(time.RFC3339)
 	errUpdate := coord.UpdateState(func(wf *state.Workflow) {
 		for i := range wf.Messages {
-			if messageMatchesRecipient(&wf.Messages[i], callerAgent, currentModel) && !wf.Messages[i].Read {
+			if messageMatchesRecipient(&wf.Messages[i], caller.agentName, currentModel) && !wf.Messages[i].Read {
 				wf.Messages[i].Read = true
 				wf.Messages[i].ReadAt = timestamp
-				wf.Messages[i].ReadBy = callerAgent
+				wf.Messages[i].ReadBy = caller.agentName
+				if caller.modelID != "" {
+					wf.Messages[i].ReadBy = caller.modelID
+				}
 			}
 		}
 	})
@@ -1335,19 +1415,22 @@ func checkInbox(coord *state.Coordinator, callerAgent string) (string, error) {
 	return strings.TrimSpace(result.String()), nil
 }
 
-//nolint:unparam // error is always nil by design - errors are handled by returning user-friendly messages
 func checkOutbox(coord *state.Coordinator, callerAgent string) (string, error) {
+	return checkOutboxForCaller(coord, callerContext{agentName: callerAgent, modelID: currentModelForCaller(coord, callerAgent)})
+}
+
+func checkOutboxForCaller(coord *state.Coordinator, caller callerContext) (string, error) {
 	if coord == nil {
 		return "Error: Could not read state.json. Has the workflow been initialized?", nil
 	}
 
 	snapshot := coord.State()
-	currentModel := snapshot.CurrentModel
+	currentModel := caller.modelID
 
 	var unreadMessages []state.Message
 	var readMessages []state.Message
 	for i := range snapshot.Messages {
-		if messageMatchesSender(&snapshot.Messages[i], callerAgent, currentModel) {
+		if messageMatchesSender(&snapshot.Messages[i], caller.agentName, currentModel) {
 			if snapshot.Messages[i].Read {
 				readMessages = append(readMessages, snapshot.Messages[i])
 			} else {

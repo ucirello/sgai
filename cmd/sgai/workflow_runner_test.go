@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -84,69 +85,111 @@ func TestFreshWorkflowState(t *testing.T) {
 	assert.Equal(t, want, freshWorkflowState(allAgents, preservedMode))
 }
 
-func TestResolveCurrentAgent(t *testing.T) {
-	t.Run("emptyDefaultsToCoordinator", func(t *testing.T) {
-		r := testWorkflowRunner()
-		r.wfState.CurrentAgent = ""
-		assert.Equal(t, "coordinator", r.resolveCurrentAgent())
-	})
+func TestNextRunnableAgents(t *testing.T) {
+	tests := []struct {
+		name     string
+		messages []state.Message
+		want     []string
+	}{
+		{
+			name:     "noUnreadMessagesReturnsCoordinator",
+			messages: nil,
+			want:     []string{"coordinator"},
+		},
+		{
+			name: "coordinatorUnreadMessageWins",
+			messages: []state.Message{
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "go-developer"
+				}),
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "coordinator"
+				}),
+			},
+			want: []string{"coordinator"},
+		},
+		{
+			name: "singleUnreadRecipientReturnsThatAgent",
+			messages: []state.Message{
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "go-developer"
+				}),
+			},
+			want: []string{"go-developer"},
+		},
+		{
+			name: "multipleUnreadRecipientsReturnUniqueAgentsInMessageOrder",
+			messages: []state.Message{
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "go-developer"
+				}),
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "react-developer"
+				}),
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "go-developer"
+				}),
+			},
+			want: []string{"go-developer", "react-developer"},
+		},
+		{
+			name: "modelRecipientsCollapseToUniqueTopLevelAgents",
+			messages: []state.Message{
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "project-critic-council:model-a"
+				}),
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "project-critic-council:model-b"
+				}),
+				updated(newTestMessage(), func(message *state.Message) {
+					message.ToAgent = "retrospective"
+				}),
+			},
+			want: []string{"project-critic-council", "retrospective"},
+		},
+	}
 
-	t.Run("returnsCurrentAgent", func(t *testing.T) {
-		r := testWorkflowRunner()
-		r.wfState.CurrentAgent = "builder"
-		assert.Equal(t, "builder", r.resolveCurrentAgent())
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, nextRunnableAgents(tt.messages))
+		})
+	}
 }
 
-func buildTestDag(edges map[string][]string, entryNodes []string) *dag {
-	d := &dag{
-		Nodes:      make(map[string]*dagNode),
-		EntryNodes: entryNodes,
-	}
-	for from, toList := range edges {
-		node := d.ensureNode(from)
-		for _, to := range toList {
-			toNode := d.ensureNode(to)
-			node.Successors = append(node.Successors, to)
-			toNode.Predecessors = append(toNode.Predecessors, from)
+func TestRunAgentsRunsParallelRecipients(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		statePath := filepath.Join(t.TempDir(), "state.json")
+		coord, errCoord := state.NewCoordinatorWith(statePath, testWorkflowState())
+		require.NoError(t, errCoord)
+
+		r := testWorkflowRunner()
+		r.coord = coord
+
+		started := make(chan string, 2)
+		release := make(chan struct{})
+		r.runAgentFn = func(_ context.Context, currentAgent string) state.Workflow {
+			started <- currentAgent
+			<-release
+			workflow := testWorkflowState()
+			workflow.Status = state.StatusAgentDone
+			return workflow
 		}
-	}
-	return d
-}
 
-func TestResolveNextAgent(t *testing.T) {
-	t.Run("redirectsToPendingMessages", func(t *testing.T) {
-		r := testWorkflowRunner()
-		r.paddedsgai = "test"
-		r.flowDag = buildTestDag(map[string][]string{"coordinator": {"reviewer"}}, []string{"coordinator"})
-		message := testStateMessage()
-		message.ID = 1
-		message.FromAgent = "coordinator"
-		message.ToAgent = "reviewer"
-		message.Body = "review please"
-		r.wfState.Messages = []state.Message{message}
-		got := r.resolveNextAgent("coordinator")
-		assert.Equal(t, "reviewer", got)
-	})
+		resultCh := make(chan runResult, 1)
+		go func() {
+			resultCh <- r.runAgents(context.Background(), []string{"go-developer", "react-developer"})
+		}()
 
-	t.Run("terminalNodeReturnsCoordinator", func(t *testing.T) {
-		r := testWorkflowRunner()
-		r.paddedsgai = "test"
-		r.flowDag = buildTestDag(map[string][]string{"coordinator": {"reviewer"}}, []string{"coordinator"})
-		got := r.resolveNextAgent("reviewer")
-		assert.Equal(t, "coordinator", got)
-	})
+		synctest.Wait()
+		assert.ElementsMatch(t, []string{"go-developer", "react-developer"}, []string{<-started, <-started})
 
-	t.Run("coordinatorGoesToFirstEntry", func(t *testing.T) {
-		r := testWorkflowRunner()
-		r.paddedsgai = "test"
-		r.flowDag = buildTestDag(map[string][]string{"coordinator": {"builder"}}, []string{"builder"})
-		got := r.resolveNextAgent("coordinator")
-		assert.Equal(t, "builder", got)
+		close(release)
+		synctest.Wait()
+		assert.Equal(t, resultContinue, <-resultCh)
 	})
 }
 
-func TestPrepareAgent(t *testing.T) {
+func TestPrepareAgents(t *testing.T) {
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
 	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
@@ -163,19 +206,49 @@ func TestPrepareAgent(t *testing.T) {
 	r.coord = coord
 	r.wfState.Status = state.StatusWorking
 
-	require.NoError(t, r.prepareAgent("coordinator"))
+	require.NoError(t, r.prepareAgents([]string{"coordinator"}))
 	assert.Equal(t, "coordinator", r.previousAgent)
 	assert.Equal(t, "coordinator", r.wfState.CurrentAgent)
 	assert.Equal(t, 1, r.wfState.VisitCounts["coordinator"])
 
-	require.NoError(t, r.prepareAgent("builder"))
+	require.NoError(t, r.prepareAgents([]string{"builder"}))
 	assert.Equal(t, "builder", r.previousAgent)
 	assert.Equal(t, "builder", r.wfState.CurrentAgent)
 	assert.Equal(t, 1, r.wfState.VisitCounts["builder"])
 	assert.Empty(t, r.wfState.Todos)
 }
 
-func TestPrepareAgentReturnsStateSaveError(t *testing.T) {
+func TestPrepareAgentsDetachesSavedWorkflowSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	sgaiDir := filepath.Join(dir, ".sgai")
+	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
+
+	statePath := filepath.Join(sgaiDir, "state.json")
+	initial := state.NewWorkflow()
+	initial.Status = state.StatusWorking
+	initial.Progress = []state.ProgressEntry{{Timestamp: "", Agent: "", Description: "stable progress"}}
+	initial.TodosByAgent["builder"] = []state.TodoItem{{ID: "todo-1", Content: "stable todo", Status: "pending", Priority: "high"}}
+	coord, errCoord := state.NewCoordinatorWith(statePath, initial)
+	require.NoError(t, errCoord)
+
+	r := testWorkflowRunner()
+	r.dir = dir
+	r.paddedsgai = "test"
+	r.coord = coord
+	r.wfState = state.NewWorkflow()
+
+	require.NoError(t, r.prepareAgents([]string{"builder"}))
+	saved := coord.State()
+
+	r.wfState.Progress[0].Description = "mutated progress"
+	r.wfState.VisitCounts["builder"] = 99
+	r.wfState.Todos[0].Content = "mutated visible todo"
+	r.wfState.TodosByAgent["builder"][0].Content = "mutated grouped todo"
+
+	assert.Equal(t, saved, coord.State())
+}
+
+func TestPrepareAgentsReturnsStateSaveError(t *testing.T) {
 	dir := t.TempDir()
 	sgaiDir := filepath.Join(dir, ".sgai")
 	require.NoError(t, os.MkdirAll(sgaiDir, 0o755))
@@ -191,7 +264,7 @@ func TestPrepareAgentReturnsStateSaveError(t *testing.T) {
 	r.paddedsgai = "test"
 	r.coord = coord
 
-	errPrepare := r.prepareAgent("coordinator")
+	errPrepare := r.prepareAgents([]string{"coordinator"})
 	require.Error(t, errPrepare)
 	require.ErrorContains(t, errPrepare, "directory")
 }
@@ -257,7 +330,7 @@ func TestHandleTrigger(t *testing.T) {
 	})
 }
 
-func TestPrepareAgentReappliesOverlayWithoutSkeletonUnpack(t *testing.T) {
+func TestPrepareAgentsReappliesOverlayWithoutSkeletonUnpack(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, ".sgai", "state.json")
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai", "agent"), 0o755))
@@ -274,7 +347,7 @@ func TestPrepareAgentReappliesOverlayWithoutSkeletonUnpack(t *testing.T) {
 	r.paddedsgai = "test"
 	r.previousAgent = "coordinator"
 
-	err := r.prepareAgent("builder")
+	err := r.prepareAgents([]string{"builder"})
 	require.NoError(t, err)
 
 	coordinatorContent, errRead := os.ReadFile(filepath.Join(dir, ".sgai", "agent", "coordinator.md"))
@@ -286,7 +359,7 @@ func TestPrepareAgentReappliesOverlayWithoutSkeletonUnpack(t *testing.T) {
 	assert.Equal(t, "handoff overlay", string(overlayContent))
 }
 
-func TestRunAgentInterruptsWhenOverlayRefreshFails(t *testing.T) {
+func TestPrepareAgentsReturnsOverlayRefreshError(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, ".sgai", "state.json")
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".sgai"), 0o755))
@@ -303,8 +376,8 @@ func TestRunAgentInterruptsWhenOverlayRefreshFails(t *testing.T) {
 	r.paddedsgai = "test"
 	r.previousAgent = "coordinator"
 
-	result := r.runAgent(context.Background(), "builder")
-	assert.Equal(t, resultInterrupt, result)
+	err := r.prepareAgents([]string{"builder"})
+	require.Error(t, err)
 }
 
 func TestResolveRetrospectiveDirResuming(t *testing.T) {

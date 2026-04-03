@@ -40,6 +40,15 @@ const createDollarBreakdown = (overrides = {}) => ({
   ...overrides,
 });
 
+type TestTodoEntry = {
+  id: string;
+  content: string;
+  status: string;
+  priority: string;
+};
+
+const createAgentTodoSection = (agent: string, todos: TestTodoEntry[] = []) => ({ agent, todos });
+
 const createMockWorkspace = (overrides = {}) => ({
   name: "test-workspace",
   dir: "/path/to/test-workspace",
@@ -80,7 +89,7 @@ const createMockWorkspace = (overrides = {}) => ({
   events: [],
   messages: [],
   projectTodos: [],
-  agentTodos: [],
+  agentTodoSections: [],
   log: [],
   external: false,
   ...overrides,
@@ -131,7 +140,7 @@ function renderSessionTab(props = {}, { strictMode = false }: { strictMode?: boo
     cost: workspace.cost,
     modelStatuses: workspace.modelStatuses,
     projectTodos: workspace.projectTodos,
-    agentTodos: workspace.agentTodos,
+    agentTodoSections: workspace.agentTodoSections,
     pmContent: workspace.pmContent as string | undefined,
     hasProjectMgmt: workspace.hasProjectMgmt,
     ...props,
@@ -330,7 +339,7 @@ describe("SessionTab", () => {
               agentSequence={[{ agent: "coordinator", model: "opencode/glm-5", elapsedTime: "1m", isCurrent: true }]}
               modelStatuses={[{ modelId: "opencode/glm-5", status: "model-done" }]}
               projectTodos={[{ id: "todo-1", content: "Todo 1", status: "pending", priority: "medium" }]}
-              agentTodos={[]}
+              agentTodoSections={[]}
             />
           </TooltipProvider>
         </MemoryRouter>
@@ -364,11 +373,11 @@ describe("SessionTab", () => {
       });
     });
 
-    it("shows empty message when no agent todos", async () => {
+    it("shows empty message when there are no active agents", async () => {
       renderSessionTab();
 
       await waitFor(() => {
-        expect(screen.getByText("No active agent todos")).toBeTruthy();
+        expect(screen.getByText("No active agents")).toBeTruthy();
       });
     });
 
@@ -388,27 +397,43 @@ describe("SessionTab", () => {
       });
     });
 
-    it("displays agent todos", async () => {
+    it("renders grouped agent todo sections in active-agent order and shows per-agent empty states", async () => {
       mockWorkspaces = [createMockWorkspace({
-        agentTodos: [
-          { id: "1", content: "Write tests", status: "completed", priority: "high" },
+        agentTodoSections: [
+          createAgentTodoSection("coordinator", [
+            { id: "1", content: "Write tests", status: "completed", priority: "high" },
+          ]),
+          createAgentTodoSection("react-developer"),
+          createAgentTodoSection("go-developer", [
+            { id: "2", content: "Update API contract", status: "pending", priority: "medium" },
+          ]),
         ],
       })];
 
       renderSessionTab();
 
       await waitFor(() => {
+        expect(screen.getByRole("heading", { level: 3, name: "coordinator" })).toBeTruthy();
+        expect(screen.getByRole("heading", { level: 3, name: "react-developer" })).toBeTruthy();
+        expect(screen.getByRole("heading", { level: 3, name: "go-developer" })).toBeTruthy();
         expect(screen.getByText("Write tests")).toBeTruthy();
+        expect(screen.getByText("No active TODOs for react-developer")).toBeTruthy();
+        expect(screen.getByText("Update API contract")).toBeTruthy();
       });
+
+      const agentSectionHeadings = screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent);
+      expect(agentSectionHeadings).toEqual(["coordinator", "react-developer", "go-developer"]);
     });
 
     it("does not emit duplicate-key warnings when persisted agent todos are missing ids", async () => {
       const consoleErrorSpy = spyOn(console, "error").mockImplementation(() => {});
 
       mockWorkspaces = [createMockWorkspace({
-        agentTodos: [
-          { id: "", content: "First todo", status: "pending", priority: "high" },
-          { id: "", content: "Second todo", status: "pending", priority: "medium" },
+        agentTodoSections: [
+          createAgentTodoSection("react-developer", [
+            { id: "", content: "First todo", status: "pending", priority: "high" },
+            { id: "", content: "Second todo", status: "pending", priority: "medium" },
+          ]),
         ],
       })];
 
@@ -428,8 +453,10 @@ describe("SessionTab", () => {
 
     it("keeps the original blank-id agent todo row mounted when a same-signature blank-id todo is inserted ahead of it", async () => {
       const view = renderSessionTab({
-        agentTodos: [
-          { id: "", content: "Duplicate todo", status: "pending", priority: "medium" },
+        agentTodoSections: [
+          createAgentTodoSection("react-developer", [
+            { id: "", content: "Duplicate todo", status: "pending", priority: "medium" },
+          ]),
         ],
       });
 
@@ -448,9 +475,11 @@ describe("SessionTab", () => {
               cost={createMockWorkspace().cost}
               modelStatuses={[]}
               projectTodos={[]}
-              agentTodos={[
-                { id: "", content: "Duplicate todo", status: "pending", priority: "medium" },
-                { id: "", content: "Duplicate todo", status: "pending", priority: "medium" },
+              agentTodoSections={[
+                createAgentTodoSection("react-developer", [
+                  { id: "", content: "Duplicate todo", status: "pending", priority: "medium" },
+                  { id: "", content: "Duplicate todo", status: "pending", priority: "medium" },
+                ]),
               ]}
             />
           </TooltipProvider>
@@ -472,8 +501,10 @@ describe("SessionTab", () => {
 
     it("keeps the original blank-id agent todo row mounted when its mutable display fields change", async () => {
       const view = renderSessionTab({
-        agentTodos: [
-          { id: "", content: "Original todo", status: "pending", priority: "medium" },
+        agentTodoSections: [
+          createAgentTodoSection("react-developer", [
+            { id: "", content: "Original todo", status: "pending", priority: "medium" },
+          ]),
         ],
       });
 
@@ -492,8 +523,10 @@ describe("SessionTab", () => {
               cost={createMockWorkspace().cost}
               modelStatuses={[]}
               projectTodos={[]}
-              agentTodos={[
-                { id: "", content: "Updated todo", status: "in_progress", priority: "high" },
+              agentTodoSections={[
+                createAgentTodoSection("react-developer", [
+                  { id: "", content: "Updated todo", status: "in_progress", priority: "high" },
+                ]),
               ]}
             />
           </TooltipProvider>
@@ -513,8 +546,10 @@ describe("SessionTab", () => {
 
     it("keeps the original blank-id agent todo row mounted under StrictMode when a same-signature blank-id todo is inserted ahead of it", async () => {
       const view = renderSessionTab({
-        agentTodos: [
-          { id: "", content: "Duplicate todo", status: "pending", priority: "medium" },
+        agentTodoSections: [
+          createAgentTodoSection("react-developer", [
+            { id: "", content: "Duplicate todo", status: "pending", priority: "medium" },
+          ]),
         ],
       }, { strictMode: true });
 
@@ -533,9 +568,11 @@ describe("SessionTab", () => {
               cost={createMockWorkspace().cost}
               modelStatuses={[]}
               projectTodos={[]}
-              agentTodos={[
-                { id: "", content: "Duplicate todo", status: "pending", priority: "medium" },
-                { id: "", content: "Duplicate todo", status: "pending", priority: "medium" },
+              agentTodoSections={[
+                createAgentTodoSection("react-developer", [
+                  { id: "", content: "Duplicate todo", status: "pending", priority: "medium" },
+                  { id: "", content: "Duplicate todo", status: "pending", priority: "medium" },
+                ]),
               ]}
             />
           </TooltipProvider>
@@ -553,8 +590,10 @@ describe("SessionTab", () => {
 
     it("keeps the original blank-id agent todo row mounted under StrictMode when its mutable display fields change", async () => {
       const view = renderSessionTab({
-        agentTodos: [
-          { id: "", content: "Original todo", status: "pending", priority: "medium" },
+        agentTodoSections: [
+          createAgentTodoSection("react-developer", [
+            { id: "", content: "Original todo", status: "pending", priority: "medium" },
+          ]),
         ],
       }, { strictMode: true });
 
@@ -573,8 +612,10 @@ describe("SessionTab", () => {
               cost={createMockWorkspace().cost}
               modelStatuses={[]}
               projectTodos={[]}
-              agentTodos={[
-                { id: "", content: "Updated todo", status: "in_progress", priority: "high" },
+              agentTodoSections={[
+                createAgentTodoSection("react-developer", [
+                  { id: "", content: "Updated todo", status: "in_progress", priority: "high" },
+                ]),
               ]}
             />
           </TooltipProvider>
@@ -594,7 +635,7 @@ describe("SessionTab", () => {
     });
 
     it("ignores abandoned StrictMode duplicate-insertion renders when later committing a mutable blank-id todo update", async () => {
-      const renderTree = (agentTodos: Array<{ id: string; content: string; status: string; priority: string }>, shouldSuspend: boolean) => (
+      const renderTree = (agentTodoSections: Array<{ agent: string; todos: TestTodoEntry[] }>, shouldSuspend: boolean) => (
         maybeWrapStrictMode(
           <MemoryRouter>
             <TooltipProvider>
@@ -605,7 +646,7 @@ describe("SessionTab", () => {
                   cost={createMockWorkspace().cost}
                   modelStatuses={[]}
                   projectTodos={[]}
-                  agentTodos={agentTodos}
+                  agentTodoSections={agentTodoSections}
                 />
                 <SuspendOnDemand active={shouldSuspend} />
               </Suspense>
@@ -616,7 +657,9 @@ describe("SessionTab", () => {
       );
 
       const view = render(renderTree([
-        { id: "", content: "Original todo", status: "pending", priority: "medium" },
+        createAgentTodoSection("react-developer", [
+          { id: "", content: "Original todo", status: "pending", priority: "medium" },
+        ]),
       ], false));
 
       const originalRow = await waitFor(() => {
@@ -627,8 +670,10 @@ describe("SessionTab", () => {
 
       startTransition(() => {
         view.rerender(renderTree([
-          { id: "", content: "Original todo", status: "pending", priority: "medium" },
-          { id: "", content: "Original todo", status: "pending", priority: "medium" },
+          createAgentTodoSection("react-developer", [
+            { id: "", content: "Original todo", status: "pending", priority: "medium" },
+            { id: "", content: "Original todo", status: "pending", priority: "medium" },
+          ]),
         ], true));
       });
 
@@ -637,7 +682,9 @@ describe("SessionTab", () => {
       });
 
       view.rerender(renderTree([
-        { id: "", content: "Updated todo", status: "in_progress", priority: "high" },
+        createAgentTodoSection("react-developer", [
+          { id: "", content: "Updated todo", status: "in_progress", priority: "high" },
+        ]),
       ], false));
 
       const updatedRow = await waitFor(() => {
@@ -846,7 +893,7 @@ describe("SessionTab", () => {
               cost={createMockWorkspace().cost}
               modelStatuses={[]}
               projectTodos={[]}
-              agentTodos={[]}
+              agentTodoSections={[]}
             />
           </TooltipProvider>
         </MemoryRouter>
@@ -884,7 +931,7 @@ describe("SessionTab", () => {
               cost={createMockWorkspace().cost}
               modelStatuses={[]}
               projectTodos={[]}
-              agentTodos={[]}
+              agentTodoSections={[]}
             />
           </TooltipProvider>
         </MemoryRouter>

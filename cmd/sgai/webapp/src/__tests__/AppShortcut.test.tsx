@@ -72,7 +72,7 @@ function createMockWorkspace(overrides: Partial<ApiWorkspaceEntry> = {}): ApiWor
     events: [],
     messages: [],
     projectTodos: [],
-    agentTodos: [],
+    agentTodoSections: [],
     log: [],
     ...overrides,
   };

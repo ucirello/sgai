@@ -57,7 +57,7 @@ func startCoordinatorQuestion(t *testing.T, coord *state.Coordinator, question *
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := coord.AskAndWait(ctx, question, humanMessage)
+		_, err := coord.AskAndWait(ctx, question, humanMessage, "coordinator")
 		errCh <- err
 	}()
 	<-ready
@@ -440,8 +440,10 @@ func TestRespondViaCoordinatorServiceWorkGateApproval(t *testing.T) {
 			question.IsWorkGate = true
 		}), "Approve this definition?")
 		defer cancel()
+		promptToken := waitForSessionPromptToken(t, coord)
 
 		req := respondRequestWith(func(request *apiRespondRequest) {
+			request.PromptToken = promptToken
 			request.SelectedChoices = []string{workGateApprovalText}
 		})
 
@@ -453,6 +455,35 @@ func TestRespondViaCoordinatorServiceWorkGateApproval(t *testing.T) {
 
 		wfState := coord.State()
 		assert.Equal(t, state.ModeBuilding, wfState.InteractionMode)
+	})
+}
+
+func TestRespondViaCoordinatorServiceRequiresPromptToken(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rootDir := t.TempDir()
+		server := NewServer(rootDir, newTestServerPaths(), "")
+		workspacePath := filepath.Join(rootDir, "test-workspace")
+		require.NoError(t, os.MkdirAll(filepath.Join(workspacePath, ".sgai"), 0o755))
+
+		coord := state.NewCoordinatorEmpty(statePath(workspacePath))
+		errCh, cancel := startCoordinatorQuestion(t, coord, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+			question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
+				item.Question = "Pick one"
+				item.Choices = []string{"A", "B"}
+			})}
+		}), "Pick one")
+
+		_, err := server.respondViaCoordinatorService(workspacePath, coord, respondRequestWith(func(request *apiRespondRequest) {
+			request.Answer = "current answer"
+		}))
+		require.Error(t, err)
+		require.ErrorIs(t, err, errPromptTokenRequired)
+		assert.Contains(t, err.Error(), "prompt token is required")
+		assert.True(t, coord.State().NeedsHumanInput())
+
+		cancel()
+		synctest.Wait()
+		require.ErrorIs(t, <-errCh, context.Canceled)
 	})
 }
 
@@ -570,12 +601,13 @@ func TestRespondViaCoordinatorWorkGateApproval(t *testing.T) {
 			question.IsWorkGate = true
 		}), "Is this ready?")
 		defer cancel()
+		promptToken := waitForSessionPromptToken(t, coord)
 
 		srv.mu.Lock()
 		srv.sessions[wsDir] = newTestServeSession(coord, false)
 		srv.mu.Unlock()
 
-		body := `{"answer":"","selectedChoices":["` + workGateApprovalText + `"]}`
+		body := `{"promptToken":"` + promptToken + `","answer":"","selectedChoices":["` + workGateApprovalText + `"]}`
 		w := serveHTTP(srv, "POST", "/api/v1/workspaces/respond-gate/respond", body)
 		assert.Equal(t, http.StatusOK, w.Code)
 		synctest.Wait()
@@ -619,7 +651,7 @@ func TestStopSessionPublishesSingleReloadAndWorkspaceSignals(t *testing.T) {
 
 		errCh := make(chan error, 1)
 		go func() {
-			_, err := coord.AskAndWait(ctx, nil, "question?")
+			_, err := coord.AskAndWait(ctx, nil, "question?", "coordinator")
 			errCh <- err
 		}()
 

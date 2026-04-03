@@ -57,7 +57,7 @@ const createMockWorkspace = (overrides = {}) => ({
   events: [],
   messages: [],
   projectTodos: [],
-  agentTodos: [],
+  agentTodoSections: [],
   log: [],
   external: false,
   ...overrides,

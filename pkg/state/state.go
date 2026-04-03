@@ -3,7 +3,9 @@
 package state
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -130,21 +132,30 @@ type SessionCost struct {
 	ByAgent     []AgentCost     `json:"byAgent"`
 }
 
+// AgentExecutionState tracks the visible workflow status and task for one agent.
+type AgentExecutionState struct {
+	Status string `json:"status,omitempty"`
+	Task   string `json:"task,omitempty"`
+}
+
 // Workflow represents the complete workflow state for a sgai session.
 // It tracks progress, inter-agent messaging, and workflow status.
 type Workflow struct {
-	Status              string               `json:"status"`
-	Task                string               `json:"task"`
-	Progress            []ProgressEntry      `json:"progress"`
-	HumanMessage        string               `json:"humanMessage"`
-	MultiChoiceQuestion *MultiChoiceQuestion `json:"multiChoiceQuestion,omitempty"`
-	Messages            []Message            `json:"messages"`
-	VisitCounts         map[string]int       `json:"visitCounts,omitempty"`
-	CurrentAgent        string               `json:"currentAgent,omitempty"`
-	Todos               []TodoItem           `json:"todos,omitempty"`
-	ProjectTodos        []TodoItem           `json:"projectTodos,omitempty"`
-	AgentSequence       []AgentSequenceEntry `json:"agentSequence,omitempty"`
-	SessionID           string               `json:"sessionId,omitempty"`
+	Status              string                         `json:"status"`
+	Task                string                         `json:"task"`
+	Progress            []ProgressEntry                `json:"progress"`
+	HumanMessage        string                         `json:"humanMessage"`
+	HumanInputAgent     string                         `json:"humanInputAgent,omitempty"`
+	MultiChoiceQuestion *MultiChoiceQuestion           `json:"multiChoiceQuestion,omitempty"`
+	Messages            []Message                      `json:"messages"`
+	VisitCounts         map[string]int                 `json:"visitCounts,omitempty"`
+	CurrentAgent        string                         `json:"currentAgent,omitempty"`
+	AgentStates         map[string]AgentExecutionState `json:"agentStates,omitempty"`
+	Todos               []TodoItem                     `json:"todos,omitempty"`
+	TodosByAgent        map[string][]TodoItem          `json:"todosByAgent,omitempty"`
+	ProjectTodos        []TodoItem                     `json:"projectTodos,omitempty"`
+	AgentSequence       []AgentSequenceEntry           `json:"agentSequence,omitempty"`
+	SessionID           string                         `json:"sessionId,omitempty"`
 
 	Cost SessionCost `json:"cost"`
 
@@ -176,7 +187,9 @@ func NewWorkflow() Workflow {
 	wf.Progress = []ProgressEntry{}
 	wf.Messages = []Message{}
 	wf.VisitCounts = map[string]int{}
+	wf.AgentStates = map[string]AgentExecutionState{}
 	wf.Todos = []TodoItem{}
+	wf.TodosByAgent = map[string][]TodoItem{}
 	wf.ProjectTodos = []TodoItem{}
 	wf.AgentSequence = []AgentSequenceEntry{}
 	wf.Cost.ByAgent = []AgentCost{}
@@ -197,7 +210,9 @@ func (w *Workflow) detached() Workflow {
 	detached.Progress = slices.Clone(w.Progress)
 	detached.Messages = slices.Clone(w.Messages)
 	detached.VisitCounts = maps.Clone(w.VisitCounts)
+	detached.AgentStates = maps.Clone(w.AgentStates)
 	detached.Todos = slices.Clone(w.Todos)
+	detached.TodosByAgent = detachedAgentTodos(w.TodosByAgent)
 	detached.ProjectTodos = slices.Clone(w.ProjectTodos)
 	detached.AgentSequence = slices.Clone(w.AgentSequence)
 	detached.Cost.ByAgent = detachedAgentCosts(w.Cost.ByAgent)
@@ -231,6 +246,17 @@ func detachedAgentCosts(agentCosts []AgentCost) []AgentCost {
 	return detached
 }
 
+func detachedAgentTodos(todosByAgent map[string][]TodoItem) map[string][]TodoItem {
+	if todosByAgent == nil {
+		return nil
+	}
+	detached := make(map[string][]TodoItem, len(todosByAgent))
+	for agent, todos := range todosByAgent {
+		detached[agent] = slices.Clone(todos)
+	}
+	return detached
+}
+
 // Message represents an inter-agent message in the workflow system.
 type Message struct {
 	ID        int    `json:"id"`
@@ -255,10 +281,17 @@ func load(path string) (Workflow, error) {
 	if wf.VisitCounts == nil {
 		wf.VisitCounts = make(map[string]int)
 	}
+	if wf.AgentStates == nil {
+		wf.AgentStates = make(map[string]AgentExecutionState)
+	}
+	if wf.TodosByAgent == nil {
+		wf.TodosByAgent = make(map[string][]TodoItem)
+	}
 	if wf.ModelStatuses == nil {
 		wf.ModelStatuses = make(map[string]string)
 	}
 	wf.HumanMessage = ""
+	wf.HumanInputAgent = ""
 	wf.MultiChoiceQuestion = nil
 	return wf, nil
 }
@@ -266,6 +299,7 @@ func load(path string) (Workflow, error) {
 func save(path string, wf *Workflow) error {
 	snapshot := wf.detached()
 	snapshot.HumanMessage = ""
+	snapshot.HumanInputAgent = ""
 	snapshot.MultiChoiceQuestion = nil
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("creating workflow state directory for %s: %w", path, err)
@@ -274,8 +308,99 @@ func save(path string, wf *Workflow) error {
 	if err != nil {
 		return fmt.Errorf("encoding workflow state %s: %w", path, err)
 	}
-	if errWrite := os.WriteFile(path, data, 0o644); errWrite != nil {
+	if errWrite := writeWorkflowStateAtomically(path, data); errWrite != nil {
 		return fmt.Errorf("writing workflow state %s: %w", path, errWrite)
 	}
 	return nil
+}
+
+func writeWorkflowStateAtomically(path string, data []byte) error {
+	mode, exists, errStateMode := workflowStateMode(path)
+	if errStateMode != nil {
+		return errStateMode
+	}
+
+	tempFile, errCreateTemp := createWorkflowStateTempFile(filepath.Dir(path), filepath.Base(path), exists)
+	if errCreateTemp != nil {
+		return errCreateTemp
+	}
+
+	tempPath := tempFile.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	if exists {
+		if errChmod := tempFile.Chmod(mode); errChmod != nil {
+			_ = tempFile.Close()
+			return fmt.Errorf("setting temporary file mode: %w", errChmod)
+		}
+	}
+	if _, errWrite := tempFile.Write(data); errWrite != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("writing temporary file: %w", errWrite)
+	}
+	if errSync := tempFile.Sync(); errSync != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("syncing temporary file: %w", errSync)
+	}
+	if errClose := tempFile.Close(); errClose != nil {
+		return fmt.Errorf("closing temporary file: %w", errClose)
+	}
+	if errRename := os.Rename(tempPath, path); errRename != nil {
+		return fmt.Errorf("renaming temporary file: %w", errRename)
+	}
+
+	removeTemp = false
+	return nil
+}
+
+func createWorkflowStateTempFile(dir, base string, preserveMode bool) (*os.File, error) {
+	if preserveMode {
+		tempFile, errCreate := os.CreateTemp(dir, base+".tmp-*")
+		if errCreate != nil {
+			return nil, fmt.Errorf("creating temporary file: %w", errCreate)
+		}
+		return tempFile, nil
+	}
+	return openWorkflowStateTempFile(dir, base+".tmp-")
+}
+
+func openWorkflowStateTempFile(dir, prefix string) (*os.File, error) {
+	suffix := make([]byte, 8)
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	for range 100 {
+		if _, errRead := rand.Read(suffix); errRead != nil {
+			return nil, fmt.Errorf("creating temporary file: %w", errRead)
+		}
+		for i := range suffix {
+			suffix[i] = chars[int(suffix[i])%len(chars)]
+		}
+		tempPath := filepath.Join(dir, prefix+string(suffix))
+		tempFile, errOpen := os.OpenFile(tempPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
+		if errOpen == nil {
+			return tempFile, nil
+		}
+		if !errors.Is(errOpen, os.ErrExist) {
+			return nil, fmt.Errorf("creating temporary file: %w", errOpen)
+		}
+	}
+	return nil, errors.New("creating temporary file: exhausted attempts")
+}
+
+func workflowStateMode(path string) (mode os.FileMode, exists bool, err error) {
+	info, errStat := os.Stat(path)
+	if errStat == nil {
+		if info.IsDir() {
+			return 0, false, fmt.Errorf("workflow state path is a directory: %s", path)
+		}
+		return info.Mode().Perm(), true, nil
+	}
+	if errors.Is(errStat, os.ErrNotExist) {
+		return 0o644, false, nil
+	}
+	return 0, false, fmt.Errorf("stat existing workflow state: %w", errStat)
 }

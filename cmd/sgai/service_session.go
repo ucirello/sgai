@@ -17,6 +17,7 @@ var (
 	errRootWorkspaceCannotStart = errors.New("root workspace cannot start agentic work")
 	errSessionResetWhileRunning = errors.New("cannot reset while session is running")
 	errNoPendingQuestion        = errors.New("no pending question")
+	errPromptTokenRequired      = errors.New("prompt token is required")
 	errResponseCannotBeEmpty    = errors.New("response cannot be empty")
 	errQuestionNotAvailable     = errors.New("question not available")
 	errSteerMessageEmpty        = errors.New("message cannot be empty")
@@ -213,6 +214,10 @@ func (s *Server) resetSessionService(workspacePath string) (resetSessionResult, 
 	coord := s.workspaceCoordinator(workspacePath)
 	if errUpdate := coord.UpdateState(func(wf *state.Workflow) {
 		wf.Status = state.StatusComplete
+		wf.Task = ""
+		wf.CurrentAgent = ""
+		wf.CurrentModel = ""
+		wf.AgentStates = nil
 	}); errUpdate != nil {
 		return resetSessionResult{}, fmt.Errorf("failed to reset state: %w", errUpdate)
 	}
@@ -230,6 +235,14 @@ func (s *Server) resetSessionService(workspacePath string) (resetSessionResult, 
 type respondResult struct {
 	Success bool
 	Message string
+}
+
+func requiredPromptToken(promptToken string) (string, error) {
+	promptToken = strings.TrimSpace(promptToken)
+	if promptToken == "" {
+		return "", errPromptTokenRequired
+	}
+	return promptToken, nil
 }
 
 func (s *Server) respondService(workspacePath, promptToken, answer string, selectedChoices []string) (respondResult, error) {
@@ -263,7 +276,12 @@ func (s *Server) respondViaCoordinatorService(workspacePath string, coord *state
 		return respondResult{}, errResponseCannotBeEmpty
 	}
 
-	if !coord.RespondIfCurrent(req.PromptToken, responseText) {
+	promptToken, errPromptToken := requiredPromptToken(req.PromptToken)
+	if errPromptToken != nil {
+		return respondResult{}, errPromptToken
+	}
+
+	if !coord.RespondIfCurrent(promptToken, responseText) {
 		return respondResult{}, errQuestionNotAvailable
 	}
 

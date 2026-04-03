@@ -50,7 +50,7 @@ const mockWorkspace = {
   events: [],
   messages: [],
   projectTodos: [],
-  agentTodos: [],
+  agentTodoSections: [],
   log: [],
   external: false,
 };
