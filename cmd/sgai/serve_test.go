@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -20,6 +21,13 @@ func progressEntryWith(update func(*state.ProgressEntry)) state.ProgressEntry {
 
 func agentSequenceEntryWith(update func(*state.AgentSequenceEntry)) state.AgentSequenceEntry {
 	return updated(newTestAgentSequenceEntry(), update)
+}
+
+func TestInjectCurrentAgentStyleSupportsParallelAgents(t *testing.T) {
+	dot := "strict digraph G {\n    \"go-developer\"\n    \"react-developer\"\n}"
+	result := injectCurrentAgentStyle(dot, "go-developer, react-developer")
+	assert.Contains(t, result, `"go-developer" [style=filled, fillcolor="#10b981", fontcolor=white]`)
+	assert.Contains(t, result, `"react-developer" [style=filled, fillcolor="#10b981", fontcolor=white]`)
 }
 
 type progressStringCase struct {
@@ -45,6 +53,14 @@ func timestampProgressEntries(timestamps ...string) []state.ProgressEntry {
 		}))
 	}
 	return entries
+}
+
+func assertWorkflowSVGContainsAgent(t *testing.T, svg, agent string) {
+	t.Helper()
+	assert.True(t,
+		strings.Contains(svg, agent) || strings.Contains(svg, strings.ReplaceAll(agent, "-", "&#45;")),
+		"expected workflow SVG to contain %q", agent,
+	)
 }
 
 func assertWorkspaceChangeInvalidatesWorkspaceCaches(t *testing.T, srv *Server, wsDir string, wfState *state.Workflow, running bool) {
@@ -2589,6 +2605,23 @@ retrospective: true
 			}
 		})
 	}
+}
+
+func TestGetWorkflowSVGEmptyFlowIncludesParallelCurrentAgents(t *testing.T) {
+	workspacePath := t.TempDir()
+	goalData := []byte(`---
+title: Parallel SVG graph
+---
+# Test Goal`)
+	metadata, errParse := parseYAMLFrontmatter(goalData)
+	require.NoError(t, errParse)
+	assert.Empty(t, metadata.Flow)
+	require.NoError(t, os.WriteFile(filepath.Join(workspacePath, "GOAL.md"), goalData, 0o644))
+
+	svg := getWorkflowSVG(workspacePath, "go-developer, react-developer")
+	assert.NotEmpty(t, svg)
+	assertWorkflowSVGContainsAgent(t, svg, "go-developer")
+	assertWorkflowSVGContainsAgent(t, svg, "react-developer")
 }
 
 func TestGetWorkflowSVGCached(t *testing.T) {

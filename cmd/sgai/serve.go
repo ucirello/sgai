@@ -322,7 +322,7 @@ func workspaceListSummaryFromState(workspacePath string, wfState *state.Workflow
 	if currentAgent == "" {
 		currentAgent = "Unknown"
 	}
-	status := wfState.Status
+	status := visibleWorkflowStatus(wfState)
 	if status == "" {
 		status = "-"
 	}
@@ -335,7 +335,7 @@ func workspaceListSummaryFromState(workspacePath string, wfState *state.Workflow
 		InteractiveAuto: interactiveAuto,
 		CurrentAgent:    currentAgent,
 		CurrentModel:    resolveCurrentModel(workspacePath, wfState),
-		Task:            wfState.Task,
+		Task:            visibleWorkflowTask(wfState),
 		LatestProgress:  getLatestProgress(wfState.Progress),
 		HumanMessage:    wfState.HumanMessage,
 	}
@@ -629,7 +629,7 @@ func (s *Server) stopSession(workspacePath string) {
 	}
 }
 
-func (s *Server) finishSessionRun(workspacePath string, sess *session, coord *state.Coordinator) {
+func (s *Server) finishSessionRun(workspacePath string, sess *session, _ *state.Coordinator) {
 	if sess == nil {
 		return
 	}
@@ -644,9 +644,6 @@ func (s *Server) finishSessionRun(workspacePath string, sess *session, coord *st
 	if closeFn != nil {
 		sess.mcpCloseOnce.Do(closeFn)
 	}
-	if coord != nil {
-		coord.Stop()
-	}
 	s.clearEverStartedOnCompletion(workspacePath)
 	if !skipExitNotification {
 		s.notifyWorkspaceListChange(workspacePath)
@@ -654,13 +651,14 @@ func (s *Server) finishSessionRun(workspacePath string, sess *session, coord *st
 }
 
 func badgeStatus(wfState *state.Workflow, running bool) (class, text string) {
+	status := visibleWorkflowStatus(wfState)
 	if wfState.NeedsHumanInput() {
 		return "badge-needs-input", "Needs Input"
 	}
-	if running || wfState.Status == state.StatusWorking || wfState.Status == state.StatusAgentDone {
+	if running || status == state.StatusWorking || status == state.StatusAgentDone {
 		return "badge-running", "Running"
 	}
-	if !running && wfState.Status == state.StatusComplete {
+	if !running && status == state.StatusComplete {
 		return "badge-complete", "Complete"
 	}
 	return "badge-stopped", "Stopped"
@@ -863,6 +861,7 @@ func getWorkflowSVG(dir, currentAgent string) string {
 	if retrospectiveEnabled(metadata.Retrospective) {
 		d.injectRetrospectiveEdge()
 	}
+	addCurrentAgentsToGraph(d, currentAgent)
 
 	dotContent := d.toDOT()
 
@@ -872,6 +871,12 @@ func getWorkflowSVG(dir, currentAgent string) string {
 	dotContent = injectLightTheme(dotContent)
 
 	return renderDotToSVG(dotContent)
+}
+
+func addCurrentAgentsToGraph(d *dag, currentAgent string) {
+	for _, agent := range splitCurrentAgents(currentAgent) {
+		d.ensureNode(agent)
+	}
 }
 
 func (s *Server) getWorkflowSVGCached(dir, currentAgent string) string {
@@ -1104,14 +1109,16 @@ func extractSubject(body string) string {
 }
 
 func injectCurrentAgentStyle(dot, currentAgent string) string {
-	agentLine := fmt.Sprintf("    %q", currentAgent)
-	styledLine := fmt.Sprintf("    %q [style=filled, fillcolor=\"#10b981\", fontcolor=white]", currentAgent)
-
-	if !strings.Contains(dot, agentLine) {
-		return dot
+	result := dot
+	for _, agent := range splitCurrentAgents(currentAgent) {
+		agentLine := fmt.Sprintf("    %q", agent)
+		styledLine := fmt.Sprintf("    %q [style=filled, fillcolor=\"#10b981\", fontcolor=white]", agent)
+		if !strings.Contains(result, agentLine) {
+			continue
+		}
+		result = strings.Replace(result, agentLine, styledLine, 1)
 	}
-
-	return strings.Replace(dot, agentLine, styledLine, 1)
+	return result
 }
 
 func injectLightTheme(dot string) string {

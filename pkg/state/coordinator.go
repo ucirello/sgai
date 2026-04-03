@@ -5,29 +5,32 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
 )
 
-const agentDoneWatchdogTimeout = time.Minute
+// AgentDoneWatchdogTimeout bounds how long a finished agent process may linger.
+const AgentDoneWatchdogTimeout = time.Minute
 
-var errPendingHumanInput = errors.New("human input already pending")
+type pendingHumanInput struct {
+	question     *MultiChoiceQuestion
+	humanMessage string
+	agent        string
+	promptToken  string
+	responseCh   chan string
+}
 
-// Coordinator manages workflow state in memory with blocking ask/answer delivery
-// and a soft-stop watchdog for agent-done transitions.
+// Coordinator manages workflow state in memory with blocking ask/answer delivery.
 type Coordinator struct {
-	mu                 sync.Mutex
-	wf                 Workflow
-	currentResponseCh  chan string
-	currentPromptToken string
-	promptSeq          uint64
-	savePath           string
-	saveWorkflow       func(string, *Workflow) error
-
-	doneOnce    sync.Once
-	doneTimer   *time.Timer
-	agentCancel context.CancelFunc
+	mu             sync.Mutex
+	wf             Workflow
+	currentPrompt  *pendingHumanInput
+	pendingPrompts []*pendingHumanInput
+	promptSeq      uint64
+	savePath       string
+	saveWorkflow   func(string, *Workflow) error
 
 	onUpdate func()
 }
@@ -107,38 +110,50 @@ func (c *Coordinator) UpdateState(fn func(*Workflow)) error {
 	return nil
 }
 
-// AskAndWait stores the pending question in memory and blocks until Respond
-// delivers an answer or ctx ends.
-func (c *Coordinator) AskAndWait(ctx context.Context, question *MultiChoiceQuestion, humanMessage string) (string, error) {
-	responseCh := make(chan string, 1)
+// ReplaceState replaces the coordinator workflow with a detached snapshot of wf
+// and persists it to disk.
+func (c *Coordinator) ReplaceState(wf *Workflow) error {
+	if wf == nil {
+		return errors.New("nil workflow")
+	}
+
+	snapshot := wf.detached()
 
 	c.mu.Lock()
-	if c.currentResponseCh != nil {
+	notify := c.onUpdate
+	if errSave := c.saveWorkflow(c.savePath, &snapshot); errSave != nil {
 		c.mu.Unlock()
-		return "", errPendingHumanInput
+		return errSave
 	}
-	c.currentResponseCh = responseCh
-	c.promptSeq++
-	c.currentPromptToken = strconv.FormatUint(c.promptSeq, 10)
+	c.wf = snapshot
 	c.mu.Unlock()
 
-	if err := c.UpdateState(func(wf *Workflow) {
-		wf.MultiChoiceQuestion = question
-		wf.HumanMessage = humanMessage
-	}); err != nil {
-		c.clearPendingQuestion(responseCh)
-		return "", fmt.Errorf("saving question state: %w", err)
+	if notify != nil {
+		notify()
+	}
+	return nil
+}
+
+// AskAndWait stores the pending question in memory and blocks until Respond
+// delivers an answer or ctx ends.
+func (c *Coordinator) AskAndWait(ctx context.Context, question *MultiChoiceQuestion, humanMessage, askingAgent string) (string, error) {
+	prompt, isCurrent := c.enqueuePendingPrompt(question, humanMessage, askingAgent)
+	if isCurrent {
+		if err := c.persistPendingPrompt(prompt); err != nil {
+			c.advancePendingPrompt(prompt)
+			return "", fmt.Errorf("saving question state: %w", err)
+		}
 	}
 
 	log.Println("askandwait: blocking for human answer")
 	select {
-	case answer := <-responseCh:
+	case answer := <-prompt.responseCh:
 		log.Println("askandwait: answer received from human")
-		c.clearPendingQuestion(responseCh)
+		c.advancePendingPrompt(prompt)
 		return answer, nil
 	case <-ctx.Done():
 		log.Println("askandwait: context cancelled:", ctx.Err())
-		c.clearPendingQuestion(responseCh)
+		c.advancePendingPrompt(prompt)
 		return "", fmt.Errorf("waiting for human response: %w", ctx.Err())
 	}
 }
@@ -152,10 +167,24 @@ func (c *Coordinator) Respond(answer string) bool {
 func (c *Coordinator) CurrentPromptToken() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.currentResponseCh == nil {
+	if c.currentPrompt == nil {
 		return ""
 	}
-	return c.currentPromptToken
+	return c.currentPrompt.promptToken
+}
+
+// CurrentHumanInput returns the current pending prompt token and visible
+// human-input payload from one coordinator snapshot.
+func (c *Coordinator) CurrentHumanInput() (promptToken, humanMessage, askingAgent string, question *MultiChoiceQuestion) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.currentPrompt != nil {
+		return c.currentPrompt.promptToken, c.currentPrompt.humanMessage, c.currentPrompt.agent, detachedMultiChoiceQuestion(c.currentPrompt.question)
+	}
+	if c.promptSeq == 0 && c.wf.NeedsHumanInput() {
+		return "", c.wf.HumanMessage, c.wf.HumanInputAgent, detachedMultiChoiceQuestion(c.wf.MultiChoiceQuestion)
+	}
+	return "", "", "", nil
 }
 
 // RespondIfCurrent delivers the answer only when promptToken matches the
@@ -165,104 +194,102 @@ func (c *Coordinator) RespondIfCurrent(promptToken, answer string) bool {
 	return c.respondIfCurrent(promptToken, answer)
 }
 
-// SetAgentCancel stores the cancel function for the current agent run.
-// It is called before each agent subprocess is launched so the watchdog can
-// terminate that specific run if it hangs after setting status:agent-done.
-func (c *Coordinator) SetAgentCancel(cancel context.CancelFunc) {
-	c.mu.Lock()
-	c.agentCancel = cancel
-	c.mu.Unlock()
-}
-
-// AgentCancel returns the cancel function for the current agent run.
-// Returns nil if none has been set or after ResetAgentDoneWatchdog clears it.
-func (c *Coordinator) AgentCancel() context.CancelFunc {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.agentCancel
-}
-
-// ResetAgentDoneWatchdog prepares the watchdog for a fresh agent run.
-// It stops any pending timer, clears the stored cancel function, and resets
-// the sync.Once so the watchdog can fire again on the next agent-done.
-func (c *Coordinator) ResetAgentDoneWatchdog() {
-	c.mu.Lock()
-	if c.doneTimer != nil {
-		c.doneTimer.Stop()
-		c.doneTimer = nil
-	}
-	c.agentCancel = nil
-	c.doneOnce = sync.Once{}
-	c.mu.Unlock()
-}
-
-// StartAgentDoneWatchdog starts a one-minute timer that calls cancel once.
-// Repeated calls are silently ignored via sync.Once.
-func (c *Coordinator) StartAgentDoneWatchdog(cancel context.CancelFunc) {
-	if cancel == nil {
-		return
-	}
-	c.mu.Lock()
-	c.doneOnce.Do(func() {
-		c.doneTimer = time.AfterFunc(agentDoneWatchdogTimeout, cancel)
-	})
-	c.mu.Unlock()
-}
-
-// IsShuttingDown reports whether the agent-done watchdog has been started.
-func (c *Coordinator) IsShuttingDown() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.doneTimer != nil
-}
-
-// Stop cancels the watchdog timer if it is running.
-func (c *Coordinator) Stop() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.doneTimer != nil {
-		c.doneTimer.Stop()
-	}
-}
-
-func (c *Coordinator) clearPendingQuestion(responseCh chan string) {
-	c.mu.Lock()
-	if c.currentResponseCh == responseCh {
-		c.currentResponseCh = nil
-		c.currentPromptToken = ""
-	}
-	c.mu.Unlock()
-
-	if err := c.UpdateState(func(wf *Workflow) {
-		wf.MultiChoiceQuestion = nil
-		wf.HumanMessage = ""
-	}); err != nil {
-		log.Println("failed to clear pending human input:", err)
-	}
-}
-
 func (c *Coordinator) respondIfCurrent(promptToken, answer string) bool {
 	c.mu.Lock()
-	responseCh := c.currentResponseCh
-	currentPromptToken := c.currentPromptToken
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	return c.respondCurrentPromptLocked(c.currentPrompt, promptToken, answer)
+}
 
-	if responseCh == nil {
+func (c *Coordinator) respondCurrentPromptLocked(prompt *pendingHumanInput, promptToken, answer string) bool {
+	if prompt == nil {
 		log.Println("askandwait: no pending question, discarding response")
 		return false
 	}
 
-	if promptToken != "" && promptToken != currentPromptToken {
+	if c.currentPrompt != prompt {
+		log.Println("askandwait: prompt no longer current, discarding response")
+		return false
+	}
+
+	if promptToken != "" && promptToken != prompt.promptToken {
 		log.Println("askandwait: stale prompt token, discarding response")
 		return false
 	}
 
 	select {
-	case responseCh <- answer:
+	case prompt.responseCh <- answer:
 		log.Println("askandwait: response queued for delivery")
 		return true
 	default:
 		log.Println("askandwait: response channel full, response discarded")
 		return false
 	}
+}
+
+func (c *Coordinator) enqueuePendingPrompt(question *MultiChoiceQuestion, humanMessage, askingAgent string) (*pendingHumanInput, bool) {
+	prompt := &pendingHumanInput{
+		question:     question,
+		humanMessage: humanMessage,
+		agent:        askingAgent,
+		promptToken:  "",
+		responseCh:   make(chan string, 1),
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.promptSeq++
+	prompt.promptToken = strconv.FormatUint(c.promptSeq, 10)
+	if c.currentPrompt == nil {
+		c.currentPrompt = prompt
+		return prompt, true
+	}
+	c.pendingPrompts = append(c.pendingPrompts, prompt)
+	return prompt, false
+}
+
+func (c *Coordinator) advancePendingPrompt(prompt *pendingHumanInput) {
+	nextPrompt, updateVisiblePrompt := c.removePendingPrompt(prompt)
+	if !updateVisiblePrompt {
+		return
+	}
+	if err := c.persistPendingPrompt(nextPrompt); err != nil {
+		log.Println("failed to update pending human input:", err)
+	}
+}
+
+func (c *Coordinator) removePendingPrompt(prompt *pendingHumanInput) (*pendingHumanInput, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.currentPrompt == prompt {
+		if len(c.pendingPrompts) == 0 {
+			c.currentPrompt = nil
+			return nil, true
+		}
+		nextPrompt := c.pendingPrompts[0]
+		c.pendingPrompts = c.pendingPrompts[1:]
+		c.currentPrompt = nextPrompt
+		return nextPrompt, true
+	}
+
+	idx := slices.Index(c.pendingPrompts, prompt)
+	if idx == -1 {
+		return nil, false
+	}
+	c.pendingPrompts = slices.Delete(c.pendingPrompts, idx, idx+1)
+	return nil, false
+}
+
+func (c *Coordinator) persistPendingPrompt(prompt *pendingHumanInput) error {
+	return c.UpdateState(func(wf *Workflow) {
+		if prompt == nil {
+			wf.MultiChoiceQuestion = nil
+			wf.HumanMessage = ""
+			wf.HumanInputAgent = ""
+			return
+		}
+		wf.MultiChoiceQuestion = prompt.question
+		wf.HumanMessage = prompt.humanMessage
+		wf.HumanInputAgent = prompt.agent
+	})
 }

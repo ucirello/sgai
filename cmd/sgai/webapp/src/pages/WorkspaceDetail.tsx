@@ -826,7 +826,7 @@ function TabContent({
           cost={detail.cost}
           modelStatuses={detail.modelStatuses}
           projectTodos={detail.projectTodos ?? []}
-          agentTodos={detail.agentTodos ?? []}
+          agentTodoSections={detail.agentTodoSections ?? []}
           pmContent={detail.pmContent}
           hasProjectMgmt={detail.hasProjectMgmt}
         />

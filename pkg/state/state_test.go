@@ -2,9 +2,16 @@ package state
 
 import (
 	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -87,6 +94,14 @@ func testWorkflowWithReferenceFields() Workflow {
 	return wf
 }
 
+func testLargeWorkflowReplacement() Workflow {
+	wf := testWorkflowWithReferenceFields()
+	wf.Task = "replacement task"
+	wf.Progress = append(wf.Progress, testProgressEntry("replacement progress"))
+	wf.Summary = strings.Repeat("replacement summary ", 256)
+	return wf
+}
+
 func mutateWorkflowReferenceFields(wf *Workflow) {
 	wf.Progress[0].Description = "mutated progress"
 	wf.Messages[0].Body = "mutated message"
@@ -100,6 +115,41 @@ func mutateWorkflowReferenceFields(wf *Workflow) {
 	wf.MultiChoiceQuestion.IsWorkGate = false
 	wf.MultiChoiceQuestion.Questions[0].Question = "mutated question"
 	wf.MultiChoiceQuestion.Questions[0].Choices[0] = "maybe"
+}
+
+func TestCoordinatorReplaceStateFileSizeLimitHelper(t *testing.T) {
+	statePath := os.Getenv("SGAI_STATE_REPLACE_HELPER_PATH")
+	if statePath == "" {
+		return
+	}
+
+	coord, err := NewCoordinator(statePath)
+	require.NoError(t, err)
+
+	signal.Ignore(syscall.SIGXFSZ)
+	require.NoError(t, syscall.Setrlimit(syscall.RLIMIT_FSIZE, &syscall.Rlimit{Cur: 1024, Max: 1024}))
+
+	replacement := testLargeWorkflowReplacement()
+	err = coord.ReplaceState(&replacement)
+	require.Error(t, err)
+}
+
+func TestSaveWorkflowStateFileModeHelper(t *testing.T) {
+	statePath := os.Getenv("SGAI_STATE_MODE_HELPER_PATH")
+	if statePath == "" {
+		return
+	}
+
+	oldMask := syscall.Umask(0o027)
+	defer syscall.Umask(oldMask)
+
+	workflow := NewWorkflow()
+	errSave := save(statePath, &workflow)
+	require.NoError(t, errSave)
+
+	info, errStat := os.Stat(statePath)
+	require.NoError(t, errStat)
+	assert.Equal(t, os.FileMode(0o640), info.Mode().Perm())
 }
 
 func channelClosed(ch <-chan struct{}) bool {
@@ -297,6 +347,7 @@ func TestQuestionStateIsMemoryOnly(t *testing.T) {
 	question := testMultiChoiceQuestion("yes", "no")
 	wf := NewWorkflow()
 	wf.HumanMessage = "Please respond"
+	wf.HumanInputAgent = "builder"
 	wf.MultiChoiceQuestion = question
 
 	coord, err := NewCoordinatorWith(statePath, wf)
@@ -304,66 +355,106 @@ func TestQuestionStateIsMemoryOnly(t *testing.T) {
 
 	snapshot := coord.State()
 	assert.Equal(t, "Please respond", snapshot.HumanMessage)
+	assert.Equal(t, "builder", snapshot.HumanInputAgent)
 	assert.NotNil(t, snapshot.MultiChoiceQuestion)
 
 	loaded, err := load(statePath)
 	require.NoError(t, err)
 	assert.Empty(t, loaded.HumanMessage)
+	assert.Empty(t, loaded.HumanInputAgent)
 	assert.Nil(t, loaded.MultiChoiceQuestion)
 }
 
 func TestCurrentPromptTokenChangesAcrossQuestions(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		coord := NewCoordinatorEmpty(filepath.Join(dir, "state.json"))
+
+		firstCtx, cancelFirst := context.WithCancel(context.Background())
+		defer cancelFirst()
+		errFirstCh := make(chan error, 1)
+		go func() {
+			_, err := coord.AskAndWait(firstCtx, nil, "same question", "builder")
+			errFirstCh <- err
+		}()
+
+		synctest.Wait()
+		firstToken := coord.CurrentPromptToken()
+		require.NotEmpty(t, firstToken)
+
+		cancelFirst()
+		synctest.Wait()
+		require.ErrorIs(t, <-errFirstCh, context.Canceled)
+		assert.Empty(t, coord.CurrentPromptToken())
+
+		secondCtx, cancelSecond := context.WithCancel(context.Background())
+		defer cancelSecond()
+		secondAnswerCh := make(chan string, 1)
+		errSecondCh := make(chan error, 1)
+		go func() {
+			answer, err := coord.AskAndWait(secondCtx, nil, "same question", "builder")
+			if err != nil {
+				errSecondCh <- err
+				return
+			}
+			secondAnswerCh <- answer
+		}()
+
+		synctest.Wait()
+		secondToken := coord.CurrentPromptToken()
+		require.NotEmpty(t, secondToken)
+		assert.NotEqual(t, firstToken, secondToken)
+		assert.False(t, coord.RespondIfCurrent(firstToken, "stale answer"))
+		require.True(t, coord.RespondIfCurrent(secondToken, "current answer"))
+
+		synctest.Wait()
+		select {
+		case answer := <-secondAnswerCh:
+			require.Equal(t, "current answer", answer)
+		case err := <-errSecondCh:
+			require.NoError(t, err)
+		default:
+			t.Fatal("second prompt did not complete")
+		}
+		assert.Empty(t, coord.CurrentPromptToken())
+	})
+}
+
+func TestRespondCurrentPromptLockedRejectsPromptAfterPromotion(t *testing.T) {
 	dir := t.TempDir()
 	coord := NewCoordinatorEmpty(filepath.Join(dir, "state.json"))
 
-	firstCtx, cancelFirst := context.WithCancel(context.Background())
-	defer cancelFirst()
-	firstErrCh := make(chan error, 1)
-	go func() {
-		_, err := coord.AskAndWait(firstCtx, nil, "same question")
-		firstErrCh <- err
-	}()
+	firstPrompt, isCurrent := coord.enqueuePendingPrompt(nil, "first message", "go-developer")
+	require.True(t, isCurrent)
+	secondPrompt, isCurrent := coord.enqueuePendingPrompt(nil, "second message", "react-developer")
+	require.False(t, isCurrent)
 
-	firstToken := waitForCurrentPromptToken(t, coord)
-	cancelFirst()
-	require.ErrorIs(t, <-firstErrCh, context.Canceled)
-	require.Eventually(t, func() bool {
-		return coord.CurrentPromptToken() == ""
-	}, time.Second, 10*time.Millisecond)
+	nextPrompt, updateVisiblePrompt := coord.removePendingPrompt(firstPrompt)
+	require.True(t, updateVisiblePrompt)
+	require.Same(t, secondPrompt, nextPrompt)
 
-	secondCtx := t.Context()
-	secondAnswerCh := make(chan string, 1)
-	secondErrCh := make(chan error, 1)
-	go func() {
-		answer, err := coord.AskAndWait(secondCtx, nil, "same question")
-		if err != nil {
-			secondErrCh <- err
-			return
-		}
-		secondAnswerCh <- answer
-	}()
+	coord.mu.Lock()
+	staleAccepted := coord.respondCurrentPromptLocked(firstPrompt, firstPrompt.promptToken, "stale answer")
+	coord.mu.Unlock()
+	assert.False(t, staleAccepted)
 
-	secondToken := waitForCurrentPromptToken(t, coord)
-	assert.NotEqual(t, firstToken, secondToken)
-	assert.False(t, coord.RespondIfCurrent(firstToken, "stale answer"))
-	assert.True(t, coord.RespondIfCurrent(secondToken, "current answer"))
-	assert.Equal(t, "current answer", <-secondAnswerCh)
 	select {
-	case err := <-secondErrCh:
-		require.NoError(t, err)
+	case answer := <-firstPrompt.responseCh:
+		t.Fatalf("expected promoted prompt to reject stale answer, got %q", answer)
 	default:
 	}
-	require.Eventually(t, func() bool {
-		return coord.CurrentPromptToken() == ""
-	}, time.Second, 10*time.Millisecond)
-}
 
-func waitForCurrentPromptToken(t *testing.T, coord *Coordinator) string {
-	t.Helper()
-	require.Eventually(t, func() bool {
-		return coord.CurrentPromptToken() != ""
-	}, time.Second, 10*time.Millisecond)
-	return coord.CurrentPromptToken()
+	coord.mu.Lock()
+	currentAccepted := coord.respondCurrentPromptLocked(secondPrompt, secondPrompt.promptToken, "current answer")
+	coord.mu.Unlock()
+	require.True(t, currentAccepted)
+
+	select {
+	case answer := <-secondPrompt.responseCh:
+		require.Equal(t, "current answer", answer)
+	default:
+		t.Fatal("expected current prompt to accept response")
+	}
 }
 
 func TestNewCoordinator(t *testing.T) {
@@ -598,5 +689,91 @@ func TestCoordinatorUpdateState(t *testing.T) {
 		assert.Equal(t, "newer task", loaded.Task)
 		assert.Len(t, loaded.Progress, 1)
 		assert.Equal(t, "newer progress", loaded.Progress[0].Description)
+	})
+}
+
+func TestCoordinatorReplaceState(t *testing.T) {
+	t.Run("earlySaveFailureKeepsPreviousState", func(t *testing.T) {
+		dir := t.TempDir()
+		statePath := filepath.Join(dir, "state.json")
+
+		initial := testWorkflowWithReferenceFields()
+		coord, err := NewCoordinatorWith(statePath, initial)
+		require.NoError(t, err)
+
+		loadedBefore, errLoad := load(statePath)
+		require.NoError(t, errLoad)
+
+		replacement := testWorkflowWithReferenceFields()
+		replacement.Task = "replacement task"
+		replacement.Progress = append(replacement.Progress, testProgressEntry("replacement progress"))
+
+		errSave := errors.New("save failed")
+		coord.saveWorkflow = func(_ string, _ *Workflow) error {
+			return errSave
+		}
+
+		err = coord.ReplaceState(&replacement)
+		require.ErrorIs(t, err, errSave)
+
+		assert.Equal(t, initial, coord.State())
+
+		loaded, errLoad := load(statePath)
+		require.NoError(t, errLoad)
+		assert.Equal(t, loadedBefore, loaded)
+	})
+
+	t.Run("realSaveFailureKeepsPreviousStateOnDisk", func(t *testing.T) {
+		dir := t.TempDir()
+		statePath := filepath.Join(dir, "state.json")
+
+		initial := testWorkflowWithReferenceFields()
+		require.NoError(t, save(statePath, &initial))
+
+		loadedBefore, errLoad := load(statePath)
+		require.NoError(t, errLoad)
+
+		cmd := exec.Command(os.Args[0], "-test.run=^TestCoordinatorReplaceStateFileSizeLimitHelper$")
+		cmd.Env = append(os.Environ(), "SGAI_STATE_REPLACE_HELPER_PATH="+statePath)
+
+		output, errRun := cmd.CombinedOutput()
+		require.NoError(t, errRun, string(output))
+
+		loaded, errLoad := load(statePath)
+		require.NoError(t, errLoad)
+		assert.Equal(t, loadedBefore, loaded)
+	})
+}
+
+func TestSaveWorkflowStateFileModes(t *testing.T) {
+	t.Run("newFileRespectsUmask", func(t *testing.T) {
+		dir := t.TempDir()
+		statePath := filepath.Join(dir, "state.json")
+
+		cmd := exec.Command(os.Args[0], "-test.run=^TestSaveWorkflowStateFileModeHelper$")
+		cmd.Env = append(os.Environ(), "SGAI_STATE_MODE_HELPER_PATH="+statePath)
+
+		output, errRun := cmd.CombinedOutput()
+		require.NoError(t, errRun, string(output))
+
+		info, errStat := os.Stat(statePath)
+		require.NoError(t, errStat)
+		assert.Equal(t, os.FileMode(0o640), info.Mode().Perm())
+	})
+
+	t.Run("existingFilePreservesMode", func(t *testing.T) {
+		dir := t.TempDir()
+		statePath := filepath.Join(dir, "state.json")
+
+		errWrite := os.WriteFile(statePath, []byte("{}"), 0o600)
+		require.NoError(t, errWrite)
+
+		workflow := NewWorkflow()
+		errSave := save(statePath, &workflow)
+		require.NoError(t, errSave)
+
+		info, errStat := os.Stat(statePath)
+		require.NoError(t, errStat)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 	})
 }

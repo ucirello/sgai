@@ -138,7 +138,9 @@ func unlockInteractiveForRetrospective(wfState *state.Workflow, currentAgent str
 		return nil
 	}
 	wfState.InteractionMode = state.ModeRetrospective
-	if errSave := saveState(coord, wfState); errSave != nil {
+	if errSave := coord.UpdateState(func(currentState *state.Workflow) {
+		currentState.InteractionMode = state.ModeRetrospective
+	}); errSave != nil {
 		return fmt.Errorf("save state for retrospective unlock: %w", errSave)
 	}
 	log.Println("["+paddedsgai+"]", "transitioning to retrospective mode")
@@ -305,17 +307,18 @@ type multiModelConfig struct {
 	logWriter        io.Writer
 	stdoutLog        io.Writer
 	stderrLog        io.Writer
+	nextIteration    func() int
 }
 
-func runMultiModelAgent(ctx context.Context, cfg *multiModelConfig, wfState *state.Workflow, metadata *GoalMetadata, iterationCounter *int) state.Workflow {
+func runMultiModelAgent(ctx context.Context, cfg *multiModelConfig, wfState *state.Workflow, metadata *GoalMetadata) state.Workflow {
 	currentState := *wfState
 	models := getModelsForAgent(metadata.Models, cfg.agent)
 	if len(models) <= 1 {
-		return runSingleModelIteration(ctx, cfg, &currentState, metadata, iterationCounter, models)
+		return runSingleModelIteration(ctx, cfg, &currentState, metadata, models)
 	}
 
 	currentState.ModelStatuses = syncModelStatuses(currentState.ModelStatuses, models, cfg.agent)
-	if errSave := saveState(cfg.coord, &currentState); errSave != nil {
+	if errSave := persistMultiModelState(cfg.coord, cfg.agent, currentState.ModelStatuses, currentState.CurrentModel, ""); errSave != nil {
 		return failWorkflowState(cfg, &currentState, "failed to save state before multi-model loop: %v", errSave)
 	}
 
@@ -335,7 +338,7 @@ func runMultiModelAgent(ctx context.Context, cfg *multiModelConfig, wfState *sta
 		if len(newModels) <= 1 {
 			log.Println("["+cfg.paddedsgai+"]", "switching to single-model mode for", cfg.agent)
 			cleanupModelStatuses(&currentState)
-			return runSingleModelIteration(ctx, cfg, &currentState, metadata, iterationCounter, newModels)
+			return runSingleModelIteration(ctx, cfg, &currentState, metadata, newModels)
 		}
 
 		currentState.ModelStatuses = syncModelStatuses(currentState.ModelStatuses, newModels, cfg.agent)
@@ -362,12 +365,12 @@ func runMultiModelAgent(ctx context.Context, cfg *multiModelConfig, wfState *sta
 			}
 
 			currentState.CurrentModel = modelID
-			if errSave := saveState(cfg.coord, &currentState); errSave != nil {
+			if errSave := persistMultiModelState(cfg.coord, cfg.agent, currentState.ModelStatuses, currentState.CurrentModel, ""); errSave != nil {
 				return failWorkflowState(cfg, &currentState, "failed to save state before model iteration: %v", errSave)
 			}
 
 			log.Println("["+cfg.paddedsgai+"]", "running model:", modelID)
-			currentState = runSingleModelIteration(ctx, cfg, &currentState, metadata, iterationCounter, []string{modelSpec})
+			currentState = runSingleModelIteration(ctx, cfg, &currentState, metadata, []string{modelSpec})
 
 			newState := cfg.coord.State()
 
@@ -375,7 +378,7 @@ func runMultiModelAgent(ctx context.Context, cfg *multiModelConfig, wfState *sta
 			case state.StatusAgentDone:
 				currentState.ModelStatuses[modelID] = "model-done"
 				currentState.Status = state.StatusWorking
-				if errSave := saveState(cfg.coord, &currentState); errSave != nil {
+				if errSave := persistMultiModelState(cfg.coord, cfg.agent, currentState.ModelStatuses, currentState.CurrentModel, currentState.Status); errSave != nil {
 					return failWorkflowState(cfg, &currentState, "failed to save state after model done: %v", errSave)
 				}
 			case state.StatusComplete:
@@ -387,7 +390,7 @@ func runMultiModelAgent(ctx context.Context, cfg *multiModelConfig, wfState *sta
 			log.Println("["+cfg.paddedsgai+"]", "multi-model consensus reached for", cfg.agent)
 			cleanupModelStatuses(&currentState)
 			currentState.Status = state.StatusAgentDone
-			if errSave := saveState(cfg.coord, &currentState); errSave != nil {
+			if errSave := persistMultiModelState(cfg.coord, cfg.agent, currentState.ModelStatuses, currentState.CurrentModel, currentState.Status); errSave != nil {
 				return failWorkflowState(cfg, &currentState, "failed to save state after consensus: %v", errSave)
 			}
 			return currentState
@@ -395,15 +398,15 @@ func runMultiModelAgent(ctx context.Context, cfg *multiModelConfig, wfState *sta
 	}
 }
 
-func runSingleModelIteration(ctx context.Context, cfg *multiModelConfig, wfState *state.Workflow, metadata *GoalMetadata, iterationCounter *int, models []string) state.Workflow {
+func runSingleModelIteration(ctx context.Context, cfg *multiModelConfig, wfState *state.Workflow, metadata *GoalMetadata, models []string) state.Workflow {
 	modelSpec := ""
 	if len(models) > 0 {
 		modelSpec = models[0]
 	}
-	return runFlowAgentWithModel(ctx, cfg, wfState, metadata, iterationCounter, modelSpec)
+	return runFlowAgentWithModel(ctx, cfg, wfState, metadata, modelSpec)
 }
 
-func runFlowAgentWithModel(ctx context.Context, cfg *multiModelConfig, wfState *state.Workflow, metadata *GoalMetadata, iterationCounter *int, modelSpec string) state.Workflow {
+func runFlowAgentWithModel(ctx context.Context, cfg *multiModelConfig, wfState *state.Workflow, metadata *GoalMetadata, modelSpec string) state.Workflow {
 	currentState := *wfState
 	paddedAgentName := cfg.agent + strings.Repeat(" ", max(0, cfg.longestNameLen-len(cfg.agent)))
 	var capturedSessionID string
@@ -416,12 +419,12 @@ func runFlowAgentWithModel(ctx context.Context, cfg *multiModelConfig, wfState *
 			return currentState
 		}
 
-		*iterationCounter++
-		prefix := buildAgentPrefix(cfg.dir, paddedAgentName, *iterationCounter)
-
-		if errSave := saveState(cfg.coord, &currentState); errSave != nil {
-			return failWorkflowState(cfg, &currentState, "failed to save state: %v", errSave)
+		iteration := 1
+		if cfg.nextIteration != nil {
+			iteration = cfg.nextIteration()
 		}
+		prefix := buildAgentPrefix(cfg.dir, paddedAgentName, iteration)
+
 		if errCopy := copyProjectManagementToRetrospective(cfg.dir, cfg.retrospectiveDir); errCopy != nil {
 			log.Println("failed to copy PROJECT_MANAGEMENT.md to retrospective:", errCopy)
 		}
@@ -436,7 +439,7 @@ func runFlowAgentWithModel(ctx context.Context, cfg *multiModelConfig, wfState *
 		}
 
 		if cfg.retrospectiveDir != "" && capturedSessionID != "" && shouldLogAgent(cfg.dir, baseAgent) {
-			if errExport := exportAgentSession(cfg, capturedSessionID, *iterationCounter); errExport != nil {
+			if errExport := exportAgentSession(cfg, capturedSessionID, iteration); errExport != nil {
 				log.Println("failed to export session:", errExport)
 			}
 		}
@@ -450,16 +453,10 @@ func runFlowAgentWithModel(ctx context.Context, cfg *multiModelConfig, wfState *
 			return handleCompleteStatus(ctx, cfg, &newState, metadata)
 
 		case state.StatusAgentDone:
-			if errSave := saveState(cfg.coord, &newState); errSave != nil {
-				return failWorkflowState(cfg, &newState, "failed to save state: %v", errSave)
-			}
 			log.Println("["+cfg.paddedsgai+"]", "agent", cfg.agent, "done:", newState.Task)
 			return newState
 
 		case state.StatusWorking:
-			if errSave := saveState(cfg.coord, &newState); errSave != nil {
-				return failWorkflowState(cfg, &newState, "failed to save state: %v", errSave)
-			}
 			if agentHasUnreadOutgoingMessages(&newState, cfg.agent) {
 				log.Println("["+cfg.paddedsgai+"]", "agent", cfg.agent, "sent message(s), yielding control...")
 				return newState
@@ -480,25 +477,39 @@ func buildAgentPrefix(dir, paddedAgentName string, iteration int) string {
 }
 
 func saveState(coord *state.Coordinator, wfState *state.Workflow) error {
+	if errReplace := coord.ReplaceState(wfState); errReplace != nil {
+		return fmt.Errorf("save state: %w", errReplace)
+	}
+	return nil
+}
+
+func persistMultiModelState(coord *state.Coordinator, agent string, modelStatuses map[string]string, currentModel, status string) error {
 	if errUpdate := coord.UpdateState(func(wf *state.Workflow) {
-		*wf = *wfState
+		wf.ModelStatuses = maps.Clone(modelStatuses)
+		wf.CurrentModel = currentModel
+		if status != "" {
+			updateAgentWorkflowState(wf, agent, status, true, "", false)
+		}
 	}); errUpdate != nil {
-		return fmt.Errorf("save state: %w", errUpdate)
+		return fmt.Errorf("save multi-model state: %w", errUpdate)
 	}
 	return nil
 }
 
 func failWorkflowState(cfg *multiModelConfig, wfState *state.Workflow, format string, args ...any) state.Workflow {
-	currentState := *wfState
 	message := fmt.Sprintf(format, args...)
 	log.Println(message)
-	currentState.Status = state.StatusAgentDone
-	currentState.Task = message
-	addEnvironmentMessage(&currentState, cfg.agent, message)
-	if errSave := saveState(cfg.coord, &currentState); errSave != nil {
+	if errSave := cfg.coord.UpdateState(func(currentState *state.Workflow) {
+		updateAgentWorkflowState(currentState, cfg.agent, state.StatusAgentDone, true, message, true)
+		addEnvironmentMessage(currentState, cfg.agent, message)
+	}); errSave != nil {
 		log.Println("failed to save workflow failure state:", errSave)
+		fallbackState := *wfState
+		updateAgentWorkflowState(&fallbackState, cfg.agent, state.StatusAgentDone, true, message, true)
+		addEnvironmentMessage(&fallbackState, cfg.agent, message)
+		return fallbackState
 	}
-	return currentState
+	return cfg.coord.State()
 }
 
 func copyProjectManagementToRetrospective(dir, retrospectiveDir string) error {
@@ -614,13 +625,12 @@ func executeAgentProcess(ctx context.Context, cfg *multiModelConfig, agentArgs [
 	stdoutOut := buildAgentOutputWriter(os.Stdout, cfg.logWriter, cfg.stdoutLog)
 	stderrWriter := newPrefixWriter(prefix+" ", stderrOut, time.Now)
 	jsonWriter := newJSONPrettyWriter(prefix+" ", stdoutOut, cfg.coord, cfg.agent, time.Now)
-
-	cfg.coord.ResetAgentDoneWatchdog()
+	watchdogStarted := false
 	agentEnv, errBuildAgentEnv := buildAgentEnv(cfg, extractModelFromArgs(agentArgs))
 	if errBuildAgentEnv != nil {
 		log.Println("failed to prepare agent environment:", errBuildAgentEnv)
 		if errUpdate := cfg.coord.UpdateState(func(wf *state.Workflow) {
-			wf.Status = state.StatusAgentDone
+			updateAgentWorkflowState(wf, cfg.agent, state.StatusAgentDone, true, "", false)
 		}); errUpdate != nil {
 			log.Println("failed to save state:", errUpdate)
 		}
@@ -630,7 +640,21 @@ func executeAgentProcess(ctx context.Context, cfg *multiModelConfig, agentArgs [
 	}
 
 	agentCtx, agentCancel := context.WithCancel(ctx)
-	cfg.coord.SetAgentCancel(agentCancel)
+	stopAgentDoneWatchdog := func() {
+		if jsonWriter.stopAgentDoneWatchdog != nil {
+			jsonWriter.stopAgentDoneWatchdog()
+		}
+	}
+	jsonWriter.startAgentDoneWatchdog = func() {
+		if watchdogStarted {
+			return
+		}
+		watchdogStarted = true
+		watchdog := time.AfterFunc(state.AgentDoneWatchdogTimeout, agentCancel)
+		jsonWriter.stopAgentDoneWatchdog = func() {
+			watchdog.Stop()
+		}
+	}
 
 	cmd := exec.CommandContext(agentCtx, "opencode", agentArgs...)
 	cmd.Dir = cfg.dir
@@ -645,12 +669,13 @@ func executeAgentProcess(ctx context.Context, cfg *multiModelConfig, agentArgs [
 	if errStart := cmd.Start(); errStart != nil {
 		agentCancel()
 		log.Println("failed to start opencode:", errStart)
-		result := cfg.coord.State()
-		result.Status = state.StatusAgentDone
-		if errSave := saveState(cfg.coord, &result); errSave != nil {
+		if errSave := cfg.coord.UpdateState(func(wf *state.Workflow) {
+			updateAgentWorkflowState(wf, cfg.agent, state.StatusAgentDone, true, "", false)
+		}); errSave != nil {
 			log.Println("failed to save state:", errSave)
 		}
 		log.Println("agent", cfg.agent, "marked as agent-done due to start failure")
+		result := cfg.coord.State()
 		return zeroState, "", &result
 	}
 
@@ -659,10 +684,10 @@ func executeAgentProcess(ctx context.Context, cfg *multiModelConfig, agentArgs [
 
 	errWait := cmd.Wait()
 	close(processExited)
-	cfg.coord.Stop()
 	agentCancel()
 	flushPrefixWriterWithLog("agent stderr", stderrWriter)
 	jsonWriter.Flush()
+	stopAgentDoneWatchdog()
 
 	if errWait != nil {
 		if ctx.Err() != nil {
@@ -672,12 +697,13 @@ func executeAgentProcess(ctx context.Context, cfg *multiModelConfig, agentArgs [
 		log.Println("=== RAW AGENT OUTPUT (last 1000 lines) ===")
 		outputCapture.dump(os.Stderr)
 		log.Println("=== END RAW AGENT OUTPUT ===")
-		result := cfg.coord.State()
-		result.Status = state.StatusAgentDone
-		if errSave := saveState(cfg.coord, &result); errSave != nil {
+		if errSave := cfg.coord.UpdateState(func(wf *state.Workflow) {
+			updateAgentWorkflowState(wf, cfg.agent, state.StatusAgentDone, true, "", false)
+		}); errSave != nil {
 			log.Println("failed to save state:", errSave)
 		}
 		log.Println("agent", cfg.agent, "marked as agent-done due to error", errWait)
+		result := cfg.coord.State()
 		return zeroState, "", &result
 	}
 
@@ -724,11 +750,12 @@ func exportAgentSession(cfg *multiModelConfig, sessionID string, iteration int) 
 func handleCompleteStatus(ctx context.Context, cfg *multiModelConfig, newState *state.Workflow, metadata *GoalMetadata) state.Workflow {
 	if cfg.agent != "coordinator" {
 		log.Println("["+cfg.paddedsgai+"]", "agent", cfg.agent, "set status=complete, only coordinator can complete workflow; treating as agent-done")
-		newState.Status = state.StatusAgentDone
-		if errSave := saveState(cfg.coord, newState); errSave != nil {
+		if errSave := cfg.coord.UpdateState(func(wf *state.Workflow) {
+			updateAgentWorkflowState(wf, cfg.agent, state.StatusAgentDone, true, "", false)
+		}); errSave != nil {
 			return failWorkflowState(cfg, newState, "failed to save state: %v", errSave)
 		}
-		return *newState
+		return cfg.coord.State()
 	}
 
 	if blocked := blockCompletionOnPendingTodos(cfg, newState); blocked != nil {
@@ -947,13 +974,13 @@ func addAgentHandoffProgress(wfState *state.Workflow, targetAgent string) {
 // it as current; otherwise, it appends a new entry.
 func markCurrentAgentInSequence(s *state.Workflow, currentAgent string) {
 	now := time.Now().UTC().Format(time.RFC3339)
+	for i := range s.AgentSequence {
+		s.AgentSequence[i].IsCurrent = false
+	}
 	lastIdx := len(s.AgentSequence) - 1
 	if lastIdx >= 0 && s.AgentSequence[lastIdx].Agent == currentAgent {
 		s.AgentSequence[lastIdx].IsCurrent = true
 		return
-	}
-	for i := range s.AgentSequence {
-		s.AgentSequence[i].IsCurrent = false
 	}
 	s.AgentSequence = append(s.AgentSequence, state.AgentSequenceEntry{
 		Agent:     currentAgent,
@@ -962,10 +989,87 @@ func markCurrentAgentInSequence(s *state.Workflow, currentAgent string) {
 	})
 }
 
+func markCurrentAgentsInSequence(s *state.Workflow, currentAgents []string) {
+	if len(currentAgents) == 0 {
+		return
+	}
+	if len(currentAgents) == 1 {
+		markCurrentAgentInSequence(s, currentAgents[0])
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for i := range s.AgentSequence {
+		s.AgentSequence[i].IsCurrent = false
+	}
+	for _, currentAgent := range currentAgents {
+		s.AgentSequence = append(s.AgentSequence, state.AgentSequenceEntry{
+			Agent:     currentAgent,
+			StartTime: now,
+			IsCurrent: true,
+		})
+	}
+}
+
+func splitCurrentAgents(currentAgent string) []string {
+	if currentAgent == "" {
+		return nil
+	}
+	parts := strings.Split(currentAgent, ", ")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
+func formatCurrentAgents(currentAgents []string) string {
+	if len(currentAgents) == 0 {
+		return ""
+	}
+	if len(currentAgents) == 1 {
+		return currentAgents[0]
+	}
+	return strings.Join(currentAgents, ", ")
+}
+
+func hasParallelCurrentAgents(currentAgent string) bool {
+	return len(splitCurrentAgents(currentAgent)) > 1
+}
+
+func setVisibleAgentTodos(wf *state.Workflow, agent string) {
+	currentAgents := splitCurrentAgents(wf.CurrentAgent)
+	if len(currentAgents) == 0 {
+		if wf.TodosByAgent == nil {
+			wf.Todos = nil
+			return
+		}
+		wf.Todos = slices.Clone(wf.TodosByAgent[agent])
+		return
+	}
+	if len(currentAgents) != 1 || currentAgents[0] != agent {
+		wf.Todos = nil
+		return
+	}
+	if wf.TodosByAgent == nil {
+		wf.Todos = nil
+		return
+	}
+	wf.Todos = slices.Clone(wf.TodosByAgent[agent])
+}
+
 // todosForAgent returns the TODO list enforced for the given agent.
 func todosForAgent(wf *state.Workflow, agent string) []state.TodoItem {
 	if agent == "coordinator" {
 		return wf.ProjectTodos
+	}
+	if wf.TodosByAgent != nil {
+		if todos, found := wf.TodosByAgent[agent]; found {
+			return todos
+		}
 	}
 	return wf.Todos
 }
@@ -1310,33 +1414,6 @@ func parseYAMLFrontmatter(content []byte) (GoalMetadata, error) {
 //go:embed skel/**
 var skelFS embed.FS
 
-func findFirstPendingMessageAgent(messages []state.Message) string {
-	if len(messages) == 0 {
-		return ""
-	}
-	for _, msg := range messages {
-		if !msg.Read {
-			return extractAgentFromModelID(msg.ToAgent)
-		}
-	}
-	return ""
-}
-
-func redirectToPendingMessageAgent(s *state.Workflow, coord *state.Coordinator, paddedsgai string) (bool, error) {
-	pendingAgent := findFirstPendingMessageAgent(s.Messages)
-	if pendingAgent == "" {
-		return false, nil
-	}
-	log.Println("["+paddedsgai+"]", "pending messages for", pendingAgent, "- redirecting before completion")
-	s.Status = state.StatusWorking
-	s.CurrentAgent = pendingAgent
-	s.VisitCounts[pendingAgent]++
-	if errSave := saveState(coord, s); errSave != nil {
-		return false, fmt.Errorf("save state while redirecting to pending message agent: %w", errSave)
-	}
-	return true, nil
-}
-
 func runCompletionGateScript(ctx context.Context, dir, script string) (string, error) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", script)
 	cmd.Dir = dir
@@ -1630,28 +1707,32 @@ type toolState struct {
 }
 
 type jsonPrettyWriter struct {
-	prefix       string
-	w            io.Writer
-	buf          []byte
-	currentText  strings.Builder
-	sessionID    string
-	coord        *state.Coordinator
-	currentAgent string
-	stepCounter  int
-	now          func() time.Time
+	prefix                 string
+	w                      io.Writer
+	buf                    []byte
+	currentText            strings.Builder
+	sessionID              string
+	coord                  *state.Coordinator
+	currentAgent           string
+	stepCounter            int
+	now                    func() time.Time
+	startAgentDoneWatchdog func()
+	stopAgentDoneWatchdog  func()
 }
 
 func newJSONPrettyWriter(prefix string, w io.Writer, coord *state.Coordinator, currentAgent string, now func() time.Time) *jsonPrettyWriter {
 	return &jsonPrettyWriter{
-		prefix:       prefix,
-		w:            w,
-		buf:          nil,
-		currentText:  strings.Builder{},
-		sessionID:    "",
-		coord:        coord,
-		currentAgent: currentAgent,
-		stepCounter:  0,
-		now:          now,
+		prefix:                 prefix,
+		w:                      w,
+		buf:                    nil,
+		currentText:            strings.Builder{},
+		sessionID:              "",
+		coord:                  coord,
+		currentAgent:           currentAgent,
+		stepCounter:            0,
+		now:                    now,
+		startAgentDoneWatchdog: nil,
+		stopAgentDoneWatchdog:  nil,
 	}
 }
 
@@ -1729,6 +1810,9 @@ func (j *jsonPrettyWriter) processEvent(event *streamEvent) {
 			case "completed":
 				if _, err := fmt.Fprintln(j.w, j.tsPrefix()+toolCall); err != nil {
 					log.Println("write failed:", err)
+				}
+				if part.Tool == "update_workflow_state" && toolRequestsAgentDone(part.State.Input) && j.startAgentDoneWatchdog != nil {
+					j.startAgentDoneWatchdog()
 				}
 				if part.State.Output != "" {
 					if isTodoTool(part.Tool) {
@@ -1871,6 +1955,21 @@ func isTodoTool(tool string) bool {
 	}
 }
 
+func toolRequestsAgentDone(input map[string]any) bool {
+	if input == nil {
+		return false
+	}
+	statusValue, found := input["status"]
+	if !found {
+		return false
+	}
+	status, ok := statusValue.(string)
+	if !ok {
+		return false
+	}
+	return status == state.StatusAgentDone
+}
+
 func (j *jsonPrettyWriter) formatTodoOutput(output string) {
 	todos, ok := parseTodoOutput(output)
 	if !ok {
@@ -1901,7 +2000,11 @@ func (j *jsonPrettyWriter) updateAgentTodos(tool, output string) {
 	}
 
 	if errUpdate := j.coord.UpdateState(func(wf *state.Workflow) {
-		wf.Todos = slices.Clone(todos)
+		if wf.TodosByAgent == nil {
+			wf.TodosByAgent = make(map[string][]state.TodoItem)
+		}
+		wf.TodosByAgent[j.currentAgent] = slices.Clone(todos)
+		setVisibleAgentTodos(wf, j.currentAgent)
 	}); errUpdate != nil {
 		log.Println("failed to save todos:", errUpdate)
 	}

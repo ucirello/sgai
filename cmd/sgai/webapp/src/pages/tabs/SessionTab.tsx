@@ -9,7 +9,15 @@ import { Button } from "@/components/ui/button";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { ChevronRight } from "lucide-react";
 import { api } from "@/lib/api";
-import type { ApiAgentCost, ApiDollarBreakdown, ApiStepCost, ApiTodoEntry, ApiSessionCost, ApiTokenUsage } from "@/types";
+import type {
+  ApiAgentCost,
+  ApiAgentTodoSection,
+  ApiDollarBreakdown,
+  ApiStepCost,
+  ApiTodoEntry,
+  ApiSessionCost,
+  ApiTokenUsage,
+} from "@/types";
 
 interface SessionTabProps {
   workspaceName: string;
@@ -17,7 +25,7 @@ interface SessionTabProps {
   cost?: ApiSessionCost;
   modelStatuses?: Array<{ modelId: string; status: string }>;
   projectTodos?: ApiTodoEntry[];
-  agentTodos?: ApiTodoEntry[];
+  agentTodoSections?: ApiAgentTodoSection[];
   pmContent?: string;
   hasProjectMgmt?: boolean;
 }
@@ -27,6 +35,7 @@ type AgentSequenceEntry = NonNullable<SessionTabProps["agentSequence"]>[number];
 const EMPTY_AGENT_SEQUENCE: NonNullable<SessionTabProps["agentSequence"]> = [];
 const EMPTY_MODEL_STATUSES: NonNullable<SessionTabProps["modelStatuses"]> = [];
 const EMPTY_TODOS: ApiTodoEntry[] = [];
+const EMPTY_AGENT_TODO_SECTIONS: ApiAgentTodoSection[] = [];
 
 function agentSequenceEntryKey(entry: AgentSequenceEntry, displayedIndex: number, totalEntries: number): string {
   const sourceOrdinal = totalEntries - displayedIndex - 1;
@@ -435,7 +444,44 @@ function TodoList({ todos, emptyMessage }: { todos: ApiTodoEntry[]; emptyMessage
   );
 }
 
-function TasksSection({ projectTodos, agentTodos }: { projectTodos: ApiTodoEntry[]; agentTodos: ApiTodoEntry[] }) {
+function agentTodoSectionKey(section: ApiAgentTodoSection, index: number): string {
+  const agent = typeof section.agent === "string" ? section.agent.trim() : "";
+  return agent || `active-agent-${index}`;
+}
+
+function agentTodoSectionTodos(section: ApiAgentTodoSection): ApiTodoEntry[] {
+  return Array.isArray(section.todos) ? section.todos : EMPTY_TODOS;
+}
+
+function AgentTodoSectionsList({ sections }: { sections: ApiAgentTodoSection[] }) {
+  if (sections.length === 0) {
+    return <p className="text-sm italic text-muted-foreground">No active agents</p>;
+  }
+
+  return (
+    <div className="space-y-4">
+      {sections.map((section, index) => {
+        const agentName = typeof section.agent === "string" && section.agent.trim() ? section.agent.trim() : "Unknown agent";
+
+        return (
+          <section key={agentTodoSectionKey(section, index)} className={index > 0 ? "border-t pt-4" : undefined}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <h3 className="truncate text-sm font-semibold">{agentName}</h3>
+              </TooltipTrigger>
+              <TooltipContent>{agentName}</TooltipContent>
+            </Tooltip>
+            <div className="mt-2">
+              <TodoList todos={agentTodoSectionTodos(section)} emptyMessage={`No active TODOs for ${agentName}`} />
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function TasksSection({ projectTodos, agentTodoSections }: { projectTodos: ApiTodoEntry[]; agentTodoSections: ApiAgentTodoSection[] }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
       <Card>
@@ -452,7 +498,7 @@ function TasksSection({ projectTodos, agentTodos }: { projectTodos: ApiTodoEntry
           <CardTitle className="text-base">Agent TODO</CardTitle>
         </CardHeader>
         <CardContent>
-          <TodoList todos={agentTodos ?? []} emptyMessage="No active agent todos" />
+          <AgentTodoSectionsList sections={agentTodoSections} />
         </CardContent>
       </Card>
     </div>
@@ -536,7 +582,7 @@ interface SessionStaticContentProps {
   cost?: ApiSessionCost;
   modelStatuses: NonNullable<SessionTabProps["modelStatuses"]>;
   projectTodos: ApiTodoEntry[];
-  agentTodos: ApiTodoEntry[];
+  agentTodoSections: ApiAgentTodoSection[];
   pmContent?: string;
   hasProjectMgmt?: boolean;
 }
@@ -546,7 +592,7 @@ const SessionStaticContent = memo(function SessionStaticContent({
   cost,
   modelStatuses,
   projectTodos,
-  agentTodos,
+  agentTodoSections,
   pmContent,
   hasProjectMgmt,
 }: SessionStaticContentProps) {
@@ -557,7 +603,7 @@ const SessionStaticContent = memo(function SessionStaticContent({
           <CardTitle className="text-base">Tasks</CardTitle>
         </CardHeader>
         <CardContent>
-          <TasksSection projectTodos={projectTodos} agentTodos={agentTodos} />
+          <TasksSection projectTodos={projectTodos} agentTodoSections={agentTodoSections} />
         </CardContent>
       </Card>
 
@@ -651,7 +697,7 @@ export function SessionTab({
   cost,
   modelStatuses,
   projectTodos,
-  agentTodos,
+  agentTodoSections,
   pmContent,
   hasProjectMgmt,
 }: SessionTabProps) {
@@ -663,7 +709,7 @@ export function SessionTab({
         cost={cost}
         modelStatuses={modelStatuses ?? EMPTY_MODEL_STATUSES}
         projectTodos={projectTodos ?? EMPTY_TODOS}
-        agentTodos={agentTodos ?? EMPTY_TODOS}
+        agentTodoSections={agentTodoSections ?? EMPTY_AGENT_TODO_SECTIONS}
         pmContent={pmContent}
         hasProjectMgmt={hasProjectMgmt}
       />

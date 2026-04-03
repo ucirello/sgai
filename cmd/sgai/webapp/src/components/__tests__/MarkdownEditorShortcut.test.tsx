@@ -67,7 +67,7 @@ const mockGetState = mock(() => ({
       events: [],
       messages: [],
       projectTodos: [],
-      agentTodos: [],
+      agentTodoSections: [],
       log: [],
       external: false,
     },

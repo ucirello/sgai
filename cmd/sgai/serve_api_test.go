@@ -153,10 +153,8 @@ func attachRunningSessionCoordinator(t *testing.T, srv *Server, wsDir string, wf
 func attachSessionCoordinatorWithRunning(t *testing.T, srv *Server, wsDir string, wf *state.Workflow, running bool) {
 	t.Helper()
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
-	coord := state.NewCoordinatorEmpty(statePath)
-	require.NoError(t, coord.UpdateState(func(current *state.Workflow) {
-		*current = *wf
-	}))
+	coord, errCoord := state.NewCoordinatorWith(statePath, *wf)
+	require.NoError(t, errCoord)
 	srv.mu.Lock()
 	srv.sessions[wsDir] = newTestServeSession(coord, running)
 	srv.mu.Unlock()
@@ -214,7 +212,7 @@ func startWaitingSessionQuestion(t *testing.T, srv *Server, wsDir string, questi
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := coord.AskAndWait(ctx, question, humanMessage)
+		_, err := coord.AskAndWait(ctx, question, humanMessage, "coordinator")
 		errCh <- err
 	}()
 	<-ready
@@ -446,7 +444,7 @@ func TestQuestionType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := questionType(&tt.wfState)
+			result := questionType(tt.wfState.MultiChoiceQuestion, tt.wfState.HumanMessage)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -518,58 +516,44 @@ func TestConvertEventsForAPIBoost(t *testing.T) {
 	})
 }
 
-func TestResolveCurrentModelVariants(t *testing.T) {
-	t.Run("fromState", func(t *testing.T) {
-		wfState := workflowWith(func(workflow *state.Workflow) { workflow.CurrentModel = "claude-opus-4" })
-		result := resolveCurrentModel("/some/path", &wfState)
-		assert.Equal(t, "claude-opus-4", result)
-	})
-
-	t.Run("noAgent", func(t *testing.T) {
-		wfState := newTestWorkflow()
-		result := resolveCurrentModel("/some/path", &wfState)
+func TestConvertAgentTodoSectionsForAPI(t *testing.T) {
+	t.Run("noActiveAgents", func(t *testing.T) {
+		result := convertAgentTodoSectionsForAPI("", map[string][]state.TodoItem{
+			"go-developer": {
+				todoItemWith(func(todo *state.TodoItem) {
+					todo.Content = "ignored"
+					todo.Status = "pending"
+					todo.Priority = "high"
+				}),
+			},
+		})
 		assert.Empty(t, result)
 	})
 
-	t.Run("fromGoalFile", func(t *testing.T) {
-		dir := t.TempDir()
-		goalPath := filepath.Join(dir, "GOAL.md")
-		content := "---\nmodels:\n  coordinator: claude-opus-4\n---\n# Goal"
-		require.NoError(t, os.WriteFile(goalPath, []byte(content), 0o644))
+	t.Run("singleActiveAgent", func(t *testing.T) {
+		result := convertAgentTodoSectionsForAPI("go-developer", map[string][]state.TodoItem{
+			"go-developer": {
+				todoItemWith(func(todo *state.TodoItem) {
+					todo.Content = "grouped task"
+					todo.Status = "in_progress"
+					todo.Priority = "high"
+				}),
+			},
+			"react-developer": {
+				todoItemWith(func(todo *state.TodoItem) {
+					todo.Content = "hidden task"
+					todo.Status = "pending"
+					todo.Priority = "medium"
+				}),
+			},
+		})
 
-		wfState := workflowWith(func(workflow *state.Workflow) { workflow.CurrentAgent = "coordinator" })
-		result := resolveCurrentModel(dir, &wfState)
-		assert.Equal(t, "claude-opus-4", result)
-	})
-
-	t.Run("agentNotInGoal", func(t *testing.T) {
-		dir := t.TempDir()
-		goalPath := filepath.Join(dir, "GOAL.md")
-		content := "---\nmodels:\n  coordinator: claude-opus-4\n---\n# Goal"
-		require.NoError(t, os.WriteFile(goalPath, []byte(content), 0o644))
-
-		wfState := workflowWith(func(workflow *state.Workflow) { workflow.CurrentAgent = "developer" })
-		result := resolveCurrentModel(dir, &wfState)
-		assert.Empty(t, result)
-	})
-
-	t.Run("withExplicitModel", func(t *testing.T) {
-		wf := workflowWith(func(workflow *state.Workflow) { workflow.CurrentModel = "opus-4" })
-		result := resolveCurrentModel("/tmp", &wf)
-		assert.Equal(t, "opus-4", result)
-	})
-
-	t.Run("noAgentReturnsEmpty", func(t *testing.T) {
-		wf := newTestWorkflow()
-		result := resolveCurrentModel("/tmp", &wf)
-		assert.Empty(t, result)
-	})
-
-	t.Run("noModelReturnsEmpty", func(t *testing.T) {
-		dir := t.TempDir()
-		wf := newTestWorkflow()
-		result := resolveCurrentModel(dir, &wf)
-		assert.Empty(t, result)
+		if assert.Len(t, result, 1) {
+			assert.Equal(t, "go-developer", result[0].Agent)
+			if assert.Len(t, result[0].Todos, 1) {
+				assert.Equal(t, "grouped task", result[0].Todos[0].Content)
+			}
+		}
 	})
 }
 
@@ -1065,42 +1049,140 @@ func TestResolveRootForDeleteForkForkReturnsPath(t *testing.T) {
 }
 
 func TestQuestionTypeFreeformMessage(t *testing.T) {
-	wf := workflowWith(func(workflow *state.Workflow) {
-		workflow.Status = state.StatusWorking
-		workflow.HumanMessage = "What do you think?"
-	})
-	assert.Equal(t, "free-text", questionType(&wf))
+	assert.Equal(t, "free-text", questionType(nil, "What do you think?"))
 }
 
 func TestQuestionTypeMultiChoiceQuestions(t *testing.T) {
-	wf := workflowWith(func(workflow *state.Workflow) {
-		workflow.Status = state.StatusWorking
-		workflow.MultiChoiceQuestion = multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
-			question.Questions = []state.QuestionItem{
-				questionItemWith(func(item *state.QuestionItem) {
-					item.Question = "Pick one"
-					item.Choices = []string{"A", "B"}
-				}),
-			}
-		})
+	question := multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+		question.Questions = []state.QuestionItem{
+			questionItemWith(func(item *state.QuestionItem) {
+				item.Question = "Pick one"
+				item.Choices = []string{"A", "B"}
+			}),
+		}
 	})
-	assert.Equal(t, "multi-choice", questionType(&wf))
+	assert.Equal(t, "multi-choice", questionType(question, ""))
 }
 
 func TestQuestionTypeWorkGateFlag(t *testing.T) {
-	wf := workflowWith(func(workflow *state.Workflow) {
-		workflow.Status = state.StatusWorking
-		workflow.MultiChoiceQuestion = multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
-			question.IsWorkGate = true
+	question := multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+		question.IsWorkGate = true
+		question.Questions = []state.QuestionItem{
+			questionItemWith(func(item *state.QuestionItem) {
+				item.Question = "Approve?"
+				item.Choices = []string{"Yes", "No"}
+			}),
+		}
+	})
+	assert.Equal(t, "work-gate", questionType(question, ""))
+}
+
+func TestHandleAPIWorkspaceStateUsesCurrentPromptSnapshotAfterPromotion(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, rootDir := setupTestServer(t)
+		wsDir := setupTestWorkspace(t, srv, rootDir, "pq-promotion-snapshot")
+		require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
+
+		coord := state.NewCoordinatorEmpty(filepath.Join(wsDir, ".sgai", "state.json"))
+		srv.mu.Lock()
+		srv.sessions[wsDir] = newTestServeSession(coord, true)
+		srv.mu.Unlock()
+
+		firstQuestion := multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
 			question.Questions = []state.QuestionItem{
 				questionItemWith(func(item *state.QuestionItem) {
-					item.Question = "Approve?"
-					item.Choices = []string{"Yes", "No"}
+					item.Question = "First question"
+					item.Choices = []string{"A"}
 				}),
 			}
 		})
+		firstCtx, cancelFirst := context.WithCancel(context.Background())
+		defer cancelFirst()
+		firstAnswerCh := make(chan string, 1)
+		errFirstCh := make(chan error, 1)
+		go func() {
+			answer, errWait := coord.AskAndWait(firstCtx, firstQuestion, "first message", "go-developer")
+			if errWait != nil {
+				errFirstCh <- errWait
+				return
+			}
+			firstAnswerCh <- answer
+		}()
+
+		synctest.Wait()
+		firstToken := coord.CurrentPromptToken()
+		require.NotEmpty(t, firstToken)
+
+		secondQuestion := multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+			question.Questions = []state.QuestionItem{
+				questionItemWith(func(item *state.QuestionItem) {
+					item.Question = "Second question"
+					item.Choices = []string{"B"}
+				}),
+			}
+		})
+		secondCtx, cancelSecond := context.WithCancel(context.Background())
+		defer cancelSecond()
+		secondAnswerCh := make(chan string, 1)
+		errSecondCh := make(chan error, 1)
+		go func() {
+			answer, errWait := coord.AskAndWait(secondCtx, secondQuestion, "second message", "react-developer")
+			if errWait != nil {
+				errSecondCh <- errWait
+				return
+			}
+			secondAnswerCh <- answer
+		}()
+
+		synctest.Wait()
+		staleState := coord.State()
+		require.Equal(t, "first message", staleState.HumanMessage)
+		require.Equal(t, "go-developer", staleState.HumanInputAgent)
+		require.NotNil(t, staleState.MultiChoiceQuestion)
+		require.Len(t, staleState.MultiChoiceQuestion.Questions, 1)
+		require.Equal(t, "First question", staleState.MultiChoiceQuestion.Questions[0].Question)
+
+		require.True(t, coord.RespondIfCurrent(firstToken, "first answer"))
+		synctest.Wait()
+		select {
+		case answer := <-firstAnswerCh:
+			require.Equal(t, "first answer", answer)
+		case errWait := <-errFirstCh:
+			require.NoError(t, errWait)
+		default:
+			t.Fatal("first prompt did not complete")
+		}
+
+		secondToken := coord.CurrentPromptToken()
+		require.NotEmpty(t, secondToken)
+		require.NotEqual(t, firstToken, secondToken)
+
+		w := serveHTTP(srv, "GET", "/api/v1/workspaces/pq-promotion-snapshot/state", "")
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var workspace apiWorkspaceFullState
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &workspace))
+		require.NotNil(t, workspace.PendingQuestion)
+		assert.Equal(t, secondToken, workspace.PendingQuestion.PromptToken)
+		assert.Equal(t, "second message", workspace.PendingQuestion.Message)
+		assert.Equal(t, "react-developer", workspace.PendingQuestion.AgentName)
+		assert.Equal(t, "multi-choice", workspace.PendingQuestion.Type)
+		require.Len(t, workspace.PendingQuestion.Questions, 1)
+		assert.Equal(t, "Second question", workspace.PendingQuestion.Questions[0].Question)
+		assert.NotEqual(t, staleState.HumanMessage, workspace.PendingQuestion.Message)
+		assert.NotEqual(t, staleState.MultiChoiceQuestion.Questions[0].Question, workspace.PendingQuestion.Questions[0].Question)
+
+		cancelSecond()
+		synctest.Wait()
+		select {
+		case errWait := <-errSecondCh:
+			require.ErrorIs(t, errWait, context.Canceled)
+		case answer := <-secondAnswerCh:
+			t.Fatalf("expected second prompt cancellation, got %q", answer)
+		default:
+			t.Fatal("second prompt did not complete")
+		}
 	})
-	assert.Equal(t, "work-gate", questionType(&wf))
 }
 
 func TestLoadWorkspaceStateInvalidJSONReturnsWorkingFallback(t *testing.T) {
@@ -2879,19 +2961,29 @@ func TestBuildWorkspaceFullStateWithMessages(t *testing.T) {
 	assert.Len(t, result.Messages, 2)
 }
 
-func TestBuildWorkspaceFullStateWithTodos(t *testing.T) {
+func TestBuildWorkspaceFullStateWithAgentTodoSections(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, srv, rootDir, "todos-ws")
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
 	statePath := filepath.Join(wsDir, ".sgai", "state.json")
 	_, errCoord := state.NewCoordinatorWith(statePath, workflowWith(func(workflow *state.Workflow) {
 		workflow.Status = state.StatusComplete
+		workflow.CurrentAgent = "react-developer, go-developer"
 		workflow.Todos = []state.TodoItem{
 			todoItemWith(func(todo *state.TodoItem) {
-				todo.Content = "task1"
+				todo.Content = "stale visible task"
 				todo.Status = "completed"
 				todo.Priority = "high"
 			}),
+		}
+		workflow.TodosByAgent = map[string][]state.TodoItem{
+			"go-developer": {
+				todoItemWith(func(todo *state.TodoItem) {
+					todo.Content = "grouped task"
+					todo.Status = "in_progress"
+					todo.Priority = "high"
+				}),
+			},
 		}
 		workflow.ProjectTodos = []state.TodoItem{
 			todoItemWith(func(todo *state.TodoItem) {
@@ -2909,8 +3001,28 @@ func TestBuildWorkspaceFullStateWithTodos(t *testing.T) {
 		workspace.HasWorkspace = true
 	})
 	result := srv.buildWorkspaceFullState(ws, nil)
-	assert.Len(t, result.AgentTodos, 1)
-	assert.Len(t, result.ProjectTodos, 1)
+	payload, errMarshal := json.Marshal(result)
+	require.NoError(t, errMarshal)
+
+	var apiResult struct {
+		ProjectTodos      []apiTodoEntry `json:"projectTodos"`
+		AgentTodoSections []struct {
+			Agent string         `json:"agent"`
+			Todos []apiTodoEntry `json:"todos"`
+		} `json:"agentTodoSections"`
+		AgentTodos json.RawMessage `json:"agentTodos"`
+	}
+	require.NoError(t, json.Unmarshal(payload, &apiResult))
+	assert.Len(t, apiResult.ProjectTodos, 1)
+	if assert.Len(t, apiResult.AgentTodoSections, 2) {
+		assert.Equal(t, "react-developer", apiResult.AgentTodoSections[0].Agent)
+		assert.Empty(t, apiResult.AgentTodoSections[0].Todos)
+		assert.Equal(t, "go-developer", apiResult.AgentTodoSections[1].Agent)
+		if assert.Len(t, apiResult.AgentTodoSections[1].Todos, 1) {
+			assert.Equal(t, "grouped task", apiResult.AgentTodoSections[1].Todos[0].Content)
+		}
+	}
+	assert.Empty(t, apiResult.AgentTodos)
 }
 
 func TestHandleAPIWorkspaceStateFullIntegration(t *testing.T) {
@@ -3023,6 +3135,88 @@ func TestHandleAPIWorkspaceStatePendingQuestionUsesPromptToken(t *testing.T) {
 	require.ErrorIs(t, <-errCh, context.Canceled)
 }
 
+func TestHandleAPIWorkspaceStatePendingQuestionUsesAskingAgentDuringParallelBatch(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, rootDir := setupTestServer(t)
+		wsDir := setupTestWorkspace(t, srv, rootDir, "pq-parallel-agent")
+		require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
+
+		statePath := filepath.Join(wsDir, ".sgai", "state.json")
+		coord, errCoord := state.NewCoordinatorWith(statePath, workflowWith(func(workflow *state.Workflow) {
+			workflow.Status = state.StatusWorking
+			workflow.InteractionMode = state.ModeBrainstorming
+			workflow.CurrentAgent = "go-developer, react-developer"
+		}))
+		require.NoError(t, errCoord)
+
+		srv.mu.Lock()
+		srv.sessions[wsDir] = newTestServeSession(coord, true)
+		srv.mu.Unlock()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		errCh := make(chan error, 1)
+		go func() {
+			mcpCtx := &mcpContext{
+				workingDir: wsDir,
+				coord:      coord,
+				dagAgents:  []string{"go-developer", "react-developer"},
+				agentName:  "go-developer",
+				modelID:    "",
+				humanTools: newTestHumanToolCallbacks(),
+			}
+			_, _, errCall := mcpCtx.askUserQuestionHandler(ctx, nil, askUserQuestionArgs{
+				Questions: []questionItem{newTestQuestionItemArgs("Which change?", []string{"A", "B"})},
+			})
+			errCh <- errCall
+		}()
+
+		synctest.Wait()
+		require.True(t, coord.State().NeedsHumanInput())
+		promptToken := waitForSessionPromptToken(t, coord)
+
+		w := serveHTTP(srv, "GET", "/api/v1/workspaces/pq-parallel-agent/state", "")
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var ws apiWorkspaceFullState
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &ws))
+		require.NotNil(t, ws.PendingQuestion)
+		assert.Equal(t, promptToken, ws.PendingQuestion.PromptToken)
+		assert.Equal(t, "go-developer, react-developer", ws.CurrentAgent)
+		assert.Equal(t, "go-developer", ws.PendingQuestion.AgentName)
+
+		require.True(t, coord.RespondIfCurrent(promptToken, "A"))
+		synctest.Wait()
+		require.NoError(t, <-errCh)
+	})
+}
+
+func TestRespondViaCoordinatorRejectsMissingPromptToken(t *testing.T) {
+	srv, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, srv, rootDir, "respond-missing-token")
+	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
+
+	coord, errCh, cancel := startWaitingSessionQuestion(t, srv, wsDir, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+		question.Questions = []state.QuestionItem{
+			questionItemWith(func(item *state.QuestionItem) {
+				item.Question = "Pick one"
+				item.Choices = []string{"A", "B"}
+			}),
+		}
+	}), "Pick an option")
+	defer cancel()
+	promptToken := waitForSessionPromptToken(t, coord)
+
+	body := `{"answer":"go with A","selectedChoices":["A"]}`
+	w := serveHTTP(srv, "POST", "/api/v1/workspaces/respond-missing-token/respond", body)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), errPromptTokenRequired.Error())
+	assert.True(t, coord.State().NeedsHumanInput())
+
+	require.True(t, coord.RespondIfCurrent(promptToken, "go with A"))
+	require.NoError(t, <-errCh)
+}
+
 func TestRespondViaCoordinatorFullPath(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, srv, rootDir, "respond-full")
@@ -3037,8 +3231,14 @@ func TestRespondViaCoordinatorFullPath(t *testing.T) {
 		}
 	}), "Pick an option")
 	defer cancel()
-	body := `{"answer":"go with A","selectedChoices":["A"]}`
-	w := serveHTTP(srv, "POST", "/api/v1/workspaces/respond-full/respond", body)
+	promptToken := waitForSessionPromptToken(t, coord)
+	body, errMarshal := json.Marshal(respondRequestWith(func(request *apiRespondRequest) {
+		request.PromptToken = promptToken
+		request.Answer = "go with A"
+		request.SelectedChoices = []string{"A"}
+	}))
+	require.NoError(t, errMarshal)
+	w := serveHTTP(srv, "POST", "/api/v1/workspaces/respond-full/respond", string(body))
 	assert.Equal(t, http.StatusOK, w.Code)
 	require.NoError(t, <-errCh)
 	assert.Empty(t, coord.State().HumanMessage)
@@ -3062,7 +3262,7 @@ func TestRespondViaCoordinatorWithoutActiveToolCall(t *testing.T) {
 		})
 	}))
 
-	body := `{"answer":"go with A","selectedChoices":["A"]}`
+	body := `{"promptToken":"stale","answer":"go with A","selectedChoices":["A"]}`
 	w := serveHTTP(srv, "POST", "/api/v1/workspaces/respond-wrong/respond", body)
 	assert.Equal(t, http.StatusConflict, w.Code)
 }
@@ -3602,6 +3802,43 @@ func TestBuildWorkspaceFullStateWithFreeformPending(t *testing.T) {
 	assert.NotNil(t, result.PendingQuestion)
 	assert.Equal(t, "free-text", result.PendingQuestion.Type)
 	assert.Equal(t, "builder", result.PendingQuestion.AgentName)
+}
+
+func TestBuildWorkspaceStateUsesAggregatedParallelBatchState(t *testing.T) {
+	srv, rootDir := setupTestServer(t)
+	wsDir := setupTestWorkspace(t, srv, rootDir, "parallel-ws")
+	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "GOAL.md"), []byte("---\n---\n# Goal"), 0o644))
+	statePath := filepath.Join(wsDir, ".sgai", "state.json")
+	_, errCoord := state.NewCoordinatorWith(statePath, workflowWith(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusAgentDone
+		workflow.Task = "stale global task"
+		workflow.CurrentAgent = "go-developer, react-developer"
+		workflow.AgentStates = map[string]state.AgentExecutionState{
+			"go-developer": {
+				Status: state.StatusAgentDone,
+				Task:   "",
+			},
+			"react-developer": {
+				Status: state.StatusWorking,
+				Task:   "reviewing frontend",
+			},
+		}
+	}))
+	require.NoError(t, errCoord)
+
+	ws := workspaceWith(func(workspace *workspaceInfo) {
+		workspace.DirName = "parallel-ws"
+		workspace.Directory = wsDir
+		workspace.HasWorkspace = true
+	})
+
+	list := srv.buildWorkspaceListEntry(ws, nil)
+	assert.Equal(t, state.StatusWorking, list.Status)
+	assert.Empty(t, list.Task)
+
+	full := srv.buildWorkspaceFullState(ws, nil)
+	assert.Equal(t, state.StatusWorking, full.Status)
+	assert.Empty(t, full.Task)
 }
 
 func TestBuildWorkspaceFullStateWithLogLines(t *testing.T) {
@@ -4196,6 +4433,15 @@ func TestResolveCurrentModel(t *testing.T) {
 		assert.Equal(t, "claude-opus-4", result)
 	})
 
+	t.Run("parallelCurrentAgentsSuppressCurrentModel", func(t *testing.T) {
+		wfState := workflowWith(func(workflow *state.Workflow) {
+			workflow.CurrentAgent = "go-developer, react-developer"
+			workflow.CurrentModel = "claude-opus-4"
+		})
+		result := resolveCurrentModel("/some/path", &wfState)
+		assert.Empty(t, result)
+	})
+
 	t.Run("noAgent", func(t *testing.T) {
 		wfState := newTestWorkflow()
 		result := resolveCurrentModel("/some/path", &wfState)
@@ -4223,25 +4469,6 @@ func TestResolveCurrentModel(t *testing.T) {
 		result := resolveCurrentModel(dir, &wfState)
 		assert.Empty(t, result)
 	})
-}
-
-func TestResolveCurrentModelNoAgentReturnsEmpty(t *testing.T) {
-	wf := newTestWorkflow()
-	result := resolveCurrentModel("/tmp", &wf)
-	assert.Empty(t, result)
-}
-
-func TestResolveCurrentModelNoModel(t *testing.T) {
-	dir := t.TempDir()
-	wf := newTestWorkflow()
-	result := resolveCurrentModel(dir, &wf)
-	assert.Empty(t, result)
-}
-
-func TestResolveCurrentModelWithExplicitModel(t *testing.T) {
-	wf := workflowWith(func(workflow *state.Workflow) { workflow.CurrentModel = "opus-4" })
-	result := resolveCurrentModel("/tmp", &wf)
-	assert.Equal(t, "opus-4", result)
 }
 
 func TestSPAMiddlewareStaticAssets(t *testing.T) {
@@ -4495,6 +4722,7 @@ func TestHandleRespondViaCoordinator(t *testing.T) {
 
 		w := httptest.NewRecorder()
 		srv.handleRespondViaCoordinator(w, dir, coord, respondRequestWith(func(request *apiRespondRequest) {
+			request.PromptToken = "missing-current"
 			request.Answer = "yes"
 		}))
 		assert.Equal(t, http.StatusConflict, w.Code)
@@ -4521,6 +4749,7 @@ func TestHandleRespondViaCoordinator(t *testing.T) {
 
 		w := httptest.NewRecorder()
 		srv.handleRespondViaCoordinator(w, dir, coord, respondRequestWith(func(request *apiRespondRequest) {
+			request.PromptToken = "missing-current"
 			request.Answer = "yes"
 		}))
 		assert.Equal(t, http.StatusConflict, w.Code)
@@ -4943,15 +5172,20 @@ func TestGetWorkspaceStatusPreservesWorkingStatusOnDisk(t *testing.T) {
 func TestHandleAPIRespondViaHTTP(t *testing.T) {
 	srv, rootDir := setupTestServer(t)
 	wsDir := setupTestWorkspace(t, srv, rootDir, "respond-ws")
-	_, errCh, cancel := startWaitingSessionQuestion(t, srv, wsDir, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+	coord, errCh, cancel := startWaitingSessionQuestion(t, srv, wsDir, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
 		question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
 			item.Question = "Pick one"
 			item.Choices = []string{"A", "B"}
 		})}
 	}), "Pick one")
 	defer cancel()
-	body := `{"selectedChoices":["A"]}`
-	w := serveHTTP(srv, "POST", "/api/v1/workspaces/respond-ws/respond", body)
+	promptToken := waitForSessionPromptToken(t, coord)
+	body, errMarshal := json.Marshal(respondRequestWith(func(request *apiRespondRequest) {
+		request.PromptToken = promptToken
+		request.SelectedChoices = []string{"A"}
+	}))
+	require.NoError(t, errMarshal)
+	w := serveHTTP(srv, "POST", "/api/v1/workspaces/respond-ws/respond", string(body))
 	assert.Equal(t, http.StatusOK, w.Code)
 	require.NoError(t, <-errCh)
 }

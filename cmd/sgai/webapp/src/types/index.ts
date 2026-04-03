@@ -74,7 +74,7 @@ export interface ApiWorkspaceEntry {
   events: ApiEventEntry[];
   messages: ApiMessageEntry[];
   projectTodos: ApiTodoEntry[];
-  agentTodos: ApiTodoEntry[];
+  agentTodoSections: ApiAgentTodoSection[];
   forks?: ApiForkEntry[];
   log: ApiLogEntry[];
   pendingQuestion?: ApiPendingQuestionResponse;
@@ -279,6 +279,11 @@ export interface ApiTodoEntry {
   content: string;
   status: string;
   priority: string;
+}
+
+export interface ApiAgentTodoSection {
+  agent: string;
+  todos: ApiTodoEntry[];
 }
 
 export interface ApiLogEntry {

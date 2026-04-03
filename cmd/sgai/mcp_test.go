@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"testing/synctest"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
@@ -125,6 +126,7 @@ func TestMCPHandlerErrorPaths(t *testing.T) {
 			coord:      nil,
 			dagAgents:  nil,
 			agentName:  "test",
+			modelID:    "",
 			humanTools: newTestHumanToolCallbacks(),
 		}
 		_, _, err := ctx.findSkillsHandler(context.Background(), nil, findSkillsArgs{Name: "exact-match"})
@@ -137,6 +139,7 @@ func TestMCPHandlerErrorPaths(t *testing.T) {
 			coord:      nil,
 			dagAgents:  nil,
 			agentName:  "test",
+			modelID:    "",
 			humanTools: newTestHumanToolCallbacks(),
 		}
 		result, _, err := ctx.findSnippetsHandler(context.Background(), nil, newTestFindSnippetsArgs("go", ""))
@@ -198,6 +201,7 @@ func newTestMCPContextForAgent(t *testing.T, agentName string) (ctx *mcpContext,
 		coord:      coord,
 		dagAgents:  []string{"coordinator", agentName, "reviewer"},
 		agentName:  agentName,
+		modelID:    "",
 		humanTools: newTestHumanToolCallbacks(),
 	}
 	return ctx, dir
@@ -1833,7 +1837,7 @@ func TestRegisterCommonToolsInternal(t *testing.T) {
 	coord, errCoord := state.NewCoordinatorWith(stateFile, newTestWorkflow())
 	require.NoError(t, errCoord)
 	server := mcp.NewServer(newMCPImplementation("test"), nil)
-	mcpCtx := &mcpContext{workingDir: t.TempDir(), coord: coord, dagAgents: []string{"builder"}, agentName: "builder", humanTools: newTestHumanToolCallbacks()}
+	mcpCtx := &mcpContext{workingDir: t.TempDir(), coord: coord, dagAgents: []string{"builder"}, agentName: "builder", modelID: "", humanTools: newTestHumanToolCallbacks()}
 	require.NoError(t, registerCommonTools(server, mcpCtx, "builder"))
 	assert.NotNil(t, server)
 }
@@ -1843,7 +1847,7 @@ func TestRegisterCoordinatorToolsInternal(t *testing.T) {
 	coord, errCoord := state.NewCoordinatorWith(stateFile, newTestWorkflow())
 	require.NoError(t, errCoord)
 	server := mcp.NewServer(newMCPImplementation("test"), nil)
-	mcpCtx := &mcpContext{workingDir: t.TempDir(), coord: coord, dagAgents: []string{"coordinator"}, agentName: "coordinator", humanTools: newTestHumanToolCallbacks()}
+	mcpCtx := &mcpContext{workingDir: t.TempDir(), coord: coord, dagAgents: []string{"coordinator"}, agentName: "coordinator", modelID: "", humanTools: newTestHumanToolCallbacks()}
 	require.NoError(t, registerCoordinatorTools(server, mcpCtx))
 	assert.NotNil(t, server)
 }
@@ -1855,7 +1859,7 @@ func TestRegisterCoordinatorToolsBrainstormingMode(t *testing.T) {
 	}))
 	require.NoError(t, errCoord)
 	server := mcp.NewServer(newMCPImplementation("test"), nil)
-	mcpCtx := &mcpContext{workingDir: t.TempDir(), coord: coord, dagAgents: []string{"coordinator"}, agentName: "coordinator", humanTools: newTestHumanToolCallbacks()}
+	mcpCtx := &mcpContext{workingDir: t.TempDir(), coord: coord, dagAgents: []string{"coordinator"}, agentName: "coordinator", modelID: "", humanTools: newTestHumanToolCallbacks()}
 	require.NoError(t, registerCoordinatorTools(server, mcpCtx))
 	assert.NotNil(t, server)
 }
@@ -2070,6 +2074,92 @@ func TestAskUserWorkGateWithValidCoordinator(t *testing.T) {
 	assert.Contains(t, result, "DEFINITION IS COMPLETE")
 }
 
+func TestHumanInputToolsQueueParallelPrompts(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		stateFile := filepath.Join(t.TempDir(), "state.json")
+		coord, err := state.NewCoordinatorWith(stateFile, updated(newTestWorkflow(), func(workflow *state.Workflow) {
+			workflow.Status = state.StatusWorking
+			workflow.InteractionMode = state.ModeBrainstorming
+			workflow.CurrentAgent = "go-developer, react-developer"
+		}))
+		require.NoError(t, err)
+
+		goCtx := &mcpContext{
+			workingDir: t.TempDir(),
+			coord:      coord,
+			dagAgents:  []string{"go-developer", "react-developer"},
+			agentName:  "go-developer",
+			modelID:    "",
+			humanTools: newTestHumanToolCallbacks(),
+		}
+		reactCtx := &mcpContext{
+			workingDir: t.TempDir(),
+			coord:      coord,
+			dagAgents:  []string{"go-developer", "react-developer"},
+			agentName:  "react-developer",
+			modelID:    "",
+			humanTools: newTestHumanToolCallbacks(),
+		}
+
+		type toolCallResult struct {
+			result *mcp.CallToolResult
+			err    error
+		}
+
+		goToolCtx, cancelGoTool := context.WithCancel(context.Background())
+		reactToolCtx, cancelReactTool := context.WithCancel(context.Background())
+		defer cancelGoTool()
+		defer cancelReactTool()
+
+		goDone := make(chan toolCallResult, 1)
+		go func() {
+			result, _, errCall := goCtx.askUserQuestionHandler(goToolCtx, nil, askUserQuestionArgs{
+				Questions: []questionItem{newTestQuestionItemArgs("Go question?", []string{"A", "B"})},
+			})
+			goDone <- toolCallResult{result: result, err: errCall}
+		}()
+
+		synctest.Wait()
+		require.True(t, coord.State().NeedsHumanInput())
+		firstPromptToken := waitForSessionPromptToken(t, coord)
+
+		reactDone := make(chan toolCallResult, 1)
+		go func() {
+			result, _, errCall := reactCtx.askUserWorkGateHandler(reactToolCtx, nil, askUserWorkGateArgs{Summary: "Parallel summary"})
+			reactDone <- toolCallResult{result: result, err: errCall}
+		}()
+
+		synctest.Wait()
+		select {
+		case result := <-reactDone:
+			cancelGoTool()
+			cancelReactTool()
+			synctest.Wait()
+			t.Fatalf("second human-input tool call returned before the first prompt was answered: %v", result.err)
+		default:
+		}
+
+		require.True(t, coord.RespondIfCurrent(firstPromptToken, "A"))
+		synctest.Wait()
+
+		firstResult := <-goDone
+		require.NoError(t, firstResult.err)
+		require.NotNil(t, firstResult.result)
+
+		secondPromptToken := waitForSessionPromptToken(t, coord)
+		assert.NotEqual(t, firstPromptToken, secondPromptToken)
+		require.NotNil(t, coord.State().MultiChoiceQuestion)
+		assert.True(t, coord.State().MultiChoiceQuestion.IsWorkGate)
+
+		require.True(t, coord.RespondIfCurrent(secondPromptToken, workGateApprovalText))
+		synctest.Wait()
+
+		secondResult := <-reactDone
+		require.NoError(t, secondResult.err)
+		require.NotNil(t, secondResult.result)
+	})
+}
+
 func TestFindSnippetsNoLanguage(t *testing.T) {
 	dir := t.TempDir()
 	snippetsDir := filepath.Join(dir, ".sgai", "snippets")
@@ -2237,13 +2327,11 @@ func TestUpdateWorkflowStatePendingTodosDoesNotMutateStatusOrStartWatchdog(t *te
 		})}
 	}))
 	require.NoError(t, err)
-	coord.SetAgentCancel(func() {})
 
 	result, err := updateWorkflowState(coord, "builder", newTestUpdateWorkflowStateArgs("agent-done", "", ""))
 	require.NoError(t, err)
 	assert.Contains(t, result, "pending TODO")
 	assert.Equal(t, state.StatusWorking, coord.State().Status)
-	assert.False(t, coord.IsShuttingDown())
 
 	reloaded, err := state.NewCoordinator(stateFile)
 	require.NoError(t, err)
@@ -2267,6 +2355,39 @@ func TestUpdateWorkflowStateUsesCallerAgentForPendingTodos(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, result, "pending TODO")
 	assert.Equal(t, state.StatusWorking, coord.State().Status)
+}
+
+func TestUpdateWorkflowStateUsesTodosByAgentForCaller(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+	coord, err := state.NewCoordinatorWith(stateFile, updated(newTestWorkflow(), func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.CurrentAgent = "go-developer, react-developer"
+		workflow.TodosByAgent = map[string][]state.TodoItem{
+			"go-developer": {
+				updated(newTestTodoItem(), func(todo *state.TodoItem) {
+					todo.Content = "unfinished go task"
+					todo.Status = "pending"
+					todo.Priority = "high"
+				}),
+			},
+			"react-developer": {
+				updated(newTestTodoItem(), func(todo *state.TodoItem) {
+					todo.Content = "finished react task"
+					todo.Status = "completed"
+					todo.Priority = "high"
+				}),
+			},
+		}
+	}))
+	require.NoError(t, err)
+
+	goResult, errGo := updateWorkflowState(coord, "go-developer", newTestUpdateWorkflowStateArgs(state.StatusAgentDone, "", ""))
+	require.NoError(t, errGo)
+	assert.Contains(t, goResult, "pending TODO")
+
+	reactResult, errReact := updateWorkflowState(coord, "react-developer", newTestUpdateWorkflowStateArgs(state.StatusAgentDone, "", ""))
+	require.NoError(t, errReact)
+	assert.NotContains(t, reactResult, "pending TODO")
 }
 
 func TestUpdateWorkflowStateCoordinatorUsesProjectTodos(t *testing.T) {
@@ -2313,6 +2434,45 @@ func TestUpdateWorkflowStateClearsTaskOnComplete(t *testing.T) {
 	assert.Empty(t, wf.Task)
 }
 
+func TestUpdateWorkflowStateAggregatesParallelBatchState(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+	coord, err := state.NewCoordinatorWith(stateFile, updated(newTestWorkflow(), func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.CurrentAgent = "go-developer, react-developer"
+	}))
+	require.NoError(t, err)
+
+	goResult, errGo := updateWorkflowState(coord, "go-developer", newTestUpdateWorkflowStateArgs(state.StatusAgentDone, "finished go work", ""))
+	require.NoError(t, errGo)
+	assert.Contains(t, goResult, "Status: working")
+
+	wf := coord.State()
+	assert.Equal(t, state.StatusWorking, wf.Status)
+	assert.Empty(t, wf.Task)
+	assert.Equal(t, state.StatusAgentDone, wf.AgentStates["go-developer"].Status)
+	assert.Empty(t, wf.AgentStates["go-developer"].Task)
+
+	reactResult, errReact := updateWorkflowState(coord, "react-developer", newTestUpdateWorkflowStateArgs(state.StatusWorking, "reviewing frontend", ""))
+	require.NoError(t, errReact)
+	assert.Contains(t, reactResult, "Status: working")
+
+	wf = coord.State()
+	assert.Equal(t, state.StatusWorking, wf.Status)
+	assert.Empty(t, wf.Task)
+	assert.Equal(t, state.StatusWorking, wf.AgentStates["react-developer"].Status)
+	assert.Equal(t, "reviewing frontend", wf.AgentStates["react-developer"].Task)
+
+	reactDoneResult, errReactDone := updateWorkflowState(coord, "react-developer", newTestUpdateWorkflowStateArgs(state.StatusAgentDone, "frontend done", ""))
+	require.NoError(t, errReactDone)
+	assert.Contains(t, reactDoneResult, "Status: agent-done")
+
+	wf = coord.State()
+	assert.Equal(t, state.StatusAgentDone, wf.Status)
+	assert.Empty(t, wf.Task)
+	assert.Equal(t, state.StatusAgentDone, wf.AgentStates["react-developer"].Status)
+	assert.Empty(t, wf.AgentStates["react-developer"].Task)
+}
+
 func TestSendMessageInvalidAgent(t *testing.T) {
 	stateFile := filepath.Join(t.TempDir(), "state.json")
 	coord, err := state.NewCoordinatorWith(stateFile, newTestWorkflow())
@@ -2329,6 +2489,38 @@ func TestSendMessageValidAgent(t *testing.T) {
 	result, err := sendMessage("", coord, []string{"coordinator", "builder"}, "builder", "coordinator", "hello from builder")
 	require.NoError(t, err)
 	assert.Contains(t, result, "sent")
+}
+
+func TestCheckInboxForCallerUsesExplicitModel(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+	coord, err := state.NewCoordinatorWith(stateFile, updated(newTestWorkflow(), func(workflow *state.Workflow) {
+		workflow.CurrentModel = "reviewer:model-b"
+		workflow.Messages = []state.Message{
+			updated(newTestMessage(), func(message *state.Message) {
+				message.ID = 1
+				message.ToAgent = "builder:model-a"
+				message.Body = "check the patch"
+			}),
+		}
+	}))
+	require.NoError(t, err)
+
+	result, errCheck := checkInboxForCaller(coord, callerContext{agentName: "builder", modelID: "builder:model-a"})
+	require.NoError(t, errCheck)
+	assert.Contains(t, result, "check the patch")
+	assert.True(t, coord.State().Messages[0].Read)
+}
+
+func TestSendMessageForCallerUsesExplicitModel(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+	coord, err := state.NewCoordinatorWith(stateFile, updated(newTestWorkflow(), func(workflow *state.Workflow) {
+		workflow.CurrentModel = "reviewer:model-b"
+	}))
+	require.NoError(t, err)
+
+	_, errSend := sendMessageForCaller("", coord, []string{"coordinator", "builder"}, callerContext{agentName: "builder", modelID: "builder:model-a"}, "coordinator", "hello from model a")
+	require.NoError(t, errSend)
+	assert.Equal(t, "builder:model-a", coord.State().Messages[0].FromAgent)
 }
 
 func TestListSnippetLanguagesNoDir(t *testing.T) {

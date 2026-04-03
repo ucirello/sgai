@@ -309,7 +309,7 @@ type apiWorkspaceFullState struct {
 	Events            []apiEventEntry             `json:"events"`
 	Messages          []apiMessageEntry           `json:"messages"`
 	ProjectTodos      []apiTodoEntry              `json:"projectTodos"`
-	AgentTodos        []apiTodoEntry              `json:"agentTodos"`
+	AgentTodoSections []apiAgentTodoSection       `json:"agentTodoSections"`
 	Forks             []apiForkEntry              `json:"forks,omitempty"`
 	Log               []apiLogEntry               `json:"log"`
 	PendingQuestion   *apiPendingQuestionResponse `json:"pendingQuestion,omitempty"`
@@ -493,13 +493,19 @@ func (s *Server) buildWorkspaceListEntry(ws workspaceInfo, groups []workspaceGro
 	interactiveAuto := wfState.InteractionMode == state.ModeSelfDrive || wfState.InteractionMode == state.ModeContinuous
 	badgeClass, badgeText := badgeStatus(&wfState, ws.Running)
 	needsInput := wfState.NeedsHumanInput()
+	humanMessage := wfState.HumanMessage
+	if coord := s.sessionCoordinator(ws.Directory); coord != nil {
+		humanInput := currentHumanInputSnapshot(coord)
+		needsInput = humanInput.needsInput()
+		humanMessage = humanInput.humanMessage
+	}
 
 	currentAgent := wfState.CurrentAgent
 	if currentAgent == "" {
 		currentAgent = "Unknown"
 	}
 
-	status := wfState.Status
+	status := visibleWorkflowStatus(&wfState)
 	if status == "" {
 		status = "-"
 	}
@@ -531,12 +537,12 @@ func (s *Server) buildWorkspaceListEntry(ws workspaceInfo, groups []workspaceGro
 		ContinuousMode:   readContinuousModePrompt(ws.Directory) != "",
 		CurrentAgent:     currentAgent,
 		CurrentModel:     resolveCurrentModel(ws.Directory, &wfState),
-		Task:             wfState.Task,
+		Task:             visibleWorkflowTask(&wfState),
 		Title:            titleState.Title,
 		ComputedTitle:    workspaceComputedTitle(ws, groups, titleState),
 		TotalExecTime:    calculateTotalExecutionTime(wfState.AgentSequence, ws.Running, getLastActivityTime(wfState.Progress)),
 		LatestProgress:   getLatestProgress(wfState.Progress),
-		HumanMessage:     wfState.HumanMessage,
+		HumanMessage:     humanMessage,
 		Forks:            nil,
 		RepositoryAction: repositoryAction.api(ws.DirName),
 	}
@@ -555,13 +561,14 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 	interactiveAuto := wfState.InteractionMode == state.ModeSelfDrive || wfState.InteractionMode == state.ModeContinuous
 	badgeClass, badgeText := badgeStatus(&wfState, ws.Running)
 	needsInput := wfState.NeedsHumanInput()
+	humanMessage := wfState.HumanMessage
 
 	currentAgent := wfState.CurrentAgent
 	if currentAgent == "" {
 		currentAgent = "Unknown"
 	}
 
-	status := wfState.Status
+	status := visibleWorkflowStatus(&wfState)
 	if status == "" {
 		status = "-"
 	}
@@ -598,27 +605,11 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 	}
 
 	var pendingQuestion *apiPendingQuestionResponse
-	if wfState.NeedsHumanInput() {
-		coord := s.sessionCoordinator(ws.Directory)
-		agentName := currentAgent
-		var questions []apiQuestionItem
-		if wfState.MultiChoiceQuestion != nil {
-			questions = make([]apiQuestionItem, 0, len(wfState.MultiChoiceQuestion.Questions))
-			for _, q := range wfState.MultiChoiceQuestion.Questions {
-				questions = append(questions, apiQuestionItem{
-					Question:    q.Question,
-					Choices:     q.Choices,
-					MultiSelect: q.MultiSelect,
-				})
-			}
-		}
-		pendingQuestion = &apiPendingQuestionResponse{
-			PromptToken: promptTokenForState(coord, &wfState),
-			Type:        questionType(&wfState),
-			AgentName:   agentName,
-			Message:     wfState.HumanMessage,
-			Questions:   questions,
-		}
+	if coord := s.sessionCoordinator(ws.Directory); coord != nil {
+		humanInput := currentHumanInputSnapshot(coord)
+		needsInput = humanInput.needsInput()
+		humanMessage = humanInput.humanMessage
+		pendingQuestion = humanInput.pendingQuestion(currentAgent)
 	}
 
 	actionState := loadActionsForAPI(ws.Directory)
@@ -645,7 +636,7 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 		ContinuousMode:    readContinuousModePrompt(ws.Directory) != "",
 		CurrentAgent:      currentAgent,
 		CurrentModel:      resolveCurrentModel(ws.Directory, &wfState),
-		Task:              wfState.Task,
+		Task:              visibleWorkflowTask(&wfState),
 		GoalContent:       goalContent,
 		Title:             titleState.Title,
 		ComputedTitle:     workspaceComputedTitle(ws, groups, titleState),
@@ -656,7 +647,7 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 		SVGHash:           s.getWorkflowSVGHashCached(ws.Directory, currentAgent),
 		TotalExecTime:     totalExecTime,
 		LatestProgress:    getLatestProgress(wfState.Progress),
-		HumanMessage:      wfState.HumanMessage,
+		HumanMessage:      humanMessage,
 		AgentSequence:     agentSeq,
 		Cost:              wfState.Cost,
 		ModelStatuses:     modelStatuses,
@@ -664,7 +655,7 @@ func (s *Server) buildWorkspaceFullState(ws workspaceInfo, groups []workspaceGro
 		Events:            events,
 		Messages:          messages,
 		ProjectTodos:      convertTodosForAPI(wfState.ProjectTodos),
-		AgentTodos:        convertTodosForAPI(wfState.Todos),
+		AgentTodoSections: convertAgentTodoSectionsForAPI(wfState.CurrentAgent, wfState.TodosByAgent),
 		Log:               logLines,
 		PendingQuestion:   pendingQuestion,
 		Actions:           actionState.Actions,
@@ -1324,6 +1315,11 @@ type apiTodoEntry struct {
 	Priority string `json:"priority"`
 }
 
+type apiAgentTodoSection struct {
+	Agent string         `json:"agent"`
+	Todos []apiTodoEntry `json:"todos"`
+}
+
 func convertTodosForAPI(todos []state.TodoItem) []apiTodoEntry {
 	result := make([]apiTodoEntry, 0, len(todos))
 	for _, t := range todos {
@@ -1332,6 +1328,18 @@ func convertTodosForAPI(todos []state.TodoItem) []apiTodoEntry {
 			Content:  t.Content,
 			Status:   t.Status,
 			Priority: t.Priority,
+		})
+	}
+	return result
+}
+
+func convertAgentTodoSectionsForAPI(currentAgent string, todosByAgent map[string][]state.TodoItem) []apiAgentTodoSection {
+	currentAgents := splitCurrentAgents(currentAgent)
+	result := make([]apiAgentTodoSection, 0, len(currentAgents))
+	for _, agent := range currentAgents {
+		result = append(result, apiAgentTodoSection{
+			Agent: agent,
+			Todos: convertTodosForAPI(todosByAgent[agent]),
 		})
 	}
 	return result
@@ -1375,24 +1383,77 @@ type apiForkEntry struct {
 	ComputedTitle string `json:"computedTitle,omitempty"`
 }
 
-func promptTokenForState(coord *state.Coordinator, wfState *state.Workflow) string {
-	if coord == nil || !wfState.NeedsHumanInput() {
-		return ""
-	}
-	return coord.CurrentPromptToken()
+type apiHumanInputSnapshot struct {
+	promptToken  string
+	humanMessage string
+	askingAgent  string
+	question     *state.MultiChoiceQuestion
 }
 
-func questionType(wfState *state.Workflow) string {
-	if wfState.MultiChoiceQuestion != nil {
-		if wfState.MultiChoiceQuestion.IsWorkGate {
+func currentHumanInputSnapshot(coord *state.Coordinator) apiHumanInputSnapshot {
+	if coord == nil {
+		var humanInput apiHumanInputSnapshot
+		return humanInput
+	}
+	promptToken, humanMessage, askingAgent, question := coord.CurrentHumanInput()
+	return apiHumanInputSnapshot{
+		promptToken:  promptToken,
+		humanMessage: humanMessage,
+		askingAgent:  askingAgent,
+		question:     question,
+	}
+}
+
+func (h apiHumanInputSnapshot) needsInput() bool {
+	return h.promptToken != "" || h.humanMessage != "" || h.question != nil
+}
+
+func (h apiHumanInputSnapshot) pendingQuestion(currentAgent string) *apiPendingQuestionResponse {
+	if !h.needsInput() {
+		return nil
+	}
+	return &apiPendingQuestionResponse{
+		PromptToken: h.promptToken,
+		Type:        questionType(h.question, h.humanMessage),
+		AgentName:   pendingQuestionAgentName(h.askingAgent, currentAgent),
+		Message:     h.humanMessage,
+		Questions:   apiQuestionItems(h.question),
+	}
+}
+
+func pendingQuestionAgentName(askingAgent, currentAgent string) string {
+	if askingAgent != "" {
+		return askingAgent
+	}
+	return currentAgent
+}
+
+func questionType(question *state.MultiChoiceQuestion, humanMessage string) string {
+	if question != nil {
+		if question.IsWorkGate {
 			return "work-gate"
 		}
 		return "multi-choice"
 	}
-	if wfState.HumanMessage != "" {
+	if humanMessage != "" {
 		return "free-text"
 	}
 	return ""
+}
+
+func apiQuestionItems(question *state.MultiChoiceQuestion) []apiQuestionItem {
+	if question == nil {
+		return nil
+	}
+	items := make([]apiQuestionItem, 0, len(question.Questions))
+	for _, q := range question.Questions {
+		items = append(items, apiQuestionItem{
+			Question:    q.Question,
+			Choices:     q.Choices,
+			MultiSelect: q.MultiSelect,
+		})
+	}
+	return items
 }
 
 type apiQuestionItem struct {
@@ -1410,7 +1471,7 @@ type apiPendingQuestionResponse struct {
 }
 
 type apiRespondRequest struct {
-	PromptToken     string   `json:"promptToken,omitempty"`
+	PromptToken     string   `json:"promptToken"`
 	Answer          string   `json:"answer"`
 	SelectedChoices []string `json:"selectedChoices"`
 }
@@ -1460,7 +1521,7 @@ func (s *Server) handleRespondViaCoordinator(w http.ResponseWriter, workspacePat
 		switch {
 		case errors.Is(errRespond, errNoPendingQuestion), errors.Is(errRespond, errQuestionNotAvailable):
 			statusCode = http.StatusConflict
-		case errors.Is(errRespond, errResponseCannotBeEmpty):
+		case errors.Is(errRespond, errResponseCannotBeEmpty), errors.Is(errRespond, errPromptTokenRequired):
 			statusCode = http.StatusBadRequest
 		}
 		http.Error(w, errRespond.Error(), statusCode)
@@ -2145,6 +2206,9 @@ func (s *Server) coordinatorModelFromWorkspace(workspace string) string {
 }
 
 func resolveCurrentModel(workspacePath string, wfState *state.Workflow) string {
+	if hasParallelCurrentAgents(wfState.CurrentAgent) {
+		return ""
+	}
 	if wfState.CurrentModel != "" {
 		return wfState.CurrentModel
 	}

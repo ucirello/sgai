@@ -29,7 +29,9 @@ CRITICAL: every Playwright artifact save (`playwright_browser_take_screenshot`, 
 
 CRITICAL: bare Playwright filenames like `foo.png`, `foo.md`, or `foo.txt` are forbidden because they save into the repository root and pollute the workspace.
 
-For React/TypeScript code in cmd/sgai/webapp/, use bun for building, testing, and running scripts. Build command: `bun run build`. Dev server: `bun run dev.ts`. Tests: `bun test`.
+For React/TypeScript code in cmd/sgai/webapp/, use bun for building, testing, and running scripts. Run these commands from `cmd/sgai/webapp/`. Build command: `bun run build`. Dev server: `bun run dev.ts`. Tests: `bun test src/`.
+
+Bare repo-root `bun test` is misleading in this repository because it can sweep unrelated root-level TypeScript/Playwright files instead of just the webapp package.
 
 React components must use shadcn/ui components where possible. Do not create custom implementations when a shadcn component exists. Reference: https://ui.shadcn.com/docs
 

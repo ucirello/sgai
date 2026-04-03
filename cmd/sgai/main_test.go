@@ -42,6 +42,22 @@ func newTestDag(nodeNames ...string) *dag {
 	}
 }
 
+func buildTestDag(edges map[string][]string, entryNodes []string) *dag {
+	d := &dag{
+		Nodes:      make(map[string]*dagNode),
+		EntryNodes: entryNodes,
+	}
+	for from, toList := range edges {
+		node := d.ensureNode(from)
+		for _, to := range toList {
+			toNode := d.ensureNode(to)
+			node.Successors = append(node.Successors, to)
+			toNode.Predecessors = append(toNode.Predecessors, from)
+		}
+	}
+	return d
+}
+
 func newTestGoalMetadata() GoalMetadata {
 	return GoalMetadata{
 		Title:                "",
@@ -103,11 +119,14 @@ func newTestWorkflow() state.Workflow {
 		Task:                "",
 		Progress:            nil,
 		HumanMessage:        "",
+		HumanInputAgent:     "",
 		MultiChoiceQuestion: nil,
 		Messages:            nil,
 		VisitCounts:         nil,
 		CurrentAgent:        "",
+		AgentStates:         nil,
 		Todos:               nil,
+		TodosByAgent:        nil,
 		ProjectTodos:        nil,
 		AgentSequence:       nil,
 		SessionID:           "",
@@ -258,6 +277,7 @@ func newTestMultiModelConfig() multiModelConfig {
 		logWriter:        nil,
 		stdoutLog:        nil,
 		stderrLog:        nil,
+		nextIteration:    nil,
 	}
 }
 
@@ -320,15 +340,17 @@ func newTestStreamEvent() streamEvent {
 
 func newTestJSONPrettyWriter() *jsonPrettyWriter {
 	return &jsonPrettyWriter{
-		prefix:       "",
-		w:            nil,
-		buf:          nil,
-		currentText:  strings.Builder{},
-		sessionID:    "",
-		coord:        nil,
-		currentAgent: "",
-		stepCounter:  0,
-		now:          testLogNow,
+		prefix:                 "",
+		w:                      nil,
+		buf:                    nil,
+		currentText:            strings.Builder{},
+		sessionID:              "",
+		coord:                  nil,
+		currentAgent:           "",
+		stepCounter:            0,
+		now:                    testLogNow,
+		startAgentDoneWatchdog: nil,
+		stopAgentDoneWatchdog:  nil,
 	}
 }
 
@@ -976,55 +998,6 @@ func TestHandleCompleteStatus(t *testing.T) {
 	})
 }
 
-func TestRedirectToPendingMessageAgent(t *testing.T) {
-	t.Run("noMessages", func(t *testing.T) {
-		dir := t.TempDir()
-		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
-		require.NoError(t, err)
-
-		wfState := newTestWorkflow()
-		result, errRedirect := redirectToPendingMessageAgent(&wfState, coord, "sgai")
-		require.NoError(t, errRedirect)
-		assert.False(t, result)
-	})
-
-	t.Run("allMessagesRead", func(t *testing.T) {
-		dir := t.TempDir()
-		coord, err := state.NewCoordinatorWith(filepath.Join(dir, "state.json"), newTestWorkflow())
-		require.NoError(t, err)
-
-		wfState := newTestWorkflow()
-		message := newTestMessage()
-		message.ID = 1
-		message.ToAgent = "dev"
-		message.Read = true
-		wfState.Messages = []state.Message{message}
-		result, errRedirect := redirectToPendingMessageAgent(&wfState, coord, "sgai")
-		require.NoError(t, errRedirect)
-		assert.False(t, result)
-	})
-
-	t.Run("unreadMessageRedirects", func(t *testing.T) {
-		dir := t.TempDir()
-		statePath := filepath.Join(dir, "state.json")
-		coord, err := state.NewCoordinatorWith(statePath, newTestWorkflow())
-		require.NoError(t, err)
-
-		wfState := newTestWorkflow()
-		wfState.VisitCounts = map[string]int{}
-		message := newTestMessage()
-		message.ID = 1
-		message.ToAgent = "developer"
-		message.Read = false
-		wfState.Messages = []state.Message{message}
-		result, errRedirect := redirectToPendingMessageAgent(&wfState, coord, "sgai")
-		require.NoError(t, errRedirect)
-		assert.True(t, result)
-		assert.Equal(t, "developer", wfState.CurrentAgent)
-		assert.Equal(t, state.StatusWorking, wfState.Status)
-	})
-}
-
 func TestBuildAgentArgsVariants(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -1445,31 +1418,6 @@ func TestResolveBaseAgentWithAlias(t *testing.T) {
 	assert.Equal(t, "builder", resolveBaseAgent(alias, "builder"))
 }
 
-func TestFindFirstPendingMessageAgentVariants(t *testing.T) {
-	t.Run("noMessages", func(t *testing.T) {
-		assert.Empty(t, findFirstPendingMessageAgent(newTestWorkflow().Messages))
-	})
-
-	t.Run("allRead", func(t *testing.T) {
-		wf := newTestWorkflow()
-		message := newTestMessage()
-		message.ToAgent = "builder"
-		message.Read = true
-		wf.Messages = []state.Message{message}
-		assert.Empty(t, findFirstPendingMessageAgent(wf.Messages))
-	})
-
-	t.Run("unreadForAgent", func(t *testing.T) {
-		wf := newTestWorkflow()
-		message := newTestMessage()
-		message.ToAgent = "builder"
-		message.Read = false
-		wf.Messages = []state.Message{message}
-		wf.CurrentAgent = "coordinator"
-		assert.Equal(t, "builder", findFirstPendingMessageAgent(wf.Messages))
-	})
-}
-
 func TestValidateModelsPartial(t *testing.T) {
 	t.Run("emptyModels", func(t *testing.T) {
 		err := validateModels(nil)
@@ -1532,6 +1480,36 @@ func TestSaveState(t *testing.T) {
 
 	updated := coord.State()
 	assert.Equal(t, state.StatusComplete, updated.Status)
+}
+
+func TestSaveStateDetachesCallerOwnedReferenceFields(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, ".sgai", "state.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(statePath), 0o755))
+
+	coord, errCoord := state.NewCoordinatorWith(statePath, state.NewWorkflow())
+	require.NoError(t, errCoord)
+
+	wf := state.NewWorkflow()
+	wf.Status = state.StatusWorking
+	wf.Task = "stable task"
+	wf.Progress = []state.ProgressEntry{{Timestamp: "", Agent: "", Description: "stable progress"}}
+	wf.Messages = []state.Message{updated(newTestMessage(), func(message *state.Message) {
+		message.ID = 1
+		message.Body = "stable message"
+	})}
+	wf.VisitCounts["coordinator"] = 1
+	wf.TodosByAgent["go-developer"] = []state.TodoItem{{ID: "todo-1", Content: "stable todo", Status: "pending", Priority: "high"}}
+
+	require.NoError(t, saveState(coord, &wf))
+	saved := coord.State()
+
+	wf.Progress[0].Description = "mutated progress"
+	wf.Messages[0].Body = "mutated message"
+	wf.VisitCounts["coordinator"] = 99
+	wf.TodosByAgent["go-developer"][0].Content = "mutated todo"
+
+	assert.Equal(t, saved, coord.State())
 }
 
 func TestSaveStateReturnsErrorOnPersistFailure(t *testing.T) {
@@ -1956,64 +1934,6 @@ func TestRetrospectiveEnabled(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := retrospectiveEnabled(tt.metadata.Retrospective)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
-func TestFindFirstPendingMessageAgent(t *testing.T) {
-	tests := []struct {
-		name     string
-		workflow state.Workflow
-		expected string
-	}{
-		{
-			name: "noMessages",
-			workflow: func() state.Workflow {
-				workflow := newTestWorkflow()
-				workflow.Messages = []state.Message{}
-				return workflow
-			}(),
-			expected: "",
-		},
-		{
-			name: "allRead",
-			workflow: func() state.Workflow {
-				workflow := newTestWorkflow()
-				messageOne := newTestMessage()
-				messageOne.ToAgent = "agent1"
-				messageOne.Read = true
-				messageTwo := newTestMessage()
-				messageTwo.ToAgent = "agent2"
-				messageTwo.Read = true
-				workflow.Messages = []state.Message{messageOne, messageTwo}
-				return workflow
-			}(),
-			expected: "",
-		},
-		{
-			name: "firstUnread",
-			workflow: func() state.Workflow {
-				workflow := newTestWorkflow()
-				messageOne := newTestMessage()
-				messageOne.ToAgent = "agent1"
-				messageOne.Read = true
-				messageTwo := newTestMessage()
-				messageTwo.ToAgent = "agent2"
-				messageTwo.Read = false
-				messageThree := newTestMessage()
-				messageThree.ToAgent = "agent3"
-				messageThree.Read = false
-				workflow.Messages = []state.Message{messageOne, messageTwo, messageThree}
-				return workflow
-			}(),
-			expected: "agent2",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := findFirstPendingMessageAgent(tt.workflow.Messages)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -3603,6 +3523,36 @@ func TestMarkCurrentAgentInSequence(t *testing.T) {
 			assert.True(t, last.IsCurrent)
 		})
 	}
+}
+
+func TestMarkCurrentAgentsInSequence(t *testing.T) {
+	wf := newTestWorkflow()
+	markCurrentAgentsInSequence(&wf, []string{"go-developer", "react-developer"})
+	require.Len(t, wf.AgentSequence, 2)
+	assert.Equal(t, "go-developer", wf.AgentSequence[0].Agent)
+	assert.True(t, wf.AgentSequence[0].IsCurrent)
+	assert.Equal(t, "react-developer", wf.AgentSequence[1].Agent)
+	assert.True(t, wf.AgentSequence[1].IsCurrent)
+}
+
+func TestMarkCurrentAgentsInSequenceClearsStaleParallelCurrentFlags(t *testing.T) {
+	wf := newTestWorkflow()
+	wf.AgentSequence = []state.AgentSequenceEntry{
+		updated(newTestAgentSequenceEntry(), func(entry *state.AgentSequenceEntry) {
+			entry.Agent = "go-developer"
+			entry.IsCurrent = true
+		}),
+		updated(newTestAgentSequenceEntry(), func(entry *state.AgentSequenceEntry) {
+			entry.Agent = "react-developer"
+			entry.IsCurrent = true
+		}),
+	}
+
+	markCurrentAgentsInSequence(&wf, []string{"react-developer"})
+
+	require.Len(t, wf.AgentSequence, 2)
+	assert.False(t, wf.AgentSequence[0].IsCurrent)
+	assert.True(t, wf.AgentSequence[1].IsCurrent)
 }
 
 func TestAddAgentHandoffProgress(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/ucirello/sgai/pkg/state"
 )
@@ -28,7 +29,9 @@ type workflowRunner struct {
 	logWriter        io.Writer
 	retroLogs        retroLogWriters
 	iterationCounter int
+	iterationMu      sync.Mutex
 	previousAgent    string
+	runAgentFn       func(context.Context, string) state.Workflow
 }
 
 type retroLogWriters struct {
@@ -44,6 +47,37 @@ const (
 	resultInterrupt
 )
 
+func nextRunnableAgents(messages []state.Message) []string {
+	hasUnreadMessages := false
+	var recipients []string
+	for _, msg := range messages {
+		if msg.Read {
+			continue
+		}
+		hasUnreadMessages = true
+		recipient := extractAgentFromModelID(msg.ToAgent)
+		if recipient == "coordinator" {
+			return []string{"coordinator"}
+		}
+		if !slices.Contains(recipients, recipient) {
+			recipients = append(recipients, recipient)
+		}
+	}
+	if !hasUnreadMessages {
+		return []string{"coordinator"}
+	}
+	return recipients
+}
+
+func hasUnreadMessages(messages []state.Message) bool {
+	for _, msg := range messages {
+		if !msg.Read {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *workflowRunner) run(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
@@ -51,8 +85,19 @@ func (r *workflowRunner) run(ctx context.Context) {
 			return
 		}
 
-		currentAgent := r.resolveCurrentAgent()
-		result := r.runAgent(ctx, currentAgent)
+		var errReload error
+		r.metadata, errReload = tryReloadGoalMetadata(r.goalPath, &r.metadata, r.flowDag)
+		if errReload != nil {
+			log.Println("failed to reload GOAL.md frontmatter:", errReload)
+			return
+		}
+
+		currentAgents := nextRunnableAgents(r.coord.State().Messages)
+		if errPrepare := r.prepareAgents(currentAgents); errPrepare != nil {
+			log.Println("failed to prepare agent batch:", errPrepare)
+			return
+		}
+		result := r.runAgents(ctx, currentAgents)
 
 		switch result {
 		case resultInterrupt:
@@ -64,99 +109,100 @@ func (r *workflowRunner) run(ctx context.Context) {
 	}
 }
 
-func (r *workflowRunner) resolveCurrentAgent() string {
-	if r.wfState.CurrentAgent == "" {
-		return "coordinator"
-	}
-	return r.wfState.CurrentAgent
+func (r *workflowRunner) nextIteration() int {
+	r.iterationMu.Lock()
+	defer r.iterationMu.Unlock()
+	r.iterationCounter++
+	return r.iterationCounter
 }
 
-func (r *workflowRunner) runAgent(ctx context.Context, currentAgent string) runResult {
-	if errPrepare := r.prepareAgent(currentAgent); errPrepare != nil {
-		log.Println("failed to prepare agent:", errPrepare)
-		return resultInterrupt
-	}
+func (r *workflowRunner) prepareAgents(currentAgents []string) error {
+	displayAgent := formatCurrentAgents(currentAgents)
+	r.wfState = r.coord.State()
 
-	var errReload error
-	r.metadata, errReload = tryReloadGoalMetadata(r.goalPath, &r.metadata, r.flowDag)
-	if errReload != nil {
-		log.Println("failed to reload GOAL.md frontmatter:", errReload)
-		return resultInterrupt
-	}
-
-	if errUnlock := unlockInteractiveForRetrospective(&r.wfState, currentAgent, r.coord, r.paddedsgai); errUnlock != nil {
-		log.Println("failed to unlock retrospective interaction mode:", errUnlock)
-		return resultInterrupt
-	}
-	r.wfState = r.executeAgent(ctx, currentAgent)
-
-	if ctx.Err() != nil {
-		return resultInterrupt
-	}
-
-	if r.wfState.Status == state.StatusComplete {
-		redirected, errRedirect := redirectToPendingMessageAgent(&r.wfState, r.coord, r.paddedsgai)
-		if errRedirect != nil {
-			log.Println("failed to redirect to pending message agent:", errRedirect)
-			return resultInterrupt
-		}
-		if redirected {
-			return resultContinue
-		}
-		log.Println("["+r.paddedsgai+"]", "complete:", r.wfState.Task)
-		return resultComplete
-	}
-
-	nextAgent := r.resolveNextAgent(currentAgent)
-	r.wfState.CurrentAgent = nextAgent
-	return resultContinue
-}
-
-func (r *workflowRunner) resolveNextAgent(currentAgent string) string {
-	pendingAgent := findFirstPendingMessageAgent(r.wfState.Messages)
-	if pendingAgent != "" {
-		log.Println("["+r.paddedsgai+"]", "pending messages for", pendingAgent, "- redirecting")
-		return pendingAgent
-	}
-
-	if r.flowDag.isTerminal(currentAgent) {
-		log.Println("["+r.paddedsgai+"]", "reached terminal node", currentAgent)
-		return "coordinator"
-	}
-
-	if currentAgent == "coordinator" && len(r.flowDag.EntryNodes) > 0 {
-		return r.flowDag.EntryNodes[0]
-	}
-
-	return determineNextAgent(r.flowDag, currentAgent)
-}
-
-func (r *workflowRunner) prepareAgent(currentAgent string) error {
-	if r.previousAgent != "" && r.previousAgent != currentAgent {
-		log.Println("["+r.paddedsgai+"]", r.previousAgent, "->", currentAgent)
-		r.wfState.Todos = []state.TodoItem{}
+	if r.previousAgent != "" && r.previousAgent != displayAgent {
+		log.Println("["+r.paddedsgai+"]", r.previousAgent, "->", displayAgent)
+		r.wfState.Todos = nil
 		if errOverlay := applyLayerFolderOverlay(r.dir); errOverlay != nil {
 			return fmt.Errorf("apply overlay on agent transition: %w", errOverlay)
 		}
 	}
-	r.previousAgent = currentAgent
+	r.previousAgent = displayAgent
 
-	r.wfState.CurrentAgent = currentAgent
-	r.wfState.VisitCounts[currentAgent]++
-	addAgentHandoffProgress(&r.wfState, currentAgent)
-	markCurrentAgentInSequence(&r.wfState, currentAgent)
+	if r.wfState.VisitCounts == nil {
+		r.wfState.VisitCounts = map[string]int{}
+	}
+	r.wfState.CurrentAgent = displayAgent
+	if len(currentAgents) != 1 || extractAgentFromModelID(r.wfState.CurrentModel) != currentAgents[0] {
+		r.wfState.CurrentModel = ""
+	}
+	if len(currentAgents) == 1 && currentAgents[0] != "coordinator" {
+		setVisibleAgentTodos(&r.wfState, currentAgents[0])
+	} else {
+		r.wfState.Todos = nil
+	}
+	prepareCurrentBatchState(&r.wfState, currentAgents)
+	for _, currentAgent := range currentAgents {
+		r.wfState.VisitCounts[currentAgent]++
+		addAgentHandoffProgress(&r.wfState, currentAgent)
+	}
+	markCurrentAgentsInSequence(&r.wfState, currentAgents)
 
-	snapshot := r.wfState
-	if errUpdate := r.coord.UpdateState(func(wf *state.Workflow) {
-		*wf = snapshot
-	}); errUpdate != nil {
-		return fmt.Errorf("save state: %w", errUpdate)
+	if errReplace := r.coord.ReplaceState(&r.wfState); errReplace != nil {
+		return fmt.Errorf("save state: %w", errReplace)
 	}
 
 	return nil
 }
 
+func (r *workflowRunner) runAgents(ctx context.Context, currentAgents []string) runResult {
+	if len(currentAgents) == 1 {
+		r.wfState = r.executeCurrentAgent(ctx, currentAgents[0])
+		return r.finishCurrentBatch(ctx)
+	}
+
+	var wg sync.WaitGroup
+	for _, currentAgent := range currentAgents {
+		wg.Go(func() {
+			r.executeCurrentAgent(ctx, currentAgent)
+		})
+	}
+	wg.Wait()
+	r.wfState = r.coord.State()
+	return r.finishCurrentBatch(ctx)
+}
+
+func (r *workflowRunner) executeCurrentAgent(ctx context.Context, currentAgent string) state.Workflow {
+	if r.runAgentFn != nil {
+		return r.runAgentFn(ctx, currentAgent)
+	}
+	return r.executeAgent(ctx, currentAgent)
+}
+
+func (r *workflowRunner) finishCurrentBatch(ctx context.Context) runResult {
+	if ctx.Err() != nil {
+		return resultInterrupt
+	}
+	r.wfState = r.coord.State()
+	if r.wfState.Status != state.StatusComplete {
+		return resultContinue
+	}
+	if hasUnreadMessages(r.wfState.Messages) {
+		if errUpdate := r.coord.UpdateState(func(wf *state.Workflow) {
+			wf.Status = state.StatusWorking
+		}); errUpdate != nil {
+			log.Println("failed to continue workflow after complete with unread messages:", errUpdate)
+			return resultInterrupt
+		}
+		r.wfState = r.coord.State()
+		return resultContinue
+	}
+	log.Println("["+r.paddedsgai+"]", "complete:", r.wfState.Task)
+	return resultComplete
+}
+
 func (r *workflowRunner) executeAgent(ctx context.Context, currentAgent string) state.Workflow {
+	metadata := r.metadata
 	cfg := multiModelConfig{
 		dir:              r.dir,
 		goalPath:         r.goalPath,
@@ -171,8 +217,13 @@ func (r *workflowRunner) executeAgent(ctx context.Context, currentAgent string) 
 		logWriter:        r.logWriter,
 		stdoutLog:        r.retroLogs.stdout,
 		stderrLog:        r.retroLogs.stderr,
+		nextIteration:    r.nextIteration,
 	}
-	return runMultiModelAgent(ctx, &cfg, &r.wfState, &r.metadata, &r.iterationCounter)
+	currentState := r.coord.State()
+	if errUnlock := unlockInteractiveForRetrospective(&currentState, currentAgent, r.coord, r.paddedsgai); errUnlock != nil {
+		return failWorkflowState(&cfg, &currentState, "failed to unlock retrospective interaction mode: %v", errUnlock)
+	}
+	return runMultiModelAgent(ctx, &cfg, &currentState, &metadata)
 }
 
 func (r *workflowRunner) runContinuous(ctx context.Context, continuousPrompt string) {
@@ -363,7 +414,9 @@ func buildWorkflowRunner(dir, mcpURL string, logWriter io.Writer, sessionCoord *
 		logWriter:        logWriter,
 		retroLogs:        retroLogs,
 		iterationCounter: 0,
+		iterationMu:      sync.Mutex{},
 		previousAgent:    "",
+		runAgentFn:       nil,
 	}
 	return runner, cleanup, nil
 }
