@@ -125,18 +125,7 @@ func menuBarUpdateLoop(ctx context.Context, srv *Server, state *darwinMenuBarSta
 }
 
 func rebuildMenuFromServer(srv *Server, state *darwinMenuBarState) {
-	groups, errScan := srv.scanWorkspaceGroups()
-	if errScan != nil {
-		return
-	}
-
-	var items []menuBarItem
-	for _, grp := range groups {
-		items = append(items, toMenuBarItem(srv, grp.Root))
-		for _, fork := range grp.Forks {
-			items = append(items, toMenuBarItem(srv, fork))
-		}
-	}
+	items := menuBarItemsFromServer(srv)
 
 	state.mu.Lock()
 	state.nextTag = 0

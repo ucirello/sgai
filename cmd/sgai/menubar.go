@@ -47,6 +47,15 @@ func toMenuBarItem(srv *Server, w workspaceInfo) menuBarItem {
 	}
 }
 
+func menuBarItemsFromServer(srv *Server) []menuBarItem {
+	workspaces := workspaceInfos(srv.doScanWorkspaceGroups())
+	items := make([]menuBarItem, 0, len(workspaces))
+	for _, workspace := range workspaces {
+		items = append(items, toMenuBarItem(srv, workspace))
+	}
+	return items
+}
+
 func countAttention(items []menuBarItem) int {
 	count := 0
 	for _, item := range items {
