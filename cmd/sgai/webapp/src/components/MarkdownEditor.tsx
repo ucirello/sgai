@@ -39,6 +39,7 @@ interface MarkdownEditorProps {
   defaultHeight?: number;
   disabled?: boolean;
   placeholder?: string;
+  ariaLabel?: string;
   workspaceName?: string;
   fillHeight?: boolean;
 }
@@ -245,6 +246,7 @@ export function MarkdownEditor({
   defaultHeight,
   disabled = false,
   placeholder,
+  ariaLabel,
   workspaceName,
   fillHeight = false,
 }: MarkdownEditorProps) {
@@ -618,12 +620,14 @@ export function MarkdownEditor({
               hideCursorInOverviewRuler: true,
               readOnly: disabled,
               domReadOnly: disabled,
-              padding: { top: 8, bottom: 8 },
-              quickSuggestions: workspaceName ? { other: true, strings: true } : false,
-              wordBasedSuggestions: "off" as const,
-              suggestOnTriggerCharacters: !!workspaceName,
-              acceptSuggestionOnEnter: workspaceName ? "on" : "off",
-            }}
+               padding: { top: 8, bottom: 8 },
+               ariaLabel,
+               autoIndent: workspaceName ? "full" : "none",
+               quickSuggestions: workspaceName ? { other: true, strings: true } : false,
+               wordBasedSuggestions: "off" as const,
+               suggestOnTriggerCharacters: !!workspaceName,
+               acceptSuggestionOnEnter: workspaceName ? "on" : "off",
+             }}
           />
         </>
       ) : (

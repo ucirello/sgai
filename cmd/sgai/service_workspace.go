@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -10,15 +11,17 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/ucirello/sgai/pkg/state"
 )
 
 var (
-	errForkOfFork       = errors.New("forks cannot create new forks")
-	errGoalContentEmpty = errors.New("GOAL.md must have content describing the goal")
-	errDirectoryExists  = errors.New("a directory with this name already exists")
-	errMessageNotFound  = errors.New("message not found")
+	errForkOfFork        = errors.New("forks cannot create new forks")
+	errGoalContentEmpty  = errors.New("GOAL.md must have content describing the goal")
+	errForkTitleRequired = errors.New("fork title is required")
+	errDirectoryExists   = errors.New("a directory with this name already exists")
+	errMessageNotFound   = errors.New("message not found")
 )
 
 func generateRandomForkName() string {
@@ -52,8 +55,21 @@ type forkWorkspaceResult struct {
 }
 
 func (s *Server) forkWorkspaceService(workspacePath, goalContent string) (forkWorkspaceResult, error) {
+	return s.forkWorkspaceServiceWithOptions(workspacePath, goalContent, forkWorkspaceOptions{title: "", requireTitle: false})
+}
+
+type forkWorkspaceOptions struct {
+	title        string
+	requireTitle bool
+}
+
+func (s *Server) forkWorkspaceServiceWithOptions(workspacePath, goalContent string, options forkWorkspaceOptions) (forkWorkspaceResult, error) {
 	if s.classifyWorkspaceCached(workspacePath) == workspaceFork {
 		return forkWorkspaceResult{}, errForkOfFork
+	}
+
+	if options.requireTitle && sanitizedPersistedGoalTitle(options.title) == "" {
+		return forkWorkspaceResult{}, errForkTitleRequired
 	}
 
 	if goalContentBodyIsEmpty(goalContent) {
@@ -87,7 +103,11 @@ func (s *Server) forkWorkspaceService(workspacePath, goalContent string) (forkWo
 	if errExclude := addGitExclude(forkPath); errExclude != nil {
 		return forkWorkspaceResult{}, failForkWorkspaceSetup(workspacePath, forkPath, "failed to add git exclude", errExclude)
 	}
-	if errGoal := writeGoalContent(forkPath, goalContent); errGoal != nil {
+	forkGoalContent, errForkGoalContent := s.buildForkGoalContent(workspacePath, goalContent, options)
+	if errForkGoalContent != nil {
+		return forkWorkspaceResult{}, failForkWorkspaceSetup(workspacePath, forkPath, "failed to prepare GOAL.md", errForkGoalContent)
+	}
+	if errGoal := writeGoalBytes(forkPath, forkGoalContent); errGoal != nil {
 		return forkWorkspaceResult{}, failForkWorkspaceSetup(workspacePath, forkPath, "failed to create GOAL.md", errGoal)
 	}
 
@@ -113,6 +133,107 @@ func (s *Server) forkWorkspaceService(workspacePath, goalContent string) (forkWo
 		Parent:    filepath.Base(workspacePath),
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}, nil
+}
+
+func (s *Server) buildForkGoalContent(workspacePath, goalContent string, options forkWorkspaceOptions) ([]byte, error) {
+	goalPath := filepath.Join(workspacePath, "GOAL.md")
+	rootGoalContent, errRead := os.ReadFile(goalPath)
+	if errRead != nil {
+		return nil, fmt.Errorf("reading parent GOAL.md: %w", errRead)
+	}
+
+	body := submittedForkGoalBody(goalContent)
+	sections, hasFrontmatter, errSections := parentGoalFrontmatterSections(rootGoalContent)
+	if errSections != nil {
+		return nil, errSections
+	}
+	if hasFrontmatter {
+		if errValidate := validateParentGoalFrontmatter(rootGoalContent); errValidate != nil {
+			return nil, errValidate
+		}
+	}
+	if !hasFrontmatter {
+		if sanitizedPersistedGoalTitle(options.title) == "" {
+			return []byte(body), nil
+		}
+		frontmatter, errFrontmatter := frontmatterWithOverriddenTitle(nil, nil, options.title)
+		if errFrontmatter != nil {
+			return nil, errFrontmatter
+		}
+		return composeForkGoalContent(frontmatter, nil, body), nil
+	}
+
+	frontmatter := sections.frontmatter
+	if sanitizedPersistedGoalTitle(options.title) != "" {
+		var errFrontmatter error
+		frontmatter, errFrontmatter = frontmatterWithOverriddenTitle(sections.frontmatter, sections.lineEnding, options.title)
+		if errFrontmatter != nil {
+			return nil, errFrontmatter
+		}
+	}
+
+	return composeForkGoalContent(frontmatter, sections.lineEnding, body), nil
+}
+
+func parentGoalFrontmatterSections(content []byte) (goalFrontmatterSections, bool, error) {
+	var zeroSections goalFrontmatterSections
+	trimmedContent := bytes.TrimLeftFunc(content, unicode.IsSpace)
+	if !bytes.HasPrefix(trimmedContent, []byte("---")) {
+		return zeroSections, false, nil
+	}
+	if !bytes.HasPrefix(content, []byte("---")) {
+		return zeroSections, false, errors.New("parent GOAL.md frontmatter must start at beginning of file")
+	}
+	sections, errSections := splitGoalFrontmatterSections(content)
+	if errSections != nil {
+		return zeroSections, false, fmt.Errorf("invalid parent GOAL.md frontmatter: %w", errSections)
+	}
+	return sections, true, nil
+}
+
+func validateParentGoalFrontmatter(content []byte) error {
+	_, errParse := parseYAMLFrontmatter(content)
+	if errParse != nil {
+		return fmt.Errorf("invalid parent GOAL.md frontmatter: %w", errParse)
+	}
+	return nil
+}
+
+func submittedForkGoalBody(goalContent string) string {
+	return goalContent
+}
+
+func frontmatterWithOverriddenTitle(frontmatter, lineEnding []byte, title string) ([]byte, error) {
+	title = sanitizedPersistedGoalTitle(title)
+	if title == "" {
+		return frontmatter, nil
+	}
+	updatedFrontmatter, errUpdate := updatedGoalFrontmatter(frontmatter, title)
+	if errUpdate != nil {
+		return nil, errUpdate
+	}
+	return frontmatterWithLineEnding(updatedFrontmatter, normalizedLineEnding(lineEnding)), nil
+}
+
+func normalizedLineEnding(lineEnding []byte) []byte {
+	if len(lineEnding) == 0 {
+		return []byte("\n")
+	}
+	return lineEnding
+}
+
+func composeForkGoalContent(frontmatter, lineEnding []byte, body string) []byte {
+	resolvedLineEnding := string(lineEnding)
+	if resolvedLineEnding == "" {
+		resolvedLineEnding = "\n"
+	}
+
+	content := "---" + resolvedLineEnding + string(frontmatter)
+	if !strings.HasSuffix(content, resolvedLineEnding) {
+		content += resolvedLineEnding
+	}
+	content += "---" + resolvedLineEnding + resolvedLineEnding + body
+	return []byte(content)
 }
 
 func failForkWorkspaceSetup(workspacePath, forkPath, message string, errCause error) error {
@@ -147,13 +268,17 @@ func rollbackForkWorkspaceCreation(workspacePath, forkPath string) error {
 }
 
 func goalContentBodyIsEmpty(goalContent string) bool {
-	body := stripFrontmatter(goalContent)
+	body := submittedForkGoalBody(goalContent)
 	return strings.TrimSpace(body) == ""
 }
 
 func writeGoalContent(dir, content string) error {
+	return writeGoalBytes(dir, []byte(content))
+}
+
+func writeGoalBytes(dir string, content []byte) error {
 	goalPath := filepath.Join(dir, "GOAL.md")
-	if errWrite := os.WriteFile(goalPath, []byte(content), 0o644); errWrite != nil {
+	if errWrite := os.WriteFile(goalPath, content, 0o644); errWrite != nil {
 		return fmt.Errorf("writing GOAL.md: %w", errWrite)
 	}
 	return nil

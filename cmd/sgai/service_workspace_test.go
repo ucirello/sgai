@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,6 +14,31 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/ucirello/sgai/pkg/state"
 )
+
+func forkGoalSectionsForTest(t *testing.T, content []byte) goalFrontmatterSections {
+	t.Helper()
+
+	sections, errSections := splitGoalFrontmatterSections(content)
+	require.NoError(t, errSections)
+	return sections
+}
+
+func forkGoalFrontmatterForTest(t *testing.T, content []byte) string {
+	t.Helper()
+
+	return string(forkGoalSectionsForTest(t, content).frontmatter)
+}
+
+func forkGoalBodyForTest(t *testing.T, content []byte) string {
+	t.Helper()
+
+	sections := forkGoalSectionsForTest(t, content)
+	after := sections.after
+	for range 2 {
+		after = bytes.TrimPrefix(after, sections.lineEnding)
+	}
+	return string(after)
+}
 
 func TestForkWorkspaceService(t *testing.T) {
 	tests := []struct {
@@ -27,7 +53,7 @@ func TestForkWorkspaceService(t *testing.T) {
 		{
 			name:        "forkFromRootWorkspace",
 			workspace:   "",
-			goalContent: "---\nflow: |\n  \"agent1\" -> \"agent2\"\n---\n# Test Goal",
+			goalContent: "# Test Goal",
 			setupFunc: func(t *testing.T, rootDir string) string {
 				t.Helper()
 				workspacePath := filepath.Join(rootDir, "root-workspace")
@@ -35,7 +61,18 @@ func TestForkWorkspaceService(t *testing.T) {
 				require.NoError(t, initializeWorkspace(workspacePath))
 
 				goalPath := filepath.Join(workspacePath, "GOAL.md")
-				require.NoError(t, os.WriteFile(goalPath, []byte("initial goal"), 0o644))
+				rootGoalContent := strings.Join([]string{
+					"---",
+					"title: Root Workspace",
+					"flow: |",
+					"  \"agent1\" -> \"agent2\"",
+					"models:",
+					"  coordinator: root-model",
+					"---",
+					"",
+					"# Root Goal",
+				}, "\n")
+				require.NoError(t, os.WriteFile(goalPath, []byte(rootGoalContent), 0o644))
 
 				return workspacePath
 			},
@@ -43,7 +80,17 @@ func TestForkWorkspaceService(t *testing.T) {
 			errContains: "",
 			validate: func(t *testing.T, _ string, result forkWorkspaceResult) {
 				t.Helper()
-				const wantGoalContent = "---\nflow: |\n  \"agent1\" -> \"agent2\"\n---\n# Test Goal"
+				wantGoalContent := strings.Join([]string{
+					"---",
+					"title: Root Workspace",
+					"flow: |",
+					"  \"agent1\" -> \"agent2\"",
+					"models:",
+					"  coordinator: root-model",
+					"---",
+					"",
+					"# Test Goal",
+				}, "\n")
 
 				assertForkNameHasRootPrefix(t, result.Name, "root-workspace")
 				assert.DirExists(t, result.Dir)
@@ -101,9 +148,9 @@ func TestForkWorkspaceService(t *testing.T) {
 			validate:    nil,
 		},
 		{
-			name:        "forkWithOnlyFrontmatter",
+			name:        "forkWithOnlyWhitespaceGoalContent",
 			workspace:   "",
-			goalContent: "---\nflow: |\n  \"agent1\" -> \"agent2\"\n---\n",
+			goalContent: " \n\t",
 			setupFunc: func(t *testing.T, rootDir string) string {
 				t.Helper()
 				workspacePath := filepath.Join(rootDir, "root-workspace")
@@ -148,6 +195,155 @@ func TestForkWorkspaceService(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestForkWorkspaceServiceCopiesRootFrontmatterAndPreservesSubmittedBodyText(t *testing.T) {
+	rootDir := t.TempDir()
+	server := NewServer(rootDir, newTestServerPaths(), "")
+	workspacePath := filepath.Join(rootDir, "root-workspace")
+	require.NoError(t, os.MkdirAll(workspacePath, 0o755))
+	require.NoError(t, initializeWorkspace(workspacePath))
+
+	rootGoalContent := strings.Join([]string{
+		"---",
+		"title: Root Goal",
+		"flow: |",
+		"  \"coordinator\" -> \"go-developer\"",
+		"models:",
+		"  coordinator: root-model",
+		"---",
+		"",
+		"# Root Goal",
+		"",
+		"Root body.",
+	}, "\n")
+	require.NoError(t, os.WriteFile(filepath.Join(workspacePath, "GOAL.md"), []byte(rootGoalContent), 0o644))
+
+	submittedGoalContent := strings.Join([]string{
+		"---",
+		"title: Edited In Browser",
+		"flow: |",
+		"  \"browser\" -> \"editor\"",
+		"---",
+		"",
+		"# Fork Task",
+		"",
+		"Implement the fork contract.",
+	}, "\n")
+
+	result, errFork := server.forkWorkspaceService(workspacePath, submittedGoalContent)
+	require.NoError(t, errFork)
+
+	forkGoalContent, errRead := os.ReadFile(filepath.Join(result.Dir, "GOAL.md"))
+	require.NoError(t, errRead)
+
+	expectedGoalContent := strings.Join([]string{
+		"---",
+		"title: Root Goal",
+		"flow: |",
+		"  \"coordinator\" -> \"go-developer\"",
+		"models:",
+		"  coordinator: root-model",
+		"---",
+	}, "\n") + "\n\n" + submittedGoalContent
+	assert.Equal(t, expectedGoalContent, string(forkGoalContent))
+}
+
+func TestForkWorkspaceServicePreservesSubmittedBodyTextThatLooksLikeFrontmatter(t *testing.T) {
+	rootDir := t.TempDir()
+	server := NewServer(rootDir, newTestServerPaths(), "")
+	workspacePath := filepath.Join(rootDir, "root-workspace")
+	require.NoError(t, os.MkdirAll(workspacePath, 0o755))
+	require.NoError(t, initializeWorkspace(workspacePath))
+
+	rootGoalContent := strings.Join([]string{
+		"---",
+		"title: Root Goal",
+		"flow: |",
+		"  \"coordinator\" -> \"go-developer\"",
+		"models:",
+		"  coordinator: root-model",
+		"---",
+		"",
+		"# Root Goal",
+	}, "\n")
+	require.NoError(t, os.WriteFile(filepath.Join(workspacePath, "GOAL.md"), []byte(rootGoalContent), 0o644))
+
+	submittedGoalContent := strings.Join([]string{
+		"",
+		" \t",
+		"---",
+		"title: Edited In Browser",
+		"flow: |",
+		"  \"browser\" -> \"editor\"",
+		"---",
+		"",
+		"# Fork Task",
+		"",
+		"Implement the fork contract.",
+	}, "\n")
+
+	result, errFork := server.forkWorkspaceService(workspacePath, submittedGoalContent)
+	require.NoError(t, errFork)
+
+	forkGoalContent, errRead := os.ReadFile(filepath.Join(result.Dir, "GOAL.md"))
+	require.NoError(t, errRead)
+
+	expectedGoalContent := strings.Join([]string{
+		"---",
+		"title: Root Goal",
+		"flow: |",
+		"  \"coordinator\" -> \"go-developer\"",
+		"models:",
+		"  coordinator: root-model",
+		"---",
+	}, "\n") + "\n\n" + submittedGoalContent
+	assert.Equal(t, expectedGoalContent, string(forkGoalContent))
+}
+
+func TestForkWorkspaceServiceRejectsMalformedParentFrontmatter(t *testing.T) {
+	rootDir := t.TempDir()
+	server := NewServer(rootDir, newTestServerPaths(), "")
+	workspacePath := filepath.Join(rootDir, "root-workspace")
+	require.NoError(t, os.MkdirAll(workspacePath, 0o755))
+	require.NoError(t, initializeWorkspace(workspacePath))
+
+	malformedRootGoalContent := strings.Join([]string{
+		"---",
+		"title: Root Goal",
+		"flow: |",
+		"  \"coordinator\" -> \"go-developer\"",
+		"# Root Goal",
+	}, "\n")
+	require.NoError(t, os.WriteFile(filepath.Join(workspacePath, "GOAL.md"), []byte(malformedRootGoalContent), 0o644))
+
+	_, errFork := server.forkWorkspaceService(workspacePath, "# Fork Goal")
+	require.Error(t, errFork)
+	require.ErrorContains(t, errFork, "failed to prepare GOAL.md")
+	require.ErrorContains(t, errFork, "invalid parent GOAL.md frontmatter")
+}
+
+func TestForkWorkspaceServiceRejectsParentFrontmatterWithInvalidYAML(t *testing.T) {
+	rootDir := t.TempDir()
+	server := NewServer(rootDir, newTestServerPaths(), "")
+	workspacePath := filepath.Join(rootDir, "root-workspace")
+	require.NoError(t, os.MkdirAll(workspacePath, 0o755))
+	require.NoError(t, initializeWorkspace(workspacePath))
+
+	invalidRootGoalContent := strings.Join([]string{
+		"---",
+		"title: Root Goal",
+		"flow: [",
+		"---",
+		"",
+		"# Root Goal",
+	}, "\n")
+	require.NoError(t, os.WriteFile(filepath.Join(workspacePath, "GOAL.md"), []byte(invalidRootGoalContent), 0o644))
+
+	_, errFork := server.forkWorkspaceService(workspacePath, "# Fork Goal")
+	require.Error(t, errFork)
+	require.ErrorContains(t, errFork, "failed to prepare GOAL.md")
+	require.ErrorContains(t, errFork, "invalid parent GOAL.md frontmatter")
 }
 
 func TestForkExternalWorkspaceSiblingPlacement(t *testing.T) {
@@ -828,7 +1024,7 @@ func TestGoalContentBodyIsEmpty(t *testing.T) {
 		{
 			name:     "onlyFrontmatter",
 			content:  "---\nflow: |\n  \"agent1\" -> \"agent2\"\n---\n",
-			expected: true,
+			expected: false,
 		},
 		{
 			name:     "frontmatterWithBody",
@@ -838,6 +1034,11 @@ func TestGoalContentBodyIsEmpty(t *testing.T) {
 		{
 			name:     "frontmatterWithWhitespaceBody",
 			content:  "---\nflow: |\n  \"agent1\" -> \"agent2\"\n---\n   \n\t\n",
+			expected: false,
+		},
+		{
+			name:     "onlyWhitespace",
+			content:  "   \n\t\n",
 			expected: true,
 		},
 		{

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, type ReactNode, type CSSProperties } from "react";
-import { useParams, useNavigate, Link } from "react-router";
+import { useParams, useNavigate, Link, useSearchParams } from "react-router";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -30,10 +30,12 @@ import type { ApiWorkspaceEntry } from "@/lib/factory-state";
 import {
   getWorkspaceBaseLabel,
   buildWorkspaceNameDisambiguators,
-  buildWorkspacePath,
+  buildWorkspaceRouteDisambiguators,
+  buildWorkspacePathWithDisambiguator,
   getWorkspaceDisplayLabel,
   isSameWorkspace,
-  resolveWorkspaceByName,
+  readWorkspaceDirFromSearchParams,
+  resolveWorkspaceTarget,
 } from "@/lib/workspace-identity";
 import { sortByVisibleLabel } from "@/lib/workspace-sort";
 import type { ApiRepositoryOperation } from "@/types";
@@ -313,7 +315,7 @@ function WorkspaceTreeActionSlot({
   triggerLabelSuffix,
   onCompleted,
 }: WorkspaceTreeActionSlotProps) {
-  if (!usesLeftTreeDetachSlot(workspace)) {
+  if (!usesLeftTreeDetachSlot(workspace) || triggerLabelSuffix) {
     return null;
   }
 
@@ -349,7 +351,7 @@ function WorkspaceTreeTrailingAction({
   triggerLabelSuffix,
   onCompleted,
 }: WorkspaceTreeTrailingActionProps) {
-  const showTrailingAction = Boolean(workspace && usesTrailingTreeAction(workspace));
+  const showTrailingAction = Boolean(workspace && usesTrailingTreeAction(workspace) && !triggerLabelSuffix);
 
   return (
     <WorkspaceTreeTrailingRail>
@@ -376,6 +378,7 @@ interface ForkItemProps {
   workspaceLookup: Map<string, ApiWorkspaceEntry>;
   rootWorkspace?: Pick<ApiWorkspaceEntry, "name" | "dir">;
   workspaceNameDisambiguators: Map<string, string>;
+  workspaceRouteDisambiguators: Set<string>;
 }
 
 function ForkItem({
@@ -384,6 +387,7 @@ function ForkItem({
   workspaceLookup,
   rootWorkspace,
   workspaceNameDisambiguators,
+  workspaceRouteDisambiguators,
 }: ForkItemProps) {
   const navigate = useNavigate();
   const forkSelected = isSameWorkspace(fork, selectedWorkspace);
@@ -393,9 +397,9 @@ function ForkItem({
   const { rowTooltipOpen, handleRowTooltipOpenChange, handleLinkFocus, handleLinkBlur } = useTreeRowTooltipState();
   const handleActionCompleted = useCallback(() => {
     if (isSameWorkspace(fork, selectedWorkspace) && rootWorkspace) {
-      navigate(buildWorkspacePath(rootWorkspace, "forks"));
+      navigate(buildWorkspacePathWithDisambiguator(rootWorkspace, workspaceRouteDisambiguators, "forks"));
     }
-  }, [fork, navigate, rootWorkspace, selectedWorkspace]);
+  }, [fork, navigate, rootWorkspace, selectedWorkspace, workspaceRouteDisambiguators]);
 
   return (
     <SidebarMenuItem>
@@ -417,7 +421,7 @@ function ForkItem({
             )}
           >
               <Link
-                to={buildWorkspacePath(forkFullEntry ?? fork, "progress")}
+                to={buildWorkspacePathWithDisambiguator(forkFullEntry ?? fork, workspaceRouteDisambiguators, "progress")}
                 onFocus={handleLinkFocus}
                 onBlur={handleLinkBlur}
               >
@@ -453,6 +457,7 @@ interface WorkspaceTreeItemProps {
   selectedWorkspace: ApiWorkspaceEntry | null;
   workspaceLookup: Map<string, ApiWorkspaceEntry>;
   workspaceNameDisambiguators: Map<string, string>;
+  workspaceRouteDisambiguators: Set<string>;
 }
 
 function WorkspaceTreeItem({
@@ -460,6 +465,7 @@ function WorkspaceTreeItem({
   selectedWorkspace,
   workspaceLookup,
   workspaceNameDisambiguators,
+  workspaceRouteDisambiguators,
 }: WorkspaceTreeItemProps) {
   const navigate = useNavigate();
   const fullWorkspace = workspaceLookup.get(workspace.dir);
@@ -525,7 +531,7 @@ function WorkspaceTreeItem({
             )}
           >
               <Link
-                to={buildWorkspacePath(treeActionWorkspace, "progress")}
+                to={buildWorkspacePathWithDisambiguator(treeActionWorkspace, workspaceRouteDisambiguators, "progress")}
                 onFocus={handleLinkFocus}
                 onBlur={handleLinkBlur}
               >
@@ -564,6 +570,7 @@ function WorkspaceTreeItem({
                 workspaceLookup={workspaceLookup}
                 rootWorkspace={fullWorkspace ?? workspace}
                 workspaceNameDisambiguators={workspaceNameDisambiguators}
+                workspaceRouteDisambiguators={workspaceRouteDisambiguators}
               />
             ))}
           </SidebarMenu>
@@ -578,6 +585,7 @@ interface InProgressItemProps {
   selectedWorkspace: ApiWorkspaceEntry | null;
   workspaceLookup: Map<string, ApiWorkspaceEntry>;
   workspaceNameDisambiguators: Map<string, string>;
+  workspaceRouteDisambiguators: Set<string>;
 }
 
 function InProgressItem({
@@ -585,6 +593,7 @@ function InProgressItem({
   selectedWorkspace,
   workspaceLookup,
   workspaceNameDisambiguators,
+  workspaceRouteDisambiguators,
 }: InProgressItemProps) {
   const isSelected = isSameWorkspace(workspace, selectedWorkspace);
   const fullWorkspace = workspaceLookup.get(workspace.dir);
@@ -606,7 +615,7 @@ function InProgressItem({
             )}
           >
               <Link
-                to={buildWorkspacePath(fullWorkspace ?? workspace, workspace.needsInput ? "respond" : "progress")}
+                to={buildWorkspacePathWithDisambiguator(fullWorkspace ?? workspace, workspaceRouteDisambiguators, workspace.needsInput ? "respond" : "progress")}
                 onFocus={handleLinkFocus}
                 onBlur={handleLinkBlur}
               >
@@ -639,6 +648,7 @@ interface PinnedTreeItemProps {
   workspaceLookup: Map<string, ApiWorkspaceEntry>;
   pinnedForks: ForkEntry[];
   workspaceNameDisambiguators: Map<string, string>;
+  workspaceRouteDisambiguators: Set<string>;
 }
 
 function PinnedTreeItem({
@@ -647,6 +657,7 @@ function PinnedTreeItem({
   workspaceLookup,
   pinnedForks,
   workspaceNameDisambiguators,
+  workspaceRouteDisambiguators,
 }: PinnedTreeItemProps) {
   const navigate = useNavigate();
   const fullWorkspace = workspaceLookup.get(workspace.dir);
@@ -710,7 +721,7 @@ function PinnedTreeItem({
             )}
           >
               <Link
-                to={buildWorkspacePath(treeActionWorkspace, "progress")}
+                to={buildWorkspacePathWithDisambiguator(treeActionWorkspace, workspaceRouteDisambiguators, "progress")}
                 onFocus={handleLinkFocus}
                 onBlur={handleLinkBlur}
               >
@@ -749,6 +760,7 @@ function PinnedTreeItem({
                 workspaceLookup={workspaceLookup}
                 rootWorkspace={fullWorkspace ?? workspace}
                 workspaceNameDisambiguators={workspaceNameDisambiguators}
+                workspaceRouteDisambiguators={workspaceRouteDisambiguators}
               />
             ))}
           </SidebarMenu>
@@ -764,6 +776,7 @@ interface OrphanPinnedForkItemProps {
   selectedWorkspace: ApiWorkspaceEntry | null;
   workspaceLookup: Map<string, ApiWorkspaceEntry>;
   workspaceNameDisambiguators: Map<string, string>;
+  workspaceRouteDisambiguators: Set<string>;
 }
 
 function OrphanPinnedForkItem({
@@ -772,6 +785,7 @@ function OrphanPinnedForkItem({
   selectedWorkspace,
   workspaceLookup,
   workspaceNameDisambiguators,
+  workspaceRouteDisambiguators,
 }: OrphanPinnedForkItemProps) {
   const navigate = useNavigate();
   const forkSelected = isSameWorkspace(fork, selectedWorkspace);
@@ -788,9 +802,9 @@ function OrphanPinnedForkItem({
   const { rowTooltipOpen, handleRowTooltipOpenChange, handleLinkFocus, handleLinkBlur } = useTreeRowTooltipState();
   const handleActionCompleted = useCallback(() => {
     if (isSameWorkspace(fork, selectedWorkspace)) {
-      navigate(buildWorkspacePath(rootWorkspace, "forks"));
+      navigate(buildWorkspacePathWithDisambiguator(rootWorkspace, workspaceRouteDisambiguators, "forks"));
     }
-  }, [fork, navigate, rootWorkspace, selectedWorkspace]);
+  }, [fork, navigate, rootWorkspace, selectedWorkspace, workspaceRouteDisambiguators]);
 
   return (
     <SidebarMenuItem>
@@ -813,7 +827,7 @@ function OrphanPinnedForkItem({
             )}
           >
               <Link
-                to={buildWorkspacePath(forkFullEntry ?? fork, "progress")}
+                to={buildWorkspacePathWithDisambiguator(forkFullEntry ?? fork, workspaceRouteDisambiguators, "progress")}
                 onFocus={handleLinkFocus}
                 onBlur={handleLinkBlur}
               >
@@ -851,6 +865,7 @@ interface PinnedSectionProps {
   workspaceLookup: Map<string, ApiWorkspaceEntry>;
   forkParentLookup: Map<string, ApiWorkspaceEntry>;
   workspaceNameDisambiguators: Map<string, string>;
+  workspaceRouteDisambiguators: Set<string>;
 }
 
 function PinnedSection({
@@ -859,6 +874,7 @@ function PinnedSection({
   workspaceLookup,
   forkParentLookup,
   workspaceNameDisambiguators,
+  workspaceRouteDisambiguators,
 }: PinnedSectionProps) {
   const pinned = useMemo(() => {
     return workspaces.filter((w) => w.pinned);
@@ -924,6 +940,7 @@ function PinnedSection({
             workspaceLookup={workspaceLookup}
             pinnedForks={pinnedRootsAndForks.forkGroups.get(item.workspace.dir) || []}
             workspaceNameDisambiguators={workspaceNameDisambiguators}
+            workspaceRouteDisambiguators={workspaceRouteDisambiguators}
           />
         ) : (
           <OrphanPinnedForkItem
@@ -933,6 +950,7 @@ function PinnedSection({
             selectedWorkspace={selectedWorkspace}
             workspaceLookup={workspaceLookup}
             workspaceNameDisambiguators={workspaceNameDisambiguators}
+            workspaceRouteDisambiguators={workspaceRouteDisambiguators}
           />
         ))}
       </SidebarMenu>
@@ -945,6 +963,7 @@ interface InProgressSectionProps {
   selectedWorkspace: ApiWorkspaceEntry | null;
   workspaceLookup: Map<string, ApiWorkspaceEntry>;
   workspaceNameDisambiguators: Map<string, string>;
+  workspaceRouteDisambiguators: Set<string>;
 }
 
 function InProgressSection({
@@ -952,6 +971,7 @@ function InProgressSection({
   selectedWorkspace,
   workspaceLookup,
   workspaceNameDisambiguators,
+  workspaceRouteDisambiguators,
 }: InProgressSectionProps) {
   const inProgress = useMemo(() => {
     return workspaces.filter((w) => (w.inProgress || w.running) && !w.pinned);
@@ -977,6 +997,7 @@ function InProgressSection({
             selectedWorkspace={selectedWorkspace}
             workspaceLookup={workspaceLookup}
             workspaceNameDisambiguators={workspaceNameDisambiguators}
+            workspaceRouteDisambiguators={workspaceRouteDisambiguators}
           />
         ))}
       </SidebarMenu>
@@ -992,6 +1013,9 @@ interface WorkspaceListProps {
 function WorkspaceList({ workspaces, selectedWorkspace }: WorkspaceListProps) {
   const workspaceNameDisambiguators = useMemo(() => {
     return buildWorkspaceNameDisambiguators(workspaces);
+  }, [workspaces]);
+  const workspaceRouteDisambiguators = useMemo(() => {
+    return buildWorkspaceRouteDisambiguators(workspaces);
   }, [workspaces]);
 
   const workspaceLookup = useMemo(() => {
@@ -1034,12 +1058,14 @@ function WorkspaceList({ workspaces, selectedWorkspace }: WorkspaceListProps) {
         workspaceLookup={workspaceLookup}
         forkParentLookup={forkParentLookup}
         workspaceNameDisambiguators={workspaceNameDisambiguators}
+        workspaceRouteDisambiguators={workspaceRouteDisambiguators}
       />
       <InProgressSection
         workspaces={deduplicatedWorkspaces}
         selectedWorkspace={selectedWorkspace}
         workspaceLookup={workspaceLookup}
         workspaceNameDisambiguators={workspaceNameDisambiguators}
+        workspaceRouteDisambiguators={workspaceRouteDisambiguators}
       />
       <SidebarMenu>
         {deduplicatedWorkspaces.length > 0 ? (
@@ -1050,6 +1076,7 @@ function WorkspaceList({ workspaces, selectedWorkspace }: WorkspaceListProps) {
               selectedWorkspace={selectedWorkspace}
               workspaceLookup={workspaceLookup}
               workspaceNameDisambiguators={workspaceNameDisambiguators}
+              workspaceRouteDisambiguators={workspaceRouteDisambiguators}
             />
           ))
         ) : (
@@ -1067,6 +1094,10 @@ interface SidebarHeaderIndicatorsProps {
 function SidebarHeaderIndicators({ workspaces }: SidebarHeaderIndicatorsProps) {
   const navigate = useNavigate();
   const allWorkspaces = useMemo(() => collectWorkspaceStatusEntries(workspaces), [workspaces]);
+  const workspaceRouteDisambiguators = useMemo(
+    () => buildWorkspaceRouteDisambiguators(allWorkspaces),
+    [allWorkspaces],
+  );
 
   const needsInputCount = useMemo(
     () => allWorkspaces.filter((w) => w.needsInput).length,
@@ -1081,9 +1112,9 @@ function SidebarHeaderIndicators({ workspaces }: SidebarHeaderIndicatorsProps) {
   const handleInboxClick = useCallback(() => {
     const firstNeedsInput = allWorkspaces.find((w) => w.needsInput);
     if (firstNeedsInput) {
-      navigate(buildWorkspacePath(firstNeedsInput, "respond"));
+      navigate(buildWorkspacePathWithDisambiguator(firstNeedsInput, workspaceRouteDisambiguators, "respond"));
     }
-  }, [allWorkspaces, navigate]);
+  }, [allWorkspaces, navigate, workspaceRouteDisambiguators]);
 
   return (
     <div className="flex items-center gap-2">
@@ -1151,17 +1182,19 @@ interface DashboardContentProps {
 
 function DashboardContent({ children, onSidebarResizeMouseDown }: DashboardContentProps): JSX.Element {
   const { name: selectedName } = useParams<{ name: string }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { setOpenMobile } = useSidebar();
 
   const { workspaces, fetchStatus } = useFactoryState();
+  const selectedWorkspaceDir = readWorkspaceDirFromSearchParams(searchParams);
   const selectedWorkspace = useMemo(() => {
     if (!selectedName) {
       return null;
     }
 
-    return resolveWorkspaceByName(workspaces, selectedName);
-  }, [selectedName, workspaces]);
+    return resolveWorkspaceTarget(workspaces, selectedName, selectedWorkspaceDir);
+  }, [selectedName, selectedWorkspaceDir, workspaces]);
   const loading = fetchStatus === "fetching" && workspaces.length === 0;
   const error = fetchStatus === "error" && workspaces.length === 0
     ? new Error("Failed to load workspaces")

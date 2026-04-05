@@ -2147,6 +2147,150 @@ func TestHandleAPIForkWorkspace(t *testing.T) {
 	})
 }
 
+func TestHandleAPIForkWorkspaceCopiesRootFrontmatterAndPreservesSubmittedBodyText(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "fork-http")
+	require.NoError(t, initializeWorkspace(workspaceDir))
+
+	rootGoalContent := strings.Join([]string{
+		"---",
+		"title: Root Goal",
+		"flow: |",
+		"  \"coordinator\" -> \"go-developer\"",
+		"models:",
+		"  coordinator: root-model",
+		"---",
+		"",
+		"# Root Goal",
+	}, "\n")
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, "GOAL.md"), []byte(rootGoalContent), 0o644))
+
+	submittedGoalContent := strings.Join([]string{
+		"---",
+		"title: Edited In Browser",
+		"flow: |",
+		"  \"browser\" -> \"editor\"",
+		"---",
+		"",
+		"# Fork Goal",
+		"",
+		"Implement the HTTP fork.",
+	}, "\n")
+	requestBody, errMarshal := json.Marshal(apiForkRequest{GoalContent: submittedGoalContent})
+	require.NoError(t, errMarshal)
+
+	w := serveHTTP(server, "POST", "/api/v1/workspaces/fork-http/fork", string(requestBody))
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	var response apiForkResponse
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&response))
+	forkGoalContent, errRead := os.ReadFile(filepath.Join(response.Dir, "GOAL.md"))
+	require.NoError(t, errRead)
+
+	expectedGoalContent := strings.Join([]string{
+		"---",
+		"title: Root Goal",
+		"flow: |",
+		"  \"coordinator\" -> \"go-developer\"",
+		"models:",
+		"  coordinator: root-model",
+		"---",
+	}, "\n") + "\n\n" + submittedGoalContent
+	assert.Equal(t, expectedGoalContent, string(forkGoalContent))
+}
+
+func TestHandleAPIForkWorkspacePreservesSubmittedBodyTextThatLooksLikeFrontmatter(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "fork-http-leading-whitespace")
+	require.NoError(t, initializeWorkspace(workspaceDir))
+
+	rootGoalContent := strings.Join([]string{
+		"---",
+		"title: Root Goal",
+		"flow: |",
+		"  \"coordinator\" -> \"go-developer\"",
+		"models:",
+		"  coordinator: root-model",
+		"---",
+		"",
+		"# Root Goal",
+	}, "\n")
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, "GOAL.md"), []byte(rootGoalContent), 0o644))
+
+	submittedGoalContent := strings.Join([]string{
+		"",
+		" \t",
+		"---",
+		"title: Edited In Browser",
+		"flow: |",
+		"  \"browser\" -> \"editor\"",
+		"---",
+		"",
+		"# Fork Goal",
+		"",
+		"Implement the HTTP fork.",
+	}, "\n")
+	requestBody, errMarshal := json.Marshal(apiForkRequest{GoalContent: submittedGoalContent})
+	require.NoError(t, errMarshal)
+
+	w := serveHTTP(server, "POST", "/api/v1/workspaces/fork-http-leading-whitespace/fork", string(requestBody))
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	var response apiForkResponse
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&response))
+	forkGoalContent, errRead := os.ReadFile(filepath.Join(response.Dir, "GOAL.md"))
+	require.NoError(t, errRead)
+
+	expectedGoalContent := strings.Join([]string{
+		"---",
+		"title: Root Goal",
+		"flow: |",
+		"  \"coordinator\" -> \"go-developer\"",
+		"models:",
+		"  coordinator: root-model",
+		"---",
+	}, "\n") + "\n\n" + submittedGoalContent
+	assert.Equal(t, expectedGoalContent, string(forkGoalContent))
+}
+
+func TestHandleAPIForkWorkspaceAcceptsFrontmatterLookingBodyText(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "fork-http-empty-frontmatter")
+	require.NoError(t, initializeWorkspace(workspaceDir))
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, "GOAL.md"), []byte("---\ntitle: Root Goal\nflow: |\n  \"a\" -> \"b\"\n---\n# Goal"), 0o644))
+
+	submittedGoalContent := strings.Join([]string{
+		"",
+		" \t",
+		"---",
+		"title: Edited In Browser",
+		"flow: |",
+		"  \"browser\" -> \"editor\"",
+		"---",
+		"",
+		" \t",
+	}, "\n")
+	requestBody, errMarshal := json.Marshal(apiForkRequest{GoalContent: submittedGoalContent})
+	require.NoError(t, errMarshal)
+
+	w := serveHTTP(server, "POST", "/api/v1/workspaces/fork-http-empty-frontmatter/fork", string(requestBody))
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	var response apiForkResponse
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&response))
+	forkGoalContent, errRead := os.ReadFile(filepath.Join(response.Dir, "GOAL.md"))
+	require.NoError(t, errRead)
+
+	expectedGoalContent := strings.Join([]string{
+		"---",
+		"title: Root Goal",
+		"flow: |",
+		"  \"a\" -> \"b\"",
+		"---",
+	}, "\n") + "\n\n" + submittedGoalContent
+	assert.Equal(t, expectedGoalContent, string(forkGoalContent))
+}
+
 func TestHandleAPIDeleteFork(t *testing.T) {
 	t.Run("missingWorkspace", func(t *testing.T) {
 		server, _ := setupTestServer(t)

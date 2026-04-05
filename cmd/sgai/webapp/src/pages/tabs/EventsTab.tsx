@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { ActionBar } from "@/components/ActionBar";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { useAdhocRun } from "@/hooks/useAdhocRun";
+import { normalizeActiveAgents } from "@/lib/active-agents";
+import { duplicateRouteActionButtonsDisabledReason } from "@/lib/duplicate-route-mutations";
 import type { ApiEventEntry, ApiModelStatusEntry, ApiAgentModelEntry, ApiActionEntry } from "@/types";
 
 interface EventsTabProps {
@@ -18,33 +20,44 @@ interface EventsTabProps {
   needsInput?: boolean;
   humanMessage?: string;
   currentAgent?: string;
+  activeAgents?: string[];
+  dirQualifiedRoute?: boolean;
   events?: ApiEventEntry[];
   goalContent?: string;
   actions?: ApiActionEntry[];
   actionConfigError?: string;
 }
 
-function WorkflowSection({ svgHash, agentModels, modelStatuses, needsInput, humanMessage, currentAgent, workspaceName }: {
+function WorkflowSection({ svgHash, agentModels, modelStatuses, needsInput, humanMessage, currentAgent, activeAgents, workspaceName, dirQualifiedRoute }: {
   svgHash: string;
   agentModels?: ApiAgentModelEntry[];
   modelStatuses?: ApiModelStatusEntry[];
   needsInput: boolean;
   humanMessage: string;
   currentAgent: string;
+  activeAgents?: string[];
   workspaceName: string;
+  dirQualifiedRoute: boolean;
 }) {
   const svgUrl = `/api/v1/workspaces/${encodeURIComponent(workspaceName)}/workflow.svg${svgHash ? `?h=${svgHash}` : ""}`;
+  const normalizedActiveAgents = normalizeActiveAgents({ currentAgent, activeAgents });
 
   return (
     <Card>
       <CardContent className="space-y-3">
         <div className="flex flex-col lg:flex-row gap-4">
           <div className="flex-1 min-w-0">
-            <img
-              src={svgUrl}
-              alt="Workflow graph"
-              className="max-w-full h-auto"
-            />
+            {dirQualifiedRoute ? (
+              <p className="text-sm italic text-muted-foreground">
+                Workflow graph unavailable for duplicate-name workspace routes.
+              </p>
+            ) : (
+              <img
+                src={svgUrl}
+                alt="Workflow graph"
+                className="max-w-full h-auto"
+              />
+            )}
           </div>
 
           {agentModels && agentModels.length > 0 && (
@@ -60,9 +73,15 @@ function WorkflowSection({ svgHash, agentModels, modelStatuses, needsInput, huma
 
         {needsInput && humanMessage && (
           <div className="mt-3 p-3 border rounded-lg bg-yellow-50">
-            <p className="text-sm font-medium">
-              <Badge variant="default">{currentAgent}</Badge>
-            </p>
+            {normalizedActiveAgents.length > 0 && (
+              <p className="text-sm font-medium">
+                <span className="flex flex-wrap items-center gap-1">
+                  {normalizedActiveAgents.map((agent) => (
+                    <Badge key={agent} variant="default">{agent}</Badge>
+                  ))}
+                </span>
+              </p>
+            )}
             <blockquote className="mt-2 text-sm italic border-l-2 pl-3 text-muted-foreground">
               {humanMessage}
             </blockquote>
@@ -192,6 +211,8 @@ export function EventsTab({
   needsInput = false,
   humanMessage = "",
   currentAgent = "",
+  activeAgents,
+  dirQualifiedRoute = false,
   events = [],
   goalContent,
   actions,
@@ -200,6 +221,7 @@ export function EventsTab({
   const [actionOutputOpen, setActionOutputOpen] = useState(false);
 
   const hasActionBar = Boolean((actions && actions.length > 0) || actionConfigError?.trim());
+  const actionButtonsDisabledReason = dirQualifiedRoute ? duplicateRouteActionButtonsDisabledReason : undefined;
 
   const {
     output: actionOutput,
@@ -208,7 +230,12 @@ export function EventsTab({
     startActionRun,
     stopRun: stopActionRun,
     outputRef: actionOutputRef,
-  } = useAdhocRun({ workspaceName, skipModelsFetch: true });
+  } = useAdhocRun({
+    workspaceName,
+    skipModelsFetch: true,
+    skipStatusFetch: dirQualifiedRoute,
+    disableMutationsReason: actionButtonsDisabledReason,
+  });
 
   const handleActionClick = (action: ApiActionEntry, variables: Record<string, string>) => {
     setActionOutputOpen(true);
@@ -224,6 +251,7 @@ export function EventsTab({
             actionConfigError={actionConfigError}
             isRunning={isActionRunning}
             onActionClick={handleActionClick}
+            disabledReason={actionButtonsDisabledReason}
           />
           {actionRunError ? (
             <p className="text-sm text-destructive" role="alert">{actionRunError}</p>
@@ -266,7 +294,9 @@ export function EventsTab({
         needsInput={needsInput}
         humanMessage={humanMessage}
         currentAgent={currentAgent}
+        activeAgents={activeAgents}
         workspaceName={workspaceName}
+        dirQualifiedRoute={dirQualifiedRoute}
       />
       {goalContent && (
         <details className="group">

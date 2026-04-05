@@ -8,7 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
@@ -17,15 +19,16 @@ import (
 )
 
 type externalRepositoryForTest struct {
-	Handle        string `json:"handle"`
-	DirectoryName string `json:"directoryName"`
-	Label         string `json:"label"`
-	Title         string `json:"title"`
-	Path          string `json:"path"`
-	Mode          string `json:"mode"`
-	RootHandle    string `json:"rootHandle,omitempty"`
-	RootPath      string `json:"rootPath,omitempty"`
-	ForkCount     int    `json:"forkCount,omitempty"`
+	Handle        string   `json:"handle"`
+	DirectoryName string   `json:"directoryName"`
+	Label         string   `json:"label"`
+	Title         string   `json:"title"`
+	Path          string   `json:"path"`
+	Mode          string   `json:"mode"`
+	RootHandle    string   `json:"rootHandle,omitempty"`
+	RootPath      string   `json:"rootPath,omitempty"`
+	ForkCount     int      `json:"forkCount,omitempty"`
+	ActiveAgents  []string `json:"activeAgents"`
 }
 
 type externalFactoryInfoForTest struct {
@@ -40,6 +43,7 @@ type externalSessionActionForTest struct {
 	Running        bool                      `json:"running"`
 	Message        string                    `json:"message"`
 	AlreadyRunning bool                      `json:"alreadyRunning,omitempty"`
+	RunningMode    string                    `json:"runningMode,omitempty"`
 }
 
 type externalGoalEditLinkForTest struct {
@@ -58,6 +62,108 @@ type externalForkResultForTest struct {
 	Parent    externalRepositoryForTest `json:"parent"`
 	CreatedAt string                    `json:"createdAt"`
 	Message   string                    `json:"message"`
+}
+
+type externalWorkspaceArgsForTest struct {
+	Workspace string `json:"workspace"`
+}
+
+type externalPendingQuestionListForTest struct {
+	Workspaces []externalRepositoryForTest `json:"workspaces"`
+}
+
+type externalQuestionItemForTest struct {
+	Question    string   `json:"question"`
+	Choices     []string `json:"choices"`
+	MultiSelect bool     `json:"multiSelect"`
+}
+
+type externalPendingQuestionForTest struct {
+	PromptToken string                        `json:"promptToken"`
+	Type        string                        `json:"type"`
+	AgentName   string                        `json:"agentName"`
+	Message     string                        `json:"message"`
+	Questions   []externalQuestionItemForTest `json:"questions,omitempty"`
+}
+
+type externalPendingQuestionResultForTest struct {
+	Workspace       externalRepositoryForTest      `json:"workspace"`
+	PendingQuestion externalPendingQuestionForTest `json:"pendingQuestion"`
+}
+
+type externalAnswerPendingQuestionArgsForTest struct {
+	Workspace       string   `json:"workspace"`
+	PromptToken     string   `json:"promptToken"`
+	Answer          string   `json:"answer"`
+	SelectedChoices []string `json:"selectedChoices"`
+}
+
+type externalAnswerPendingQuestionResultForTest struct {
+	Workspace externalRepositoryForTest `json:"workspace"`
+	Success   bool                      `json:"success"`
+	Message   string                    `json:"message"`
+}
+
+type externalSteerNextTurnArgsForTest struct {
+	Workspace string `json:"workspace"`
+	Message   string `json:"message"`
+}
+
+type externalSteerNextTurnResultForTest struct {
+	Workspace externalRepositoryForTest `json:"workspace"`
+	Success   bool                      `json:"success"`
+	Message   string                    `json:"message"`
+}
+
+type externalWorkflowLinksForTest struct {
+	Progress string `json:"progress"`
+	GoalEdit string `json:"goalEdit"`
+	Respond  string `json:"respond,omitempty"`
+}
+
+type externalWorkflowLinksResultForTest struct {
+	Workspace externalRepositoryForTest `json:"workspace"`
+	Links     externalWorkflowLinksForTest
+}
+
+type externalLogEntryForTest struct {
+	Prefix string `json:"prefix"`
+	Text   string `json:"text"`
+}
+
+type externalWorkspaceLogResultForTest struct {
+	Workspace externalRepositoryForTest `json:"workspace"`
+	Log       []externalLogEntryForTest `json:"log"`
+}
+
+type externalMessageForTest struct {
+	ID        int    `json:"id"`
+	FromAgent string `json:"fromAgent"`
+	ToAgent   string `json:"toAgent"`
+	Body      string `json:"body"`
+	Read      bool   `json:"read"`
+	ReadAt    string `json:"readAt,omitempty"`
+	ReadBy    string `json:"readBy,omitempty"`
+	CreatedAt string `json:"createdAt,omitempty"`
+}
+
+type externalTodoForTest struct {
+	ID       string `json:"id"`
+	Content  string `json:"content"`
+	Status   string `json:"status"`
+	Priority string `json:"priority"`
+}
+
+type externalAgentTodoSectionForTest struct {
+	Agent string                `json:"agent"`
+	Todos []externalTodoForTest `json:"todos"`
+}
+
+type externalWorkspaceMessagesAndTodosForTest struct {
+	Workspace               externalRepositoryForTest         `json:"workspace"`
+	Messages                []externalMessageForTest          `json:"messages"`
+	ProjectTodos            []externalTodoForTest             `json:"projectTodos"`
+	ActiveAgentTodoSections []externalAgentTodoSectionForTest `json:"activeAgentTodoSections"`
 }
 
 func connectExternalMCPClient(t *testing.T, server *Server, r *http.Request) *mcp.ClientSession {
@@ -127,6 +233,23 @@ func findRepositoryByName(t *testing.T, repositories []externalRepositoryForTest
 	return repository
 }
 
+func findRepositoryMapByPath(t *testing.T, repositories []any, workspacePath string) map[string]any {
+	t.Helper()
+
+	for _, item := range repositories {
+		repository, ok := item.(map[string]any)
+		require.True(t, ok)
+		path, ok := repository["path"].(string)
+		require.True(t, ok)
+		if path == workspacePath {
+			return repository
+		}
+	}
+
+	require.FailNowf(t, "repository not found", "repository %q not found", workspacePath)
+	return nil
+}
+
 func decodeExternalStructuredContentMap(t *testing.T, result *mcp.CallToolResult) map[string]any {
 	t.Helper()
 
@@ -155,13 +278,27 @@ func TestBuildExternalMCPServerExposesFirstWaveTools(t *testing.T) {
 	require.NoError(t, errList)
 
 	toolNames := mcpToolNames(result.Tools)
-	assert.True(t, slices.Contains(toolNames, "factory_info"))
-	assert.True(t, slices.Contains(toolNames, "start_self_drive"))
-	assert.True(t, slices.Contains(toolNames, "stop_workspace"))
-	assert.True(t, slices.Contains(toolNames, "reset_workspace"))
-	assert.True(t, slices.Contains(toolNames, "goal_edit_link"))
-	assert.True(t, slices.Contains(toolNames, "fork_repository"))
-	assert.True(t, slices.Contains(toolNames, "attach_repository"))
+	slices.Sort(toolNames)
+	expectedToolNames := []string{
+		"answer_pending_question",
+		"attach_repository",
+		"factory_info",
+		"fork_repository",
+		"get_pending_question",
+		"goal_edit_link",
+		"list_pending_questions",
+		"peek_workspace_log",
+		"reset_workspace",
+		"start_continuous",
+		"start_interactive",
+		"start_self_drive",
+		"steer_next_turn",
+		"stop_workspace",
+		"workflow_links",
+		"workspace_messages_and_todos",
+	}
+	assert.Equal(t, expectedToolNames, toolNames)
+	assert.False(t, slices.Contains(toolNames, "inspect_workspace"))
 	assert.False(t, slices.Contains(toolNames, "hello world"))
 }
 
@@ -193,22 +330,22 @@ func TestExternalMCPFactoryInfoReturnsHybridRepositoryIdentity(t *testing.T) {
 	assert.Equal(t, rootDir, info.StartDirectory)
 
 	standalone := findRepositoryByName(t, info.Repositories, "solo-dir")
-	assert.Equal(t, "Solo Title [solo-dir]", standalone.Handle)
+	assert.Equal(t, "Solo Title", standalone.Handle)
 	assert.Equal(t, "Solo Title", standalone.Label)
 	assert.Equal(t, "Solo Title", standalone.Title)
 	assert.Equal(t, standaloneDir, standalone.Path)
 	assert.Equal(t, "standalone", standalone.Mode)
 
 	rootRepository := findRepositoryByName(t, info.Repositories, "root-dir")
-	assert.Equal(t, "Root Title [root-dir]", rootRepository.Handle)
-	assert.Equal(t, "Root Title", rootRepository.Label)
+	assert.Equal(t, "root-dir", rootRepository.Handle)
+	assert.Equal(t, "root-dir", rootRepository.Label)
 	assert.Equal(t, resolveSymlinks(rootWorkspaceDir), rootRepository.Path)
 	assert.Equal(t, "root", rootRepository.Mode)
 	assert.Equal(t, 1, rootRepository.ForkCount)
 
 	forkRepository := findRepositoryByName(t, info.Repositories, "fork-dir")
-	assert.Equal(t, "Root Title/Fork Title [fork-dir]", forkRepository.Handle)
-	assert.Equal(t, "Root Title/Fork Title", forkRepository.Label)
+	assert.Equal(t, "root-dir/Fork Title", forkRepository.Handle)
+	assert.Equal(t, "root-dir/Fork Title", forkRepository.Label)
 	assert.Equal(t, resolveSymlinks(forkWorkspaceDir), forkRepository.Path)
 	assert.Equal(t, "fork", forkRepository.Mode)
 	assert.Equal(t, rootRepository.Handle, forkRepository.RootHandle)
@@ -233,6 +370,7 @@ func TestExternalMCPFactoryInfoOmitsRoutedNameField(t *testing.T) {
 	repository, ok := repositories[0].(map[string]any)
 	require.True(t, ok)
 	assert.NotContains(t, repository, "routedName")
+	assert.NotContains(t, repository, "displayLabel")
 }
 
 func TestExternalMCPFactoryInfoPreservesForkModeWithoutAttachedRoot(t *testing.T) {
@@ -272,7 +410,7 @@ func TestExternalMCPGoalEditLinkUsesBasenameOnlyPathWithoutWorkspaceDir(t *testi
 	link := decodeExternalStructuredContent[externalGoalEditLinkForTest](t, result)
 	assert.Equal(t, "https://10.10.0.7:9443/workspaces/goal-ws/goal/edit", link.URL)
 	assert.NotContains(t, link.URL, "workspaceDir=")
-	assert.Equal(t, "Goal Title [goal-ws]", link.Workspace.Handle)
+	assert.Equal(t, "Goal Title", link.Workspace.Handle)
 	assert.Equal(t, workspaceDir, link.Workspace.Path)
 }
 
@@ -354,6 +492,112 @@ func TestExternalMCPFactoryInfoKeepsBasenameForDuplicateBasenames(t *testing.T) 
 	assert.Equal(t, "shared-ws", secondRepository.DirectoryName)
 }
 
+func TestExternalMCPFactoryInfoUsesDashboardDisambiguationAndNormalizedActiveAgents(t *testing.T) {
+	server, _ := setupTestServer(t)
+	firstDir := filepath.Join(t.TempDir(), "first", "shared-ws")
+	secondDir := filepath.Join(t.TempDir(), "second", "shared-ws")
+	activeDir := filepath.Join(t.TempDir(), "active-parent", "active-ws")
+	require.NoError(t, os.MkdirAll(filepath.Join(firstDir, ".sgai"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(secondDir, ".sgai"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(activeDir, ".sgai"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(firstDir, "GOAL.md"), []byte("---\ntitle: Shared Title\n---\n# First"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(secondDir, "GOAL.md"), []byte("---\ntitle: Shared Title\n---\n# Second"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(activeDir, "GOAL.md"), []byte("---\ntitle: Active Title\n---\n# Active"), 0o644))
+
+	server.mu.Lock()
+	server.externalDirs[resolveSymlinks(firstDir)] = true
+	server.externalDirs[resolveSymlinks(secondDir)] = true
+	server.externalDirs[resolveSymlinks(activeDir)] = true
+	server.mu.Unlock()
+	server.invalidateWorkspaceScanCache()
+
+	attachRunningSessionCoordinator(t, server, resolveSymlinks(activeDir), workflowRef(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.CurrentAgent = "go-developer, react-developer"
+		workflow.InteractionMode = state.ModeBrainstorming
+	}))
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "factory_info", struct{}{})
+	require.False(t, result.IsError)
+
+	info := decodeExternalStructuredContent[externalFactoryInfoForTest](t, result)
+	payload := decodeExternalStructuredContentMap(t, result)
+	repositories, ok := payload["repositories"].([]any)
+	require.True(t, ok)
+	var firstRepository externalRepositoryForTest
+	var secondRepository externalRepositoryForTest
+	activeRepository := findRepositoryByName(t, info.Repositories, "active-ws")
+	for _, repository := range info.Repositories {
+		switch repository.Path {
+		case resolveSymlinks(firstDir):
+			firstRepository = repository
+		case resolveSymlinks(secondDir):
+			secondRepository = repository
+		}
+	}
+
+	assert.Equal(t, "Shared Title · first", firstRepository.Handle)
+	assert.Equal(t, "Shared Title · first", firstRepository.Label)
+	assert.Equal(t, "Shared Title · second", secondRepository.Handle)
+	assert.Equal(t, "Shared Title · second", secondRepository.Label)
+	assert.Equal(t, []string{"go-developer", "react-developer"}, activeRepository.ActiveAgents)
+
+	firstRepositoryMap := findRepositoryMapByPath(t, repositories, resolveSymlinks(firstDir))
+	secondRepositoryMap := findRepositoryMapByPath(t, repositories, resolveSymlinks(secondDir))
+	activeRepositoryMap := findRepositoryMapByPath(t, repositories, resolveSymlinks(activeDir))
+	assert.NotContains(t, firstRepositoryMap, "displayLabel")
+	assert.NotContains(t, secondRepositoryMap, "displayLabel")
+	firstActiveAgents, ok := firstRepositoryMap["activeAgents"].([]any)
+	require.True(t, ok)
+	assert.Empty(t, firstActiveAgents)
+	secondActiveAgents, ok := secondRepositoryMap["activeAgents"].([]any)
+	require.True(t, ok)
+	assert.Empty(t, secondActiveAgents)
+	activeAgents, ok := activeRepositoryMap["activeAgents"].([]any)
+	require.True(t, ok)
+	assert.Len(t, activeAgents, 2)
+}
+
+func TestExternalMCPStopWorkspaceAcceptsAuthoritativeDashboardLabel(t *testing.T) {
+	server, _ := setupTestServer(t)
+	firstDir := filepath.Join(t.TempDir(), "first", "shared-ws")
+	secondDir := filepath.Join(t.TempDir(), "second", "shared-ws")
+	require.NoError(t, os.MkdirAll(filepath.Join(firstDir, ".sgai"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(secondDir, ".sgai"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(firstDir, "GOAL.md"), []byte("---\ntitle: Shared Title\n---\n# First"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(secondDir, "GOAL.md"), []byte("---\ntitle: Shared Title\n---\n# Second"), 0o644))
+
+	server.mu.Lock()
+	server.externalDirs[resolveSymlinks(firstDir)] = true
+	server.externalDirs[resolveSymlinks(secondDir)] = true
+	server.mu.Unlock()
+	server.invalidateWorkspaceScanCache()
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	infoResult := callExternalTool(t, cs, "factory_info", struct{}{})
+	require.False(t, infoResult.IsError)
+
+	info := decodeExternalStructuredContent[externalFactoryInfoForTest](t, infoResult)
+	var firstRepository externalRepositoryForTest
+	for _, repository := range info.Repositories {
+		if repository.Path == resolveSymlinks(firstDir) {
+			firstRepository = repository
+			break
+		}
+	}
+	require.Equal(t, "Shared Title · first", firstRepository.Label)
+
+	result := callExternalTool(t, cs, "stop_workspace", externalTargetArgs{Target: firstRepository.Label})
+	require.False(t, result.IsError)
+
+	action := decodeExternalStructuredContent[externalSessionActionForTest](t, result)
+	assert.Equal(t, resolveSymlinks(firstDir), action.Workspace.Path)
+	assert.Equal(t, "Shared Title · first", action.Workspace.Label)
+}
+
 func TestExternalMCPGoalEditLinkRejectsAmbiguousAbsolutePathTarget(t *testing.T) {
 	server, _ := setupTestServer(t)
 	firstDir := filepath.Join(t.TempDir(), "first", "shared-ws")
@@ -387,11 +631,11 @@ func TestExternalMCPFormerRootBecomesStandaloneAfterLastForkRemoved(t *testing.T
 	server.classifyCache.delete(workspaceDir)
 	server.classifyCache.delete(resolveSymlinks(workspaceDir))
 
-	server.mu.Lock()
-	runningSession := new(session)
-	runningSession.running = true
-	server.sessions[workspaceDir] = runningSession
-	server.mu.Unlock()
+	attachRunningSessionCoordinator(t, server, workspaceDir, workflowRef(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.CurrentAgent = "coordinator"
+		workflow.InteractionMode = state.ModeBrainstorming
+	}))
 
 	req := httptestNewRequest(t, "http://factory.test/mcp/external")
 	cs := connectExternalMCPClient(t, server, req)
@@ -407,18 +651,18 @@ func TestExternalMCPFormerRootBecomesStandaloneAfterLastForkRemoved(t *testing.T
 	action := decodeExternalStructuredContent[externalSessionActionForTest](t, startResult)
 	assert.True(t, action.AlreadyRunning)
 	assert.Equal(t, "running", action.Status)
-	assert.Equal(t, "session already running", action.Message)
+	assert.Equal(t, "interactive", action.RunningMode)
+	assert.Equal(t, "workspace already running in interactive mode", action.Message)
 }
 
 func TestExternalMCPStartSelfDriveReportsAlreadyRunningSession(t *testing.T) {
 	server, rootDir := setupTestServer(t)
 	workspaceDir := setupTestWorkspace(t, server, rootDir, "run-ws")
-
-	server.mu.Lock()
-	runningSession := new(session)
-	runningSession.running = true
-	server.sessions[workspaceDir] = runningSession
-	server.mu.Unlock()
+	attachRunningSessionCoordinator(t, server, workspaceDir, workflowRef(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.CurrentAgent = "coordinator"
+		workflow.InteractionMode = state.ModeBrainstorming
+	}))
 
 	req := httptestNewRequest(t, "http://factory.test/mcp/external")
 	cs := connectExternalMCPClient(t, server, req)
@@ -429,7 +673,8 @@ func TestExternalMCPStartSelfDriveReportsAlreadyRunningSession(t *testing.T) {
 	assert.True(t, action.AlreadyRunning)
 	assert.True(t, action.Running)
 	assert.Equal(t, "running", action.Status)
-	assert.Equal(t, "session already running", action.Message)
+	assert.Equal(t, "interactive", action.RunningMode)
+	assert.Equal(t, "workspace already running in interactive mode", action.Message)
 	assert.Equal(t, "run-ws", action.Workspace.DirectoryName)
 }
 
@@ -492,10 +737,41 @@ func TestExternalMCPForkRepositoryRejectsForkTargetsWithGuidance(t *testing.T) {
 
 	req := httptestNewRequest(t, "http://factory.test/mcp/external")
 	cs := connectExternalMCPClient(t, server, req)
-	result := callExternalTool(t, cs, "fork_repository", externalForkArgs{Target: forkWorkspaceDir, GoalContent: "---\nflow: |\n  \"a\" -> \"b\"\n---\n# New Goal"})
+	result := callExternalTool(t, cs, "fork_repository", externalForkArgs{Target: forkWorkspaceDir, GoalContent: "---\nflow: |\n  \"a\" -> \"b\"\n---\n# New Goal", Title: "Fork Attempt"})
 	assert.True(t, result.IsError)
 	assert.Contains(t, externalToolText(t, result), "already a fork workspace")
 	assert.Contains(t, externalToolText(t, result), "standalone repository or a root repository")
+}
+
+func TestExternalMCPForkRepositoryRequiresTitle(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "fork-title-required")
+	require.NoError(t, initializeWorkspace(workspaceDir))
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, "GOAL.md"), []byte("---\ntitle: Root Goal\nflow: |\n  \"a\" -> \"b\"\n---\n# Goal"), 0o644))
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "fork_repository", externalForkArgs{Target: workspaceDir, GoalContent: "# Fork Goal", Title: ""})
+	assert.True(t, result.IsError)
+	assert.Contains(t, externalToolText(t, result), "title")
+	assert.Contains(t, externalToolText(t, result), "required")
+}
+
+func TestExternalMCPForkRepositorySchemaRequiresTitleField(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "fork-title-schema")
+	require.NoError(t, initializeWorkspace(workspaceDir))
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, "GOAL.md"), []byte("---\ntitle: Root Goal\nflow: |\n  \"a\" -> \"b\"\n---\n# Goal"), 0o644))
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	params := new(mcp.CallToolParams)
+	params.Name = "fork_repository"
+	params.Arguments = map[string]any{"target": workspaceDir, "goalContent": "# Fork Goal"}
+	_, errCall := cs.CallTool(context.Background(), params)
+	require.Error(t, errCall)
+	assert.Contains(t, errCall.Error(), "missing properties")
+	assert.Contains(t, errCall.Error(), "title")
 }
 
 func TestExternalMCPForkRepositoryCreatesSiblingWorkspace(t *testing.T) {
@@ -506,7 +782,7 @@ func TestExternalMCPForkRepositoryCreatesSiblingWorkspace(t *testing.T) {
 
 	req := httptestNewRequest(t, "http://factory.test/mcp/external")
 	cs := connectExternalMCPClient(t, server, req)
-	result := callExternalTool(t, cs, "fork_repository", externalForkArgs{Target: workspaceDir, GoalContent: "---\nflow: |\n  \"a\" -> \"b\"\n---\n# Fork Goal"})
+	result := callExternalTool(t, cs, "fork_repository", externalForkArgs{Target: workspaceDir, GoalContent: "---\nflow: |\n  \"a\" -> \"b\"\n---\n# Fork Goal", Title: "Forkable Copy"})
 	require.False(t, result.IsError)
 
 	forkResult := decodeExternalStructuredContent[externalForkResultForTest](t, result)
@@ -515,6 +791,57 @@ func TestExternalMCPForkRepositoryCreatesSiblingWorkspace(t *testing.T) {
 	assert.DirExists(t, forkResult.Workspace.Path)
 	assert.Equal(t, "fork", forkResult.Workspace.Mode)
 	assert.NotEmpty(t, forkResult.CreatedAt)
+}
+
+func TestExternalMCPForkRepositoryOverridesQuotedCopiedTitleAndPreservesSubmittedBodyText(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "fork-title-override")
+	require.NoError(t, initializeWorkspace(workspaceDir))
+
+	rootGoalContent := strings.Join([]string{
+		"---",
+		"\"title\": Root Goal",
+		"flow: |",
+		"  \"coordinator\" -> \"go-developer\"",
+		"models:",
+		"  coordinator: root-model",
+		"---",
+		"",
+		"# Root Goal",
+	}, "\n")
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, "GOAL.md"), []byte(rootGoalContent), 0o644))
+
+	submittedGoalContent := strings.Join([]string{
+		"",
+		" \t",
+		"---",
+		"title: Ignored Submitted Title",
+		"flow: |",
+		"  \"browser\" -> \"editor\"",
+		"---",
+		"",
+		"# Fork Goal",
+		"",
+		"Implement the override.",
+	}, "\n")
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "fork_repository", externalForkArgs{Target: workspaceDir, GoalContent: submittedGoalContent, Title: "External Fork Title"})
+	require.False(t, result.IsError)
+
+	forkResult := decodeExternalStructuredContent[externalForkResultForTest](t, result)
+	forkGoalContent, errRead := os.ReadFile(filepath.Join(forkResult.Workspace.Path, "GOAL.md"))
+	require.NoError(t, errRead)
+
+	metadata, errParse := parseYAMLFrontmatter(forkGoalContent)
+	require.NoError(t, errParse)
+	assert.Equal(t, "External Fork Title", metadata.Title)
+	frontmatter := forkGoalFrontmatterForTest(t, forkGoalContent)
+	assert.Contains(t, frontmatter, "flow: |")
+	assert.Contains(t, frontmatter, "coordinator: root-model")
+	assert.Equal(t, 1, strings.Count(frontmatter, "title:")+strings.Count(frontmatter, "\"title\":"))
+	assert.Equal(t, submittedGoalContent, forkGoalBodyForTest(t, forkGoalContent))
 }
 
 func TestExternalMCPAttachRepositoryRequiresAbsolutePath(t *testing.T) {
@@ -540,8 +867,450 @@ func TestExternalMCPAttachRepositoryAttachesWorkspace(t *testing.T) {
 	attachResult := decodeExternalStructuredContent[externalAttachResultForTest](t, result)
 	assert.True(t, attachResult.HasGoal)
 	assert.Equal(t, resolveSymlinks(externalDir), attachResult.Workspace.Path)
-	assert.Equal(t, "Attached Goal [attach-me]", attachResult.Workspace.Handle)
+	assert.Equal(t, "Attached Goal", attachResult.Workspace.Handle)
 	assert.Equal(t, "standalone", attachResult.Workspace.Mode)
+}
+
+func TestExternalMCPStartInteractiveRejectsContinuousConfiguredWorkspace(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "continuous-ws")
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, "GOAL.md"), []byte("---\ncontinuousModePrompt: Keep going\nflow: |\n  \"a\" -> \"b\"\n---\n# Goal"), 0o644))
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "start_interactive", externalWorkspaceArgsForTest{Workspace: "continuous-ws"})
+	assert.True(t, result.IsError)
+	assert.Contains(t, externalToolText(t, result), "start_continuous")
+	assert.Contains(t, externalToolText(t, result), "continuous mode")
+}
+
+func TestExternalMCPStartSelfDriveUsesExplicitSelfDriveModeForContinuousConfiguredWorkspace(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "self-drive-continuous-ws")
+	require.NoError(t, initializeWorkspace(workspaceDir))
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, "GOAL.md"), []byte("---\ncontinuousModePrompt: Keep going\nflow: |\n  \"coordinator\"\n---\n# Goal"), 0o644))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	server.shutdownCtx = ctx
+	t.Cleanup(func() {
+		server.stopSession(workspaceDir)
+		require.Eventually(t, func() bool {
+			if errRemove := os.RemoveAll(workspaceDir); errRemove != nil {
+				return false
+			}
+			_, errStat := os.Stat(workspaceDir)
+			return os.IsNotExist(errStat)
+		}, time.Second, 10*time.Millisecond)
+	})
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "start_self_drive", externalTargetArgs{Target: "self-drive-continuous-ws"})
+	require.False(t, result.IsError)
+
+	action := decodeExternalStructuredContent[externalSessionActionForTest](t, result)
+	assert.True(t, action.Running)
+	assert.False(t, action.AlreadyRunning)
+	assert.Equal(t, "self-drive", action.RunningMode)
+	assert.Equal(t, "workspace started in self-drive mode", action.Message)
+	assert.Equal(t, state.ModeSelfDrive, workflowStateFromDisk(t, workspaceDir).InteractionMode)
+}
+
+func TestExternalMCPStartContinuousRejectsWorkspaceWithoutContinuousMode(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "interactive-ws")
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, "GOAL.md"), []byte("---\nflow: |\n  \"a\" -> \"b\"\n---\n# Goal"), 0o644))
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "start_continuous", externalWorkspaceArgsForTest{Workspace: "interactive-ws"})
+	assert.True(t, result.IsError)
+	assert.Contains(t, externalToolText(t, result), "start_interactive")
+	assert.Contains(t, externalToolText(t, result), "start_self_drive")
+	assert.Contains(t, externalToolText(t, result), "continuous mode is not configured")
+}
+
+func TestExternalMCPStartContinuousReportsActualRunningMode(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "already-running-ws")
+	attachRunningSessionCoordinator(t, server, workspaceDir, workflowRef(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.InteractionMode = state.ModeSelfDrive
+		workflow.CurrentAgent = "coordinator"
+	}))
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "start_continuous", externalWorkspaceArgsForTest{Workspace: "already-running-ws"})
+	require.False(t, result.IsError)
+
+	action := decodeExternalStructuredContent[externalSessionActionForTest](t, result)
+	assert.True(t, action.AlreadyRunning)
+	assert.Equal(t, "self-drive", action.RunningMode)
+	assert.Equal(t, "workspace already running in self-drive mode", action.Message)
+}
+
+func TestExternalMCPListPendingQuestionsReturnsOnlyLivePendingWorkspaces(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	pendingDir := setupTestWorkspace(t, server, rootDir, "pending-ws")
+	staleDir := setupTestWorkspace(t, server, rootDir, "stale-ws")
+	quietDir := setupTestWorkspace(t, server, rootDir, "quiet-ws")
+
+	_, pendingErrCh, pendingCancel := startWaitingSessionQuestion(t, server, pendingDir, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+		question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
+			item.Question = "Pick one"
+			item.Choices = []string{"A", "B"}
+		})}
+	}), "Pick one")
+	defer func() {
+		pendingCancel()
+		require.Error(t, <-pendingErrCh)
+	}()
+
+	writeWorkflowStateToDisk(t, staleDir, workflowRef(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.HumanMessage = "stale question"
+		workflow.MultiChoiceQuestion = multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+			question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
+				item.Question = "Old question"
+				item.Choices = []string{"X", "Y"}
+			})}
+		})
+	}))
+	attachRunningSessionCoordinator(t, server, quietDir, workflowRef(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.CurrentAgent = "coordinator"
+	}))
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "list_pending_questions", struct{}{})
+	require.False(t, result.IsError)
+
+	list := decodeExternalStructuredContent[externalPendingQuestionListForTest](t, result)
+	require.Len(t, list.Workspaces, 1)
+	assert.Equal(t, "pending-ws", list.Workspaces[0].DirectoryName)
+}
+
+func TestExternalMCPGetPendingQuestionReturnsFullPayload(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "pending-payload-ws")
+	coord, errCh, cancel := startWaitingSessionQuestion(t, server, workspaceDir, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+		question.Questions = []state.QuestionItem{
+			questionItemWith(func(item *state.QuestionItem) {
+				item.Question = "Pick one"
+				item.Choices = []string{"A", "B"}
+			}),
+			questionItemWith(func(item *state.QuestionItem) {
+				item.Question = "Pick many"
+				item.Choices = []string{"X", "Y"}
+				item.MultiSelect = true
+			}),
+		}
+	}), "Please answer both questions")
+	defer func() {
+		cancel()
+		require.Error(t, <-errCh)
+	}()
+	promptToken := waitForSessionPromptToken(t, coord)
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "get_pending_question", externalWorkspaceArgsForTest{Workspace: "pending-payload-ws"})
+	require.False(t, result.IsError)
+
+	payload := decodeExternalStructuredContent[externalPendingQuestionResultForTest](t, result)
+	assert.Equal(t, "pending-payload-ws", payload.Workspace.DirectoryName)
+	assert.Equal(t, promptToken, payload.PendingQuestion.PromptToken)
+	assert.Equal(t, "multi-choice", payload.PendingQuestion.Type)
+	assert.Equal(t, "coordinator", payload.PendingQuestion.AgentName)
+	assert.Equal(t, "Please answer both questions", payload.PendingQuestion.Message)
+	require.Len(t, payload.PendingQuestion.Questions, 2)
+	assert.Equal(t, "Pick one", payload.PendingQuestion.Questions[0].Question)
+	assert.Equal(t, []string{"A", "B"}, payload.PendingQuestion.Questions[0].Choices)
+	assert.True(t, payload.PendingQuestion.Questions[1].MultiSelect)
+}
+
+func TestExternalMCPAnswerPendingQuestionRejectsEmptySubmissionWithResteer(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "empty-answer-ws")
+	coord, errCh, cancel := startWaitingSessionQuestion(t, server, workspaceDir, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+		question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
+			item.Question = "Pick one"
+			item.Choices = []string{"A", "B"}
+		})}
+	}), "Please explain your choice")
+	defer func() {
+		cancel()
+		require.Error(t, <-errCh)
+	}()
+	promptToken := waitForSessionPromptToken(t, coord)
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "answer_pending_question", externalAnswerPendingQuestionArgsForTest{
+		Workspace:       "empty-answer-ws",
+		PromptToken:     promptToken,
+		Answer:          "",
+		SelectedChoices: nil,
+	})
+	assert.True(t, result.IsError)
+	message := externalToolText(t, result)
+	assert.Contains(t, message, "answer text or selected choices are required")
+	assert.Contains(t, message, "get_pending_question")
+	assert.Contains(t, message, "provide answer text, selected choices, or both")
+	assert.NotContains(t, message, "answer every required part of the current question")
+	assert.True(t, coord.State().NeedsHumanInput())
+}
+
+func TestExternalMCPAnswerPendingQuestionRejectsStalePromptTokenWithResteer(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "stale-answer-ws")
+	coord, errCh, cancel := startWaitingSessionQuestion(t, server, workspaceDir, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+		question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
+			item.Question = "Pick one"
+			item.Choices = []string{"A", "B"}
+		})}
+	}), "Please answer")
+	defer func() {
+		cancel()
+		require.Error(t, <-errCh)
+	}()
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "answer_pending_question", externalAnswerPendingQuestionArgsForTest{
+		Workspace:       "stale-answer-ws",
+		PromptToken:     "stale-token",
+		Answer:          "I choose A",
+		SelectedChoices: []string{"A"},
+	})
+	assert.True(t, result.IsError)
+	assert.Contains(t, externalToolText(t, result), "question is no longer current")
+	assert.Contains(t, externalToolText(t, result), "get_pending_question")
+	assert.True(t, coord.State().NeedsHumanInput())
+}
+
+func assertExternalPendingQuestionSubmission(t *testing.T, workspaceName, answer string, selectedChoices []string) {
+	t.Helper()
+
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, workspaceName)
+	coord, errCh, cancel := startWaitingSessionQuestion(t, server, workspaceDir, multiChoiceQuestionWith(func(question *state.MultiChoiceQuestion) {
+		question.Questions = []state.QuestionItem{questionItemWith(func(item *state.QuestionItem) {
+			item.Question = "Pick one"
+			item.Choices = []string{"A", "B"}
+		})}
+	}), "Please explain your choice")
+	defer cancel()
+	promptToken := waitForSessionPromptToken(t, coord)
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "answer_pending_question", externalAnswerPendingQuestionArgsForTest{
+		Workspace:       workspaceName,
+		PromptToken:     promptToken,
+		Answer:          answer,
+		SelectedChoices: selectedChoices,
+	})
+	require.False(t, result.IsError)
+
+	response := decodeExternalStructuredContent[externalAnswerPendingQuestionResultForTest](t, result)
+	assert.True(t, response.Success)
+	assert.Equal(t, "response submitted", response.Message)
+	assert.Equal(t, workspaceName, response.Workspace.DirectoryName)
+	require.NoError(t, <-errCh)
+}
+
+func TestExternalMCPAnswerPendingQuestionSubmitsResponse(t *testing.T) {
+	assertExternalPendingQuestionSubmission(t, "answer-success-ws", "I choose A because it is safer.", []string{"A"})
+}
+
+func TestExternalMCPAnswerPendingQuestionAllowsChoiceOnlySubmission(t *testing.T) {
+	assertExternalPendingQuestionSubmission(t, "choice-only-answer-ws", "", []string{"A"})
+}
+
+func TestExternalMCPAnswerPendingQuestionAllowsTextOnlySubmission(t *testing.T) {
+	assertExternalPendingQuestionSubmission(t, "text-only-answer-ws", "I prefer A because it is safer.", nil)
+}
+
+func TestExternalMCPSteerNextTurnRejectsEmptyInstruction(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "steer-empty-ws")
+	_, errCoord := state.NewCoordinatorWith(filepath.Join(workspaceDir, ".sgai", "state.json"), workflowWith(func(*state.Workflow) {}))
+	require.NoError(t, errCoord)
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "steer_next_turn", externalSteerNextTurnArgsForTest{
+		Workspace: "steer-empty-ws",
+		Message:   "   ",
+	})
+	assert.True(t, result.IsError)
+	assert.Contains(t, externalToolText(t, result), "cannot be empty")
+}
+
+func TestExternalMCPSteerNextTurnAddsResteeringInstruction(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "steer-success-ws")
+	attachRunningSessionCoordinator(t, server, workspaceDir, workflowRef(func(*state.Workflow) {}))
+	coord := server.sessionCoordinator(workspaceDir)
+	require.NotNil(t, coord)
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "steer_next_turn", externalSteerNextTurnArgsForTest{
+		Workspace: "steer-success-ws",
+		Message:   "Please branch before changing the API shape.",
+	})
+	require.False(t, result.IsError)
+
+	response := decodeExternalStructuredContent[externalSteerNextTurnResultForTest](t, result)
+	assert.True(t, response.Success)
+	assert.Equal(t, "steering instruction added", response.Message)
+	assert.Equal(t, "steer-success-ws", response.Workspace.DirectoryName)
+	require.Len(t, coord.State().Messages, 1)
+	assert.Equal(t, "Human Partner", coord.State().Messages[0].FromAgent)
+	assert.Equal(t, "coordinator", coord.State().Messages[0].ToAgent)
+	assert.Equal(t, "Re-steering instruction: Please branch before changing the API shape.", coord.State().Messages[0].Body)
+}
+
+func TestExternalMCPWorkflowLinksReturnsMinimalSetWithoutRespondWhenIdle(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "workflow-links-ws")
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, "GOAL.md"), []byte("---\ntitle: Workflow Links\n---\n# Goal"), 0o644))
+
+	req := httptestNewRequest(t, "http://127.0.0.1/mcp/external")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "10.10.0.7:9443")
+
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "workflow_links", externalWorkspaceArgsForTest{Workspace: "workflow-links-ws"})
+	require.False(t, result.IsError)
+
+	links := decodeExternalStructuredContent[externalWorkflowLinksResultForTest](t, result)
+	assert.Equal(t, "https://10.10.0.7:9443/workspaces/workflow-links-ws/progress", links.Links.Progress)
+	assert.Equal(t, "https://10.10.0.7:9443/workspaces/workflow-links-ws/goal/edit", links.Links.GoalEdit)
+	assert.Empty(t, links.Links.Respond)
+	assert.Equal(t, "workflow-links-ws", links.Workspace.DirectoryName)
+}
+
+func TestExternalMCPWorkflowLinksIncludesRespondWhenInputIsPending(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "workflow-pending-ws")
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, "GOAL.md"), []byte("---\ntitle: Workflow Pending\n---\n# Goal"), 0o644))
+	_, errCh, cancel := startWaitingSessionQuestion(t, server, workspaceDir, nil, "Please answer")
+	defer func() {
+		cancel()
+		require.Error(t, <-errCh)
+	}()
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "workflow_links", externalWorkspaceArgsForTest{Workspace: "workflow-pending-ws"})
+	require.False(t, result.IsError)
+
+	links := decodeExternalStructuredContent[externalWorkflowLinksResultForTest](t, result)
+	assert.Equal(t, "http://factory.test/workspaces/workflow-pending-ws/progress", links.Links.Progress)
+	assert.Equal(t, "http://factory.test/workspaces/workflow-pending-ws/goal/edit", links.Links.GoalEdit)
+	assert.Equal(t, "http://factory.test/workspaces/workflow-pending-ws/respond", links.Links.Respond)
+	assert.Equal(t, "workflow-pending-ws", links.Workspace.DirectoryName)
+}
+
+func TestExternalMCPWorkflowLinksRejectsAmbiguousAbsolutePathTarget(t *testing.T) {
+	server, _ := setupTestServer(t)
+	firstDir := filepath.Join(t.TempDir(), "first", "shared-ws")
+	secondDir := filepath.Join(t.TempDir(), "second", "shared-ws")
+	require.NoError(t, os.MkdirAll(filepath.Join(firstDir, ".sgai"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(secondDir, ".sgai"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(firstDir, "GOAL.md"), []byte("---\ntitle: First Shared\n---\n# First"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(secondDir, "GOAL.md"), []byte("---\ntitle: Second Shared\n---\n# Second"), 0o644))
+
+	server.mu.Lock()
+	server.externalDirs[resolveSymlinks(firstDir)] = true
+	server.externalDirs[resolveSymlinks(secondDir)] = true
+	server.mu.Unlock()
+	server.invalidateWorkspaceScanCache()
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "workflow_links", externalWorkspaceArgsForTest{Workspace: firstDir})
+	assert.True(t, result.IsError)
+
+	message := externalToolText(t, result)
+	assert.Contains(t, message, "workflow links")
+	assert.Contains(t, message, "basename")
+	assert.Contains(t, message, "ambiguous")
+	assert.NotContains(t, message, "goal edit link")
+}
+
+func TestExternalMCPPeekWorkspaceLogReturnsLiveBufferOnly(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "log-ws")
+	sess := newTestServeSession(nil, true)
+	sess.outputLog = newCircularLogBuffer()
+	sess.outputLog.add(logLine{prefix: "stdout", text: "first live line"})
+	sess.outputLog.add(logLine{prefix: "stderr", text: "second live line"})
+	server.mu.Lock()
+	server.sessions[workspaceDir] = sess
+	server.mu.Unlock()
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, ".sgai", "session.log"), []byte("historical line"), 0o644))
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "peek_workspace_log", externalWorkspaceArgsForTest{Workspace: "log-ws"})
+	require.False(t, result.IsError)
+
+	logResult := decodeExternalStructuredContent[externalWorkspaceLogResultForTest](t, result)
+	require.Len(t, logResult.Log, 2)
+	assert.Equal(t, []externalLogEntryForTest{{Prefix: "stdout", Text: "first live line"}, {Prefix: "stderr", Text: "second live line"}}, logResult.Log)
+}
+
+func TestExternalMCPWorkspaceMessagesAndTodosUsesInternalOrderAndActiveAgentTodos(t *testing.T) {
+	server, rootDir := setupTestServer(t)
+	workspaceDir := setupTestWorkspace(t, server, rootDir, "messages-ws")
+	attachRunningSessionCoordinator(t, server, workspaceDir, workflowRef(func(workflow *state.Workflow) {
+		workflow.Status = state.StatusWorking
+		workflow.CurrentAgent = "go-developer, react-developer"
+		workflow.Messages = []state.Message{
+			messageWith(func(message *state.Message) {
+				message.ID = 1
+				message.FromAgent = "coordinator"
+				message.ToAgent = "go-developer"
+				message.Body = "first message"
+			}),
+			messageWith(func(message *state.Message) {
+				message.ID = 2
+				message.FromAgent = "go-developer"
+				message.ToAgent = "react-developer"
+				message.Body = "second message"
+				message.Read = true
+			}),
+		}
+		workflow.ProjectTodos = []state.TodoItem{{ID: "p1", Content: "project todo", Status: "pending", Priority: "high"}}
+		workflow.TodosByAgent = map[string][]state.TodoItem{
+			"go-developer":    {{ID: "g1", Content: "go todo", Status: "pending", Priority: "high"}},
+			"react-developer": {{ID: "r1", Content: "react todo", Status: "in_progress", Priority: "medium"}},
+			"coordinator":     {{ID: "c1", Content: "hidden todo", Status: "pending", Priority: "low"}},
+		}
+	}))
+
+	req := httptestNewRequest(t, "http://factory.test/mcp/external")
+	cs := connectExternalMCPClient(t, server, req)
+	result := callExternalTool(t, cs, "workspace_messages_and_todos", externalWorkspaceArgsForTest{Workspace: "messages-ws"})
+	require.False(t, result.IsError)
+
+	export := decodeExternalStructuredContent[externalWorkspaceMessagesAndTodosForTest](t, result)
+	require.Len(t, export.Messages, 2)
+	assert.Equal(t, 1, export.Messages[0].ID)
+	assert.Equal(t, 2, export.Messages[1].ID)
+	require.Len(t, export.ProjectTodos, 1)
+	assert.Equal(t, "project todo", export.ProjectTodos[0].Content)
+	require.Len(t, export.ActiveAgentTodoSections, 2)
+	assert.Equal(t, "go-developer", export.ActiveAgentTodoSections[0].Agent)
+	assert.Equal(t, "go todo", export.ActiveAgentTodoSections[0].Todos[0].Content)
+	assert.Equal(t, "react-developer", export.ActiveAgentTodoSections[1].Agent)
+	assert.Equal(t, "react todo", export.ActiveAgentTodoSections[1].Todos[0].Content)
 }
 
 func httptestNewRequest(t *testing.T, rawURL string) *http.Request {

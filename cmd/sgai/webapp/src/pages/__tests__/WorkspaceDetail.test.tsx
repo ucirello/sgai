@@ -323,9 +323,22 @@ describe("WorkspaceDetail", () => {
       lastFetchedAt: Date.now(),
     }));
     spyOn(factoryStateModule, "triggerFactoryRefresh").mockImplementation(() => mockTriggerFactoryRefresh());
-    spyOn(workspacePageStateModule, "useWorkspacePageState").mockImplementation((workspaceName: string) => {
+    spyOn(workspacePageStateModule, "useWorkspacePageState").mockImplementation((workspaceTarget: string | {
+      name: string;
+      dir?: string;
+    }) => {
+      const workspaceName = typeof workspaceTarget === "string"
+        ? workspaceTarget
+        : workspaceTarget.name;
+      const workspaceDir = typeof workspaceTarget === "string"
+        ? ""
+        : workspaceTarget.dir?.trim() ?? "";
       const matchingWorkspaces = mockWorkspaces.filter((workspace) => workspace.name === workspaceName);
-      if (matchingWorkspaces.length > 1) {
+      const resolvedMatches = workspaceDir
+        ? matchingWorkspaces.filter((workspace) => workspace.dir === workspaceDir)
+        : matchingWorkspaces;
+
+      if (resolvedMatches.length > 1) {
         return {
           workspace: null,
           fetchStatus: "error" as const,
@@ -334,7 +347,7 @@ describe("WorkspaceDetail", () => {
       }
 
       return {
-        workspace: matchingWorkspaces[0] ?? null,
+        workspace: resolvedMatches[0] ?? null,
         fetchStatus: mockFetchStatus as "idle" | "fetching" | "error",
         lastFetchedAt: Date.now(),
       };
@@ -380,7 +393,7 @@ describe("WorkspaceDetail", () => {
       });
     });
 
-    it("shows a load failure for ambiguous duplicate-basename detail routes without workspaceDir", async () => {
+    it("loads the selected duplicate-basename detail route when workspaceDir is present", async () => {
       mockWorkspaces = [
         createMockWorkspace({
           name: "shared-ws",
@@ -396,15 +409,19 @@ describe("WorkspaceDetail", () => {
         }),
       ];
 
-      const { router } = renderWorkspaceDetailRouter("/workspaces/shared-ws");
+      const workspaceDir = encodeURIComponent("/tmp/first/shared-ws");
+      const { router } = renderWorkspaceDetailRouter(`/workspaces/shared-ws/progress?workspaceDir=${workspaceDir}`);
 
       await waitFor(() => {
-        expect(router.state.location.pathname).toBe("/workspaces/shared-ws");
-        expect(screen.getByText("Failed to load workspace state")).toBeTruthy();
+        expect(router.state.location.pathname).toBe("/workspaces/shared-ws/progress");
+        expect(router.state.location.search).toBe(`?workspaceDir=${workspaceDir}`);
+        expect(screen.getByText("First Shared Workspace")).toBeTruthy();
+        expect(screen.getByText("First task")).toBeTruthy();
+        expect(screen.queryByText("Failed to load workspace state")).toBeNull();
       });
     });
 
-    it("shows a load failure for duplicate-basename forks routes", async () => {
+    it("loads the selected duplicate-basename forks route when workspaceDir is present", async () => {
       mockWorkspaces = [
         createMockWorkspace({
           name: "shared-ws",
@@ -462,12 +479,66 @@ describe("WorkspaceDetail", () => {
         }),
       ];
 
-      renderWorkspaceDetailRouter("/workspaces/shared-ws/forks");
+      const workspaceDir = encodeURIComponent("/tmp/second/shared-ws");
+      renderWorkspaceDetailRouter(`/workspaces/shared-ws/forks?workspaceDir=${workspaceDir}`);
 
       await waitFor(() => {
-        expect(screen.getByText("Failed to load workspace state")).toBeTruthy();
-        expect(screen.queryByText("Second Fork")).toBeNull();
+        expect(screen.getByText("Second Fork")).toBeTruthy();
         expect(screen.queryByText("First Fork")).toBeNull();
+        expect(screen.queryByText("Failed to load workspace state")).toBeNull();
+      });
+    });
+
+    it("disables basename-only workspace controls on dir-qualified duplicate routes", async () => {
+      mockWorkspaces = [
+        createMockWorkspace({
+          name: "shared-ws",
+          dir: "/tmp/first/shared-ws",
+          title: "First Shared Workspace",
+        }),
+        createMockWorkspace({
+          name: "shared-ws",
+          dir: "/tmp/second/shared-ws",
+          title: "Second Shared Workspace",
+        }),
+      ];
+
+      const workspaceDir = encodeURIComponent("/tmp/first/shared-ws");
+      renderWorkspaceDetailRouter(`/workspaces/shared-ws/progress?workspaceDir=${workspaceDir}`);
+
+      await waitFor(() => {
+        expect(screen.getByText("Some interactive controls are unavailable on duplicate-name workspace routes because the current API still targets workspaces by basename only.")).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Self-drive" }).hasAttribute("disabled")).toBe(true);
+        expect(screen.getByRole("button", { name: "Start" }).hasAttribute("disabled")).toBe(true);
+        expect(screen.getByRole("button", { name: "Reset" }).hasAttribute("disabled")).toBe(true);
+        expect(screen.getByRole("button", { name: "Edit GOAL" }).hasAttribute("disabled")).toBe(true);
+        expect(screen.getByRole("button", { name: "Open in Editor" }).hasAttribute("disabled")).toBe(true);
+        expect(screen.getByRole("button", { name: "Pin" }).hasAttribute("disabled")).toBe(true);
+        expect(screen.queryByRole("button", { name: "Detach" })).toBeNull();
+      });
+    });
+
+    it("disables Stop on dir-qualified duplicate routes when the workspace is already running", async () => {
+      mockWorkspaces = [
+        createMockWorkspace({
+          name: "shared-ws",
+          dir: "/tmp/first/shared-ws",
+          title: "First Shared Workspace",
+          running: true,
+        }),
+        createMockWorkspace({
+          name: "shared-ws",
+          dir: "/tmp/second/shared-ws",
+          title: "Second Shared Workspace",
+          running: true,
+        }),
+      ];
+
+      const workspaceDir = encodeURIComponent("/tmp/first/shared-ws");
+      renderWorkspaceDetailRouter(`/workspaces/shared-ws/progress?workspaceDir=${workspaceDir}`);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Stop" }).hasAttribute("disabled")).toBe(true);
       });
     });
 
@@ -1166,6 +1237,62 @@ describe("WorkspaceDetail", () => {
         const glmElements = screen.queryAllByText(/glm-5/);
         expect(coordinatorElements.length).toBeGreaterThan(0);
         expect(glmElements.length).toBeGreaterThan(0);
+      });
+    });
+
+    it("displays multiple active agents as separate badges", async () => {
+      mockWorkspaces[0] = createMockWorkspace({
+        running: true,
+        currentAgent: "go-developer, react-developer",
+        currentModel: "",
+      });
+
+      renderWorkspaceDetail();
+
+      await waitFor(() => {
+        expect(screen.getByText("go-developer")).toBeTruthy();
+        expect(screen.getByText("react-developer")).toBeTruthy();
+      });
+    });
+
+    it("prefers the normalized activeAgents list over currentAgent fallback text", async () => {
+      mockWorkspaces[0] = createMockWorkspace({
+        running: true,
+        currentAgent: "coordinator",
+        activeAgents: ["go-developer", "react-developer"],
+        currentModel: "",
+      });
+
+      renderWorkspaceDetail();
+
+      await waitFor(() => {
+        expect(screen.getByText("go-developer")).toBeTruthy();
+        expect(screen.getByText("react-developer")).toBeTruthy();
+        expect(screen.queryByText(/^coordinator$/)).toBeNull();
+      });
+    });
+
+    it("uses the normalized activeAgents entry for the single-agent tooltip", async () => {
+      const user = userEvent.setup();
+
+      mockWorkspaces[0] = createMockWorkspace({
+        running: true,
+        currentAgent: "coordinator",
+        activeAgents: ["go-developer"],
+        currentModel: "opencode/glm-5",
+      });
+
+      renderWorkspaceDetail();
+
+      await waitFor(() => {
+        expect(screen.getByText("go-developer | glm-5")).toBeTruthy();
+      });
+
+      await user.hover(screen.getByText("go-developer | glm-5"));
+
+      await waitFor(() => {
+        expect(screen.getAllByText("go-developer | opencode/glm-5").length).toBeGreaterThan(0);
+        expect(screen.queryByText("coordinator | opencode/glm-5")).toBeNull();
       });
     });
 

@@ -56,6 +56,7 @@ export interface ApiWorkspaceEntry {
   interactiveAuto: boolean;
   continuousMode: boolean;
   currentAgent: string;
+  activeAgents?: string[];
   currentModel: string;
   task: string;
   goalContent: string;

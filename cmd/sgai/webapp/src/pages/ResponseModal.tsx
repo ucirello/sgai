@@ -49,6 +49,7 @@ export function ResponseModal({
     error,
     submitting,
     submitError,
+    submitDisabledReason,
     selections,
     otherText,
     setOtherText,
@@ -150,6 +151,10 @@ export function ResponseModal({
               <p className="text-sm text-destructive mt-2">{submitError}</p>
             )}
 
+            {submitDisabledReason && (
+              <p className="text-sm text-muted-foreground mt-2">{submitDisabledReason}</p>
+            )}
+
             <DialogFooter className="mt-4 pt-3 border-t">
               <Button
                 type="button"
@@ -159,7 +164,7 @@ export function ResponseModal({
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={submitting}>
+              <Button type="submit" disabled={submitting || Boolean(submitDisabledReason)}>
                 {submitting ? "Sending..." : "Send Response"}
               </Button>
             </DialogFooter>

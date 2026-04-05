@@ -14,13 +14,23 @@ import (
 )
 
 var (
-	errRootWorkspaceCannotStart = errors.New("root workspace cannot start agentic work")
-	errSessionResetWhileRunning = errors.New("cannot reset while session is running")
-	errNoPendingQuestion        = errors.New("no pending question")
-	errPromptTokenRequired      = errors.New("prompt token is required")
-	errResponseCannotBeEmpty    = errors.New("response cannot be empty")
-	errQuestionNotAvailable     = errors.New("question not available")
-	errSteerMessageEmpty        = errors.New("message cannot be empty")
+	errRootWorkspaceCannotStart                 = errors.New("root workspace cannot start agentic work")
+	errSessionResetWhileRunning                 = errors.New("cannot reset while session is running")
+	errInteractiveStartRequiresContinuousConfig = errors.New("interactive start requires continuous configuration")
+	errContinuousModeNotConfigured              = errors.New("continuous mode is not configured")
+	errNoPendingQuestion                        = errors.New("no pending question")
+	errPromptTokenRequired                      = errors.New("prompt token is required")
+	errResponseCannotBeEmpty                    = errors.New("response cannot be empty")
+	errQuestionNotAvailable                     = errors.New("question not available")
+	errSteerMessageEmpty                        = errors.New("message cannot be empty")
+)
+
+type sessionStartMode string
+
+const (
+	sessionStartModeSelfDrive   sessionStartMode = "self-drive"
+	sessionStartModeInteractive sessionStartMode = "interactive"
+	sessionStartModeContinuous  sessionStartMode = "continuous"
 )
 
 type sessionStartResult struct {
@@ -29,23 +39,45 @@ type sessionStartResult struct {
 	Running        bool
 	Message        string
 	AlreadyRunning bool
+	RunningMode    string
 }
 
 func (s *Server) startSessionService(workspacePath string, auto bool) (sessionStartResult, error) {
+	requestedMode := requestedSessionStartMode(auto, readContinuousModePrompt(workspacePath) != "")
+	return s.startSessionInModeService(workspacePath, requestedMode)
+}
+
+func requestedSessionStartMode(auto, continuousConfigured bool) sessionStartMode {
+	switch {
+	case continuousConfigured:
+		return sessionStartModeContinuous
+	case auto:
+		return sessionStartModeSelfDrive
+	default:
+		return sessionStartModeInteractive
+	}
+}
+
+func (s *Server) startSessionInModeService(workspacePath string, requestedMode sessionStartMode) (sessionStartResult, error) {
 	if s.classifyWorkspaceCached(workspacePath) == workspaceRoot {
 		return sessionStartResult{}, errRootWorkspaceCannotStart
 	}
 
 	name := filepath.Base(workspacePath)
 
-	if s.sessionRunning(workspacePath) {
+	if runningMode, okRunningMode := s.runningSessionMode(workspacePath); okRunningMode {
 		return sessionStartResult{
 			Name:           name,
 			Status:         "running",
 			Running:        true,
 			Message:        "session already running",
 			AlreadyRunning: true,
+			RunningMode:    string(runningMode),
 		}, nil
+	}
+
+	if errValidateStartMode := validateStartModeRequest(workspacePath, requestedMode); errValidateStartMode != nil {
+		return sessionStartResult{}, errValidateStartMode
 	}
 
 	if errValidateStart := validateStartSessionWorkspace(workspacePath); errValidateStart != nil {
@@ -53,17 +85,7 @@ func (s *Server) startSessionService(workspacePath string, auto bool) (sessionSt
 	}
 
 	coord := s.workspaceCoordinator(workspacePath)
-	continuousPrompt := readContinuousModePrompt(workspacePath)
-
-	var interactionMode string
-	switch {
-	case continuousPrompt != "":
-		interactionMode = state.ModeContinuous
-	case auto:
-		interactionMode = state.ModeSelfDrive
-	default:
-		interactionMode = state.ModeBrainstorming
-	}
+	interactionMode := interactionModeForSessionStart(requestedMode)
 
 	if errUpdate := coord.UpdateState(func(wf *state.Workflow) {
 		wf.InteractionMode = interactionMode
@@ -74,12 +96,17 @@ func (s *Server) startSessionService(workspacePath string, auto bool) (sessionSt
 	result := s.startSession(workspacePath)
 
 	if result.alreadyRunning {
+		runningMode, okRunningMode := s.runningSessionMode(workspacePath)
+		if !okRunningMode {
+			runningMode = requestedMode
+		}
 		return sessionStartResult{
 			Name:           name,
 			Status:         "running",
 			Running:        true,
 			Message:        "session already running",
 			AlreadyRunning: true,
+			RunningMode:    string(runningMode),
 		}, nil
 	}
 
@@ -93,7 +120,70 @@ func (s *Server) startSessionService(workspacePath string, auto bool) (sessionSt
 		Running:        true,
 		Message:        "session started",
 		AlreadyRunning: false,
+		RunningMode:    string(requestedMode),
 	}, nil
+}
+
+func validateStartModeRequest(workspacePath string, requestedMode sessionStartMode) error {
+	continuousConfigured := readContinuousModePrompt(workspacePath) != ""
+	switch requestedMode {
+	case sessionStartModeSelfDrive:
+		return nil
+	case sessionStartModeInteractive:
+		if continuousConfigured {
+			return errInteractiveStartRequiresContinuousConfig
+		}
+	case sessionStartModeContinuous:
+		if !continuousConfigured {
+			return errContinuousModeNotConfigured
+		}
+	}
+	return nil
+}
+
+func interactionModeForSessionStart(requestedMode sessionStartMode) string {
+	switch requestedMode {
+	case sessionStartModeInteractive:
+		return state.ModeBrainstorming
+	case sessionStartModeSelfDrive:
+		return state.ModeSelfDrive
+	case sessionStartModeContinuous:
+		return state.ModeContinuous
+	default:
+		return state.ModeBrainstorming
+	}
+}
+
+func runningModeFromInteractionMode(interactionMode string) sessionStartMode {
+	switch interactionMode {
+	case state.ModeSelfDrive:
+		return sessionStartModeSelfDrive
+	case state.ModeContinuous:
+		return sessionStartModeContinuous
+	default:
+		return sessionStartModeInteractive
+	}
+}
+
+func (s *Server) runningSessionMode(workspacePath string) (sessionStartMode, bool) {
+	s.mu.Lock()
+	sess := s.sessions[workspacePath]
+	s.mu.Unlock()
+	if sess == nil {
+		return "", false
+	}
+
+	sess.mu.Lock()
+	running := sess.running
+	coord := sess.coord
+	sess.mu.Unlock()
+	if !running {
+		return "", false
+	}
+	if coord != nil {
+		return runningModeFromInteractionMode(coord.State().InteractionMode), true
+	}
+	return runningModeFromInteractionMode(s.loadWorkspaceState(workspacePath).InteractionMode), true
 }
 
 func (s *Server) sessionRunning(workspacePath string) bool {

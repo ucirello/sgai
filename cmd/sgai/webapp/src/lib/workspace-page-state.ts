@@ -2,6 +2,15 @@ import { useSyncExternalStore } from "react";
 import type { ApiWorkspaceEntry } from "@/types";
 import type { FetchStatus } from "./factory-state";
 
+export interface WorkspacePageTarget {
+  name: string;
+  dir?: string;
+}
+
+interface FactoryStateResponse {
+  workspaces: ApiWorkspaceEntry[] | null;
+}
+
 interface WorkspacePageSnapshot {
   workspace: ApiWorkspaceEntry | null;
   fetchStatus: FetchStatus;
@@ -20,7 +29,24 @@ const SSE_BASE_BACKOFF_MS = 1000;
 const SSE_MAX_BACKOFF_MS = 30000;
 const DEBOUNCE_MS = 300;
 
-function createWorkspacePageStore(workspaceName: string, removeStore: () => void) {
+function normalizeWorkspaceTarget(workspaceTarget: string | WorkspacePageTarget): WorkspacePageTarget {
+  if (typeof workspaceTarget === "string") {
+    return { name: workspaceTarget.trim() };
+  }
+
+  return {
+    name: workspaceTarget.name.trim(),
+    dir: workspaceTarget.dir?.trim() ?? "",
+  };
+}
+
+function workspaceTargetKey(workspaceTarget: WorkspacePageTarget): string {
+  return workspaceTarget.dir ? `${workspaceTarget.name}|${workspaceTarget.dir}` : workspaceTarget.name;
+}
+
+function createWorkspacePageStore(workspaceTarget: WorkspacePageTarget, removeStore: () => void) {
+  const workspaceName = workspaceTarget.name;
+  const workspaceDir = workspaceTarget.dir?.trim() ?? "";
   let snapshot: WorkspacePageSnapshot = {
     workspace: null,
     fetchStatus: "idle",
@@ -85,7 +111,9 @@ function createWorkspacePageStore(workspaceName: string, removeStore: () => void
 
     try {
       const response = await fetch(
-        `/api/v1/workspaces/${encodeURIComponent(workspaceName)}/state`,
+        workspaceDir
+          ? "/api/v1/state"
+          : `/api/v1/workspaces/${encodeURIComponent(workspaceName)}/state`,
       );
       if (isDestroyed) return;
       if (!response.ok) {
@@ -93,8 +121,17 @@ function createWorkspacePageStore(workspaceName: string, removeStore: () => void
         return;
       }
 
-      const data = (await response.json()) as ApiWorkspaceEntry;
+      const data = workspaceDir
+        ? ((await response.json()) as FactoryStateResponse).workspaces?.find(
+          (workspace) => workspace.name === workspaceName && workspace.dir === workspaceDir,
+        ) ?? null
+        : (await response.json()) as ApiWorkspaceEntry;
       if (isDestroyed) return;
+      if (data === null) {
+        updateSnapshot({ fetchStatus: snapshot.workspace === null ? "error" : "idle" });
+        return;
+      }
+
       updateSnapshot({
         workspace: data,
         fetchStatus: "idle",
@@ -160,7 +197,7 @@ function createWorkspacePageStore(workspaceName: string, removeStore: () => void
     if (!payload.workspace) {
       return false;
     }
-    return payload.workspace === workspaceName || payload.workspace === snapshot.workspace?.dir;
+    return payload.workspace === workspaceName || payload.workspace === workspaceDir || payload.workspace === snapshot.workspace?.dir;
   }
 
   function connectSSESignal() {
@@ -306,24 +343,21 @@ type WorkspacePageStore = ReturnType<typeof createWorkspacePageStore>;
 
 const storeInstances = new Map<string, WorkspacePageStore>();
 
-function normalizeWorkspaceName(workspaceName: string): string {
-  return workspaceName.trim();
-}
-
-function getWorkspacePageStore(workspaceName: string): WorkspacePageStore {
-  const normalizedName = normalizeWorkspaceName(workspaceName);
-  const existingStore = storeInstances.get(normalizedName);
+function getWorkspacePageStore(workspaceTarget: string | WorkspacePageTarget): WorkspacePageStore {
+  const normalizedTarget = normalizeWorkspaceTarget(workspaceTarget);
+  const targetKey = workspaceTargetKey(normalizedTarget);
+  const existingStore = storeInstances.get(targetKey);
   if (existingStore) {
     return existingStore;
   }
 
   let createdStore!: WorkspacePageStore;
-  createdStore = createWorkspacePageStore(normalizedName, () => {
-    if (storeInstances.get(normalizedName) === createdStore) {
-      storeInstances.delete(normalizedName);
+  createdStore = createWorkspacePageStore(normalizedTarget, () => {
+    if (storeInstances.get(targetKey) === createdStore) {
+      storeInstances.delete(targetKey);
     }
   });
-  storeInstances.set(normalizedName, createdStore);
+  storeInstances.set(targetKey, createdStore);
   return createdStore;
 }
 
@@ -334,17 +368,17 @@ export function resetWorkspacePageStateStores(): void {
   storeInstances.clear();
 }
 
-export function triggerWorkspacePageRefresh(workspaceName: string): void {
-  const normalizedName = normalizeWorkspaceName(workspaceName);
-  const store = storeInstances.get(normalizedName);
+export function triggerWorkspacePageRefresh(workspaceTarget: string | WorkspacePageTarget): void {
+  const normalizedTarget = normalizeWorkspaceTarget(workspaceTarget);
+  const store = storeInstances.get(workspaceTargetKey(normalizedTarget));
   if (!store) {
     return;
   }
   store.triggerRefresh();
 }
 
-export function useWorkspacePageState(workspaceName: string): WorkspacePageSnapshot {
-  const store = getWorkspacePageStore(workspaceName);
+export function useWorkspacePageState(workspaceTarget: string | WorkspacePageTarget): WorkspacePageSnapshot {
+  const store = getWorkspacePageStore(workspaceTarget);
   return useSyncExternalStore(
     store.subscribe,
     store.getSnapshot,

@@ -16,9 +16,10 @@ import { api } from "@/lib/api";
 import { useFactoryState } from "@/lib/factory-state";
 import {
   buildWorkspaceNameDisambiguators,
-  buildWorkspacePath,
+  buildWorkspaceRouteDisambiguators,
+  buildWorkspacePathWithDisambiguator,
   getWorkspaceDisplayLabel,
-  resolveWorkspaceByName,
+  resolveWorkspaceTarget,
 } from "@/lib/workspace-identity";
 import { sortByVisibleLabel } from "@/lib/workspace-sort";
 import { useAdhocRun } from "@/hooks/useAdhocRun";
@@ -26,6 +27,7 @@ import type { ApiForkEntry, ApiActionEntry, ApiWorkspaceEntry } from "@/types";
 
 interface ForksTabProps {
   workspaceName: string;
+  workspaceDir?: string;
   actions?: ApiActionEntry[];
   actionConfigError?: string;
   onActionClick?: (action: ApiActionEntry, variables: Record<string, string>, forkName: string) => void;
@@ -66,6 +68,7 @@ interface CompactForkRowProps {
   forkWorkspace?: ApiWorkspaceEntry;
   needsInput: boolean;
   workspaceNameDisambiguators: Map<string, string>;
+  workspaceRouteDisambiguators: Set<string>;
   actions?: ApiActionEntry[];
   isActionRunning: boolean;
   onActionClick?: (action: ApiActionEntry, variables: Record<string, string>, forkName: string) => void;
@@ -76,6 +79,7 @@ function CompactForkRow({
   forkWorkspace,
   needsInput,
   workspaceNameDisambiguators,
+  workspaceRouteDisambiguators,
   actions,
   isActionRunning,
   onActionClick,
@@ -112,14 +116,14 @@ function CompactForkRow({
   const handleRespond = useCallback((event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    navigate(buildWorkspacePath(forkIdentity, "respond"));
-  }, [forkIdentity, navigate]);
+    navigate(buildWorkspacePathWithDisambiguator(forkIdentity, workspaceRouteDisambiguators, "respond"));
+  }, [forkIdentity, navigate, workspaceRouteDisambiguators]);
 
   const handleOpenInSgai = useCallback((event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    navigate(buildWorkspacePath(forkIdentity, "progress"));
-  }, [forkIdentity, navigate]);
+    navigate(buildWorkspacePathWithDisambiguator(forkIdentity, workspaceRouteDisambiguators, "progress"));
+  }, [forkIdentity, navigate, workspaceRouteDisambiguators]);
 
   return (
     <div className="border rounded-md overflow-hidden">
@@ -357,18 +361,21 @@ function InlineRunBox({ workspaceName }: { workspaceName: string }) {
   );
 }
 
-export function ForksTab({ workspaceName, actions, actionConfigError, onActionClick, isActionRunning = false }: ForksTabProps) {
+export function ForksTab({ workspaceName, workspaceDir, actions, actionConfigError, onActionClick, isActionRunning = false }: ForksTabProps) {
   const navigate = useNavigate();
   const { workspaces: allWorkspaces, fetchStatus } = useFactoryState();
-  const workspace = resolveWorkspaceByName(allWorkspaces, workspaceName);
+  const workspace = resolveWorkspaceTarget(allWorkspaces, workspaceName, workspaceDir ?? "");
   const workspaceNameDisambiguators = useMemo(() => {
     return buildWorkspaceNameDisambiguators(allWorkspaces);
   }, [allWorkspaces]);
+  const workspaceRouteDisambiguators = useMemo(() => {
+    return buildWorkspaceRouteDisambiguators(allWorkspaces);
+  }, [allWorkspaces]);
   const handleCreateFork = useCallback(() => {
     if (workspace) {
-      navigate(buildWorkspacePath(workspace, "progress"));
+      navigate(buildWorkspacePathWithDisambiguator(workspace, workspaceRouteDisambiguators, "progress"));
     }
-  }, [navigate, workspace]);
+  }, [navigate, workspace, workspaceRouteDisambiguators]);
 
   const forkWorkspaceLookup = useMemo(() => {
     const lookup = new Map<string, ApiWorkspaceEntry>();
@@ -449,6 +456,7 @@ export function ForksTab({ workspaceName, actions, actionConfigError, onActionCl
               forkWorkspace={forkWorkspaceLookup.get(fork.dir)}
               needsInput={needsInputMap[fork.dir] ?? fork.needsInput ?? false}
               workspaceNameDisambiguators={workspaceNameDisambiguators}
+              workspaceRouteDisambiguators={workspaceRouteDisambiguators}
               actions={actions}
               isActionRunning={isActionRunning}
               onActionClick={onActionClick}

@@ -303,6 +303,46 @@ describe("EventsTab", () => {
         expect(screen.getByText("Please choose an option")).toBeTruthy();
       });
     });
+
+    it("shows separate active-agent badges when currentAgent encodes multiple agents", async () => {
+      mockWorkspaces = [createMockWorkspace({
+        needsInput: true,
+        humanMessage: "Please choose an option",
+        currentAgent: "go-developer, react-developer",
+      })];
+
+      renderEventsTab();
+
+      await waitFor(() => {
+        expect(screen.getByText("go-developer")).toBeTruthy();
+        expect(screen.getByText("react-developer")).toBeTruthy();
+      });
+    });
+
+    it("prefers normalized activeAgents when provided", async () => {
+      mockWorkspaces = [createMockWorkspace({
+        needsInput: true,
+        humanMessage: "Please choose an option",
+        currentAgent: "coordinator",
+      })];
+
+      renderEventsTab({ activeAgents: ["go-developer", "react-developer"] });
+
+      await waitFor(() => {
+        expect(screen.getByText("go-developer")).toBeTruthy();
+        expect(screen.getByText("react-developer")).toBeTruthy();
+        expect(screen.queryByText(/^coordinator$/)).toBeNull();
+      });
+    });
+
+    it("hides the workflow graph when a dir-qualified duplicate route is active", async () => {
+      renderEventsTab({ dirQualifiedRoute: true, svgHash: "abc123" });
+
+      await waitFor(() => {
+        expect(screen.queryByAltText("Workflow graph")).toBeNull();
+        expect(screen.getByText("Workflow graph unavailable for duplicate-name workspace routes.")).toBeTruthy();
+      });
+    });
   });
 
   describe("goal content section", () => {
@@ -331,6 +371,15 @@ describe("EventsTab", () => {
 
       await waitFor(() => {
         expect(mockStartActionRun).toHaveBeenCalledWith("Run Tests", {});
+      });
+    });
+
+    it("disables named actions on dir-qualified duplicate routes", async () => {
+      renderEventsTab({ actions: [createAction()], dirQualifiedRoute: true });
+
+      await waitFor(() => {
+        expect(screen.getByText("Action buttons are unavailable on duplicate-name workspace routes because the current API still targets workspaces by basename only.")).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Run Tests" }).hasAttribute("disabled")).toBe(true);
       });
     });
   });

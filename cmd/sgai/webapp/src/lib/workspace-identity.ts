@@ -5,6 +5,12 @@ type WorkspaceIdentity = Pick<ApiWorkspaceEntry, "name" | "dir">;
 
 type WorkspaceLabelSource = WorkspaceIdentity & Pick<ApiWorkspaceEntry, "title" | "computedTitle">;
 
+interface WorkspacePathOptions {
+  workspaceDir?: string;
+}
+
+const workspaceDirQueryParam = "workspaceDir";
+
 export function getWorkspaceBaseLabel(workspace: WorkspaceLabelSource): string {
   const computedTitle = workspace.computedTitle?.trim();
 
@@ -56,13 +62,14 @@ function buildGroupDisambiguators(workspaces: WorkspaceIdentity[]): Map<string, 
   return disambiguators;
 }
 
-export function buildWorkspaceNameDisambiguators(workspaces: WorkspaceIdentity[]): Map<string, string> {
+export function buildWorkspaceNameDisambiguators(workspaces: WorkspaceLabelSource[]): Map<string, string> {
   const grouped = new Map<string, WorkspaceIdentity[]>();
 
   for (const workspace of workspaces) {
-    const existing = grouped.get(workspace.name) ?? [];
+    const baseLabel = getWorkspaceBaseLabel(workspace);
+    const existing = grouped.get(baseLabel) ?? [];
     existing.push(workspace);
-    grouped.set(workspace.name, existing);
+    grouped.set(baseLabel, existing);
   }
 
   const disambiguators = new Map<string, string>();
@@ -75,6 +82,30 @@ export function buildWorkspaceNameDisambiguators(workspaces: WorkspaceIdentity[]
     const groupDisambiguators = buildGroupDisambiguators(group);
     for (const [dir, label] of groupDisambiguators) {
       disambiguators.set(dir, label);
+    }
+  }
+
+  return disambiguators;
+}
+
+export function buildWorkspaceRouteDisambiguators(workspaces: WorkspaceIdentity[]): Set<string> {
+  const grouped = new Map<string, WorkspaceIdentity[]>();
+
+  for (const workspace of workspaces) {
+    const existing = grouped.get(workspace.name) ?? [];
+    existing.push(workspace);
+    grouped.set(workspace.name, existing);
+  }
+
+  const disambiguators = new Set<string>();
+
+  for (const [, group] of grouped) {
+    if (group.length < 2) {
+      continue;
+    }
+
+    for (const workspace of group) {
+      disambiguators.add(workspace.dir);
     }
   }
 
@@ -95,21 +126,60 @@ export function getWorkspaceDisplayLabel(
   return `${baseLabel} · ${disambiguator}`;
 }
 
-export function buildWorkspacePath(workspace: WorkspaceIdentity, suffix = ""): string {
+export function buildWorkspacePathFromName(
+  workspaceName: string,
+  suffix = "",
+  options: WorkspacePathOptions = {},
+): string {
   const normalizedSuffix = suffix.replace(/^\/+/, "");
-  const basePath = `/workspaces/${encodeURIComponent(workspace.name)}`;
-  return normalizedSuffix ? `${basePath}/${normalizedSuffix}` : basePath;
+  const basePath = `/workspaces/${encodeURIComponent(workspaceName)}`;
+  const path = normalizedSuffix ? `${basePath}/${normalizedSuffix}` : basePath;
+  const workspaceDir = options.workspaceDir?.trim();
+
+  if (!workspaceDir) {
+    return path;
+  }
+
+  const searchParams = new URLSearchParams({ [workspaceDirQueryParam]: workspaceDir });
+  return `${path}?${searchParams.toString()}`;
+}
+
+export function buildWorkspacePath(
+  workspace: WorkspaceIdentity,
+  suffix = "",
+  options: WorkspacePathOptions = {},
+): string {
+  return buildWorkspacePathFromName(workspace.name, suffix, options);
 }
 
 export function buildWorkspaceGoalEditPath(workspace: WorkspaceIdentity): string {
-  return `/workspaces/${encodeURIComponent(workspace.name)}/goal/edit`;
+  return buildWorkspacePathFromName(workspace.name, "goal/edit");
 }
 
-export function resolveWorkspaceByName<T extends WorkspaceIdentity>(
+export function buildWorkspacePathWithDisambiguator(
+  workspace: WorkspaceIdentity,
+  workspaceRouteDisambiguators: Set<string>,
+  suffix = "",
+): string {
+  return buildWorkspacePath(workspace, suffix, {
+    workspaceDir: workspaceRouteDisambiguators.has(workspace.dir) ? workspace.dir : undefined,
+  });
+}
+
+export function readWorkspaceDirFromSearchParams(searchParams: URLSearchParams): string {
+  return searchParams.get(workspaceDirQueryParam)?.trim() ?? "";
+}
+
+export function resolveWorkspaceTarget<T extends WorkspaceIdentity>(
   workspaces: T[],
   workspaceName: string,
+  workspaceDir = "",
 ): T | null {
   const matches = workspaces.filter((workspace) => workspace.name === workspaceName);
+
+  if (workspaceDir) {
+    return matches.find((workspace) => workspace.dir === workspaceDir) ?? null;
+  }
 
   return matches.length === 1 ? (matches[0] ?? null) : null;
 }

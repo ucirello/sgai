@@ -1,5 +1,5 @@
 import { useState, useEffect, Suspense, lazy, useRef, useCallback, useMemo, type ReactNode } from "react";
-import { useParams, Link, useNavigate } from "react-router";
+import { useParams, Link, useNavigate, useSearchParams } from "react-router";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -21,6 +21,8 @@ import { NotYetAvailable } from "@/components/NotYetAvailable";
 import { WorkspaceRepositoryAction } from "@/components/WorkspaceRepositoryAction";
 import { InlineForkEditor } from "@/pages/InlineForkEditor";
 import { api } from "@/lib/api";
+import { normalizeActiveAgents } from "@/lib/active-agents";
+import { duplicateRouteWorkspaceControlsDisabledReason } from "@/lib/duplicate-route-mutations";
 import { canCreateForkFromWorkspace } from "@/lib/workspace-forks";
 import { useWorkspacePageState } from "@/lib/workspace-page-state";
 import { useAdhocRun } from "@/hooks/useAdhocRun";
@@ -31,6 +33,7 @@ import {
   buildWorkspaceGoalEditPath,
   buildWorkspacePath,
   getWorkspaceBaseLabel,
+  readWorkspaceDirFromSearchParams,
 } from "@/lib/workspace-identity";
 
 const SessionTab = lazy(() => import("./tabs/SessionTab").then((m) => ({ default: m.SessionTab })));
@@ -124,9 +127,10 @@ interface TabNavProps {
   isRoot: boolean;
   hasForks: boolean;
   showForkTab: boolean;
+  workspaceDir?: string;
 }
 
-function TabNav({ workspace, activeTab, isRoot, hasForks, showForkTab }: TabNavProps) {
+function TabNav({ workspace, activeTab, isRoot, hasForks, showForkTab, workspaceDir }: TabNavProps) {
   const tabs = isRoot && hasForks
     ? ROOT_TABS
     : TABS.filter((tab) => {
@@ -140,7 +144,7 @@ function TabNav({ workspace, activeTab, isRoot, hasForks, showForkTab }: TabNavP
         {tabs.map((tab) => (
           <li key={tab.key}>
             <Link
-              to={buildWorkspacePath(workspace, tab.key)}
+              to={buildWorkspacePath(workspace, tab.key, { workspaceDir })}
               aria-current={activeTab === tab.key ? "page" : undefined}
               className={cn(
                 "inline-block px-4 py-2 text-sm no-underline transition-colors border-b-2",
@@ -161,8 +165,10 @@ function TabNav({ workspace, activeTab, isRoot, hasForks, showForkTab }: TabNavP
 
 export function WorkspaceDetail(): JSX.Element | null {
   const { name, "*": tabPath } = useParams<{ name: string; "*": string }>();
+  const [searchParams] = useSearchParams();
   const workspaceName = name ?? "";
-  const workspaceRouteKey = workspaceName;
+  const workspaceDir = readWorkspaceDirFromSearchParams(searchParams);
+  const workspaceRouteKey = workspaceDir ? `${workspaceName}|${workspaceDir}` : workspaceName;
   const requestedTab = tabPath?.split("/")[0] || "progress";
   const navigate = useNavigate();
 
@@ -177,7 +183,11 @@ export function WorkspaceDetail(): JSX.Element | null {
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
   const [execTimeSeconds, setExecTimeSeconds] = useState<number | null>(null);
 
-  const { workspace: detail, fetchStatus } = useWorkspacePageState(workspaceName);
+  const { workspace: detail, fetchStatus } = useWorkspacePageState(
+    workspaceDir
+      ? { name: workspaceName, dir: workspaceDir }
+      : workspaceName,
+  );
   const loading = fetchStatus === "fetching" && detail === null;
   const routeError = fetchStatus === "error"
     ? "Failed to load workspace state"
@@ -225,13 +235,16 @@ export function WorkspaceDetail(): JSX.Element | null {
   const showForkTab = canCreateForkFromWorkspace(detail);
   const ideAvailable = detail?.ide?.available ?? false;
   const redirectTab = resolveRedirectTab({ requestedTab, isForkedRoot, showForkTab });
-  const idePageUrl = `/workspaces/${encodeURIComponent(detail?.name ?? "")}/ide`;
+  const idePageUrl = buildWorkspacePath({
+    name: detail?.name ?? workspaceName,
+    dir: detail?.dir ?? workspaceDir,
+  }, "ide", { workspaceDir });
   const activeTab = redirectTab ?? requestedTab;
 
   useEffect(() => {
     if (!detail || !redirectTab) return;
-    navigate(buildWorkspacePath(detail, redirectTab), { replace: true });
-  }, [detail, navigate, redirectTab]);
+    navigate(buildWorkspacePath(detail, redirectTab, { workspaceDir }), { replace: true });
+  }, [detail, navigate, redirectTab, workspaceDir]);
 
   if (loading && !detail) return <WorkspaceDetailSkeleton />;
 
@@ -240,10 +253,23 @@ export function WorkspaceDetail(): JSX.Element | null {
   }
 
   const detailLabel = getWorkspaceBaseLabel(detail);
+  const dirQualifiedRoute = Boolean(detail.dir && workspaceDir);
+  const workspaceControlsDisabledReason = dirQualifiedRoute
+    ? duplicateRouteWorkspaceControlsDisabledReason
+    : null;
+
   if (!detail.hasSgai && !detail.isRoot) {
-    return <NoWorkspaceState label={detailLabel} goalEditPath={buildWorkspaceGoalEditPath(detail)} dir={detail.dir} />;
+    return (
+      <NoWorkspaceState
+        label={detailLabel}
+        goalEditPath={buildWorkspaceGoalEditPath(detail)}
+        dir={detail.dir}
+        goalEditDisabledReason={workspaceControlsDisabledReason}
+      />
+    );
   }
 
+  const areBasenameOnlyMutationsDisabled = workspaceControlsDisabledReason !== null;
   const effectiveRunning = runningOverride !== null ? runningOverride : (detail.running ?? false);
 
   const totalExecTime = detail.totalExecTime?.trim() ?? "";
@@ -251,23 +277,32 @@ export function WorkspaceDetail(): JSX.Element | null {
   const displayExecTime = execTimeSeconds !== null
     ? formatExecTime(execTimeSeconds)
     : fallbackExecTime;
-  const agentLabel = detail.currentAgent?.trim();
+  const activeAgents = normalizeActiveAgents(detail);
+  const hasMultipleActiveAgents = activeAgents.length > 1;
+  const singleActiveAgent = activeAgents[0] ?? "";
   const modelLabel = detail.currentModel
     ? detail.currentModel.split("/").pop() ?? detail.currentModel
     : "";
-  const agentModelLabel = [agentLabel, modelLabel].filter(Boolean).join(" | ");
-  const fullAgentModelLabel = [detail.currentAgent, detail.currentModel].filter(Boolean).join(" | ");
+  const agentModelLabel = hasMultipleActiveAgents
+    ? ""
+    : [singleActiveAgent, modelLabel].filter(Boolean).join(" | ");
+  const fullAgentModelLabel = hasMultipleActiveAgents
+    ? detail.currentModel
+    : [singleActiveAgent, detail.currentModel].filter(Boolean).join(" | ");
   const statusLine = detail.task?.trim() || detail.status?.trim();
-  const showStatusLine = !isForkedRoot && Boolean(agentModelLabel || statusLine);
-  const encodedWorkspace = encodeURIComponent(detail.name);
+  const showStatusLine = !isForkedRoot && Boolean(activeAgents.length > 0 || modelLabel || statusLine);
   const selfDriveLabel = effectiveRunning ? "Self-Drive" : "Self-drive";
   const showEditGoalAction = !effectiveRunning || detail.hasSgai || Boolean(detail.goalContent?.trim());
   const goalEditPath = buildWorkspaceGoalEditPath(detail);
+  const isGoalEditActionDisabled = areBasenameOnlyMutationsDisabled;
   const showOpenEditorAction = true;
-  const isActionDisabled = effectiveRunning || isStartStopPending || isSelfDrivePending || isResetPending;
-  const isResetActionDisabled = isResetPending || isStartStopPending || isSelfDrivePending;
+  const isStartActionDisabled = effectiveRunning || isStartStopPending || isSelfDrivePending || isResetPending || areBasenameOnlyMutationsDisabled;
+  const isStopActionDisabled = isStartStopPending || areBasenameOnlyMutationsDisabled;
+  const isResetActionDisabled = isResetPending || isStartStopPending || isSelfDrivePending || areBasenameOnlyMutationsDisabled;
+  const isPinActionDisabled = isPinPending || areBasenameOnlyMutationsDisabled;
+  const isEditorActionDisabled = isEditorPending || areBasenameOnlyMutationsDisabled;
   const handleStart = () => {
-	if (!workspaceName || isStartStopPending) return;
+	if (!workspaceName || isStartStopPending || areBasenameOnlyMutationsDisabled) return;
 	setActionError(null);
 	setIsStartStopPending(true);
 	void (async () => {
@@ -285,7 +320,7 @@ export function WorkspaceDetail(): JSX.Element | null {
   };
 
   const handleStop = () => {
-	if (!workspaceName || isStartStopPending) return;
+	if (!workspaceName || isStartStopPending || areBasenameOnlyMutationsDisabled) return;
 	setActionError(null);
 	setIsStartStopPending(true);
 	void (async () => {
@@ -303,7 +338,7 @@ export function WorkspaceDetail(): JSX.Element | null {
   };
 
   const handleSelfDrive = () => {
-	if (!workspaceName || isSelfDrivePending) return;
+	if (!workspaceName || isSelfDrivePending || areBasenameOnlyMutationsDisabled) return;
 	setActionError(null);
 	setIsSelfDrivePending(true);
 	void (async () => {
@@ -319,7 +354,7 @@ export function WorkspaceDetail(): JSX.Element | null {
   };
 
   const handlePinToggle = () => {
-	if (!workspaceName || isPinPending) return;
+	if (!workspaceName || isPinPending || areBasenameOnlyMutationsDisabled) return;
 	setActionError(null);
 	setIsPinPending(true);
 	void (async () => {
@@ -334,7 +369,7 @@ export function WorkspaceDetail(): JSX.Element | null {
   };
 
   const handleOpenEditor = () => {
-	if (!workspaceName || isEditorPending) return;
+	if (!workspaceName || isEditorPending || areBasenameOnlyMutationsDisabled) return;
 	setActionError(null);
 	setIsEditorPending(true);
 	void (async () => {
@@ -431,7 +466,7 @@ export function WorkspaceDetail(): JSX.Element | null {
                       size="sm"
                       variant="outline"
                       onClick={handleOpenEditor}
-                      disabled={isEditorPending}
+                      disabled={isEditorActionDisabled}
                     >
                       Open in Editor
                     </Button>
@@ -446,25 +481,25 @@ export function WorkspaceDetail(): JSX.Element | null {
                   <Button
                     type="button"
                     size="sm"
-                    variant={detail.pinned ? "secondary" : "outline"}
-                    onClick={handlePinToggle}
-                    disabled={isPinPending}
-                    aria-pressed={detail.pinned}
-                  >
+                      variant={detail.pinned ? "secondary" : "outline"}
+                      onClick={handlePinToggle}
+                      disabled={isPinActionDisabled}
+                      aria-pressed={detail.pinned}
+                    >
                     {detail.pinned ? "Unpin" : "Pin"}
                   </Button>
                 </>
               ) : (
                 <>
                   {detail?.needsInput && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="default"
-                      onClick={() => navigate(buildWorkspacePath(detail, "respond"))}
-                    >
-                      Respond
-                    </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="default"
+                        onClick={() => navigate(buildWorkspacePath(detail, "respond", { workspaceDir }))}
+                      >
+                        Respond
+                      </Button>
                   )}
                   {detail.continuousMode ? (
                     <>
@@ -473,7 +508,7 @@ export function WorkspaceDetail(): JSX.Element | null {
                         size="sm"
                         variant={(effectiveRunning && detail.interactiveAuto) ? "default" : "outline"}
                         onClick={handleSelfDrive}
-                        disabled={isActionDisabled}
+                        disabled={isStartActionDisabled}
                         aria-pressed={effectiveRunning && detail.interactiveAuto}
                       >
                         Continuous Self-Drive
@@ -484,7 +519,7 @@ export function WorkspaceDetail(): JSX.Element | null {
                           size="sm"
                           variant="outline"
                           onClick={handleStop}
-                          disabled={isStartStopPending}
+                          disabled={isStopActionDisabled}
                         >
                           Stop
                         </Button>
@@ -497,7 +532,7 @@ export function WorkspaceDetail(): JSX.Element | null {
                         size="sm"
                         variant={(effectiveRunning && detail.interactiveAuto) ? "default" : "outline"}
                         onClick={handleSelfDrive}
-                        disabled={isActionDisabled}
+                        disabled={isStartActionDisabled}
                         aria-pressed={effectiveRunning && detail.interactiveAuto}
                       >
                         {selfDriveLabel}
@@ -507,7 +542,7 @@ export function WorkspaceDetail(): JSX.Element | null {
                         size="sm"
                         variant={(effectiveRunning && !detail.interactiveAuto) ? "default" : "outline"}
                         onClick={handleStart}
-                        disabled={isActionDisabled}
+                        disabled={isStartActionDisabled}
                         aria-pressed={effectiveRunning && !detail.interactiveAuto}
                       >
                         Start
@@ -518,7 +553,7 @@ export function WorkspaceDetail(): JSX.Element | null {
                           size="sm"
                           variant="outline"
                           onClick={handleStop}
-                          disabled={isStartStopPending}
+                          disabled={isStopActionDisabled}
                         >
                           Stop
                         </Button>
@@ -568,7 +603,14 @@ export function WorkspaceDetail(): JSX.Element | null {
                       type="button"
                       size="sm"
                       variant="outline"
-                      onClick={() => navigate(goalEditPath)}
+                      onClick={() => {
+                        if (isGoalEditActionDisabled) {
+                          return;
+                        }
+
+                        navigate(goalEditPath);
+                      }}
+                      disabled={isGoalEditActionDisabled}
                     >
                       Edit GOAL
                     </Button>
@@ -579,7 +621,7 @@ export function WorkspaceDetail(): JSX.Element | null {
                       size="sm"
                       variant="outline"
                       onClick={handleOpenEditor}
-                      disabled={isEditorPending}
+                      disabled={isEditorActionDisabled}
                     >
                       Open in Editor
                     </Button>
@@ -595,7 +637,7 @@ export function WorkspaceDetail(): JSX.Element | null {
                     type="button"
                     size="sm"
                     variant="outline"
-                    onClick={() => navigate(buildWorkspacePath(detail, "skills"))}
+                    onClick={() => navigate(buildWorkspacePath(detail, "skills", { workspaceDir }))}
                   >
                     Skills
                   </Button>
@@ -603,7 +645,7 @@ export function WorkspaceDetail(): JSX.Element | null {
                     type="button"
                     size="sm"
                     variant="outline"
-                    onClick={() => navigate(buildWorkspacePath(detail, "snippets"))}
+                    onClick={() => navigate(buildWorkspacePath(detail, "snippets", { workspaceDir }))}
                   >
                     Snippets
                   </Button>
@@ -611,7 +653,7 @@ export function WorkspaceDetail(): JSX.Element | null {
                     type="button"
                     size="sm"
                     variant="outline"
-                    onClick={() => navigate(buildWorkspacePath(detail, "agents"))}
+                    onClick={() => navigate(buildWorkspacePath(detail, "agents", { workspaceDir }))}
                   >
                     Agents
                   </Button>
@@ -620,16 +662,18 @@ export function WorkspaceDetail(): JSX.Element | null {
                     size="sm"
                     variant={detail.pinned ? "secondary" : "outline"}
                     onClick={handlePinToggle}
-                    disabled={isPinPending}
+                    disabled={isPinActionDisabled}
                     aria-pressed={detail.pinned}
                   >
                     {detail.pinned ? "Unpin" : "Pin"}
                   </Button>
-                  <WorkspaceRepositoryAction
-                    workspace={detail}
-                    context="detail"
-                    onCompleted={handleRepositoryActionCompleted}
-                  />
+                  {!dirQualifiedRoute ? (
+                    <WorkspaceRepositoryAction
+                      workspace={detail}
+                      context="detail"
+                      onCompleted={handleRepositoryActionCompleted}
+                    />
+                  ) : null}
                 </>
               )}
           </div>
@@ -637,6 +681,15 @@ export function WorkspaceDetail(): JSX.Element | null {
 
         {showStatusLine && (
           <div className="flex flex-wrap items-center gap-2 mb-2">
+            {hasMultipleActiveAgents && (
+              <div className="flex flex-wrap items-center gap-1">
+                {activeAgents.map((agent) => (
+                  <Badge key={agent} variant="secondary" className="font-mono">
+                    {agent}
+                  </Badge>
+                ))}
+              </div>
+            )}
             {agentModelLabel && (
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -647,13 +700,29 @@ export function WorkspaceDetail(): JSX.Element | null {
                 <TooltipContent>{fullAgentModelLabel || agentModelLabel}</TooltipContent>
               </Tooltip>
             )}
+            {hasMultipleActiveAgents && modelLabel && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge variant="secondary" className="font-mono" tabIndex={0}>
+                    {modelLabel}
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent>{fullAgentModelLabel || modelLabel}</TooltipContent>
+              </Tooltip>
+            )}
             {statusLine && (
               <FocusableTooltipText as="span" className="text-sm text-muted-foreground max-w-[320px] md:max-w-[520px]">
                 {statusLine}
               </FocusableTooltipText>
             )}
           </div>
-        )}
+          )}
+
+          {workspaceControlsDisabledReason && (
+            <Alert className="mb-2">
+              <AlertDescription>{workspaceControlsDisabledReason}</AlertDescription>
+            </Alert>
+          )}
 
           {actionError && (
             <p className="text-sm text-destructive mb-2" role="alert">
@@ -666,6 +735,7 @@ export function WorkspaceDetail(): JSX.Element | null {
             isRoot={detail.isRoot}
             hasForks={hasForks}
             showForkTab={showForkTab}
+            workspaceDir={workspaceDir}
           />
 
         </div>
@@ -682,6 +752,7 @@ export function WorkspaceDetail(): JSX.Element | null {
                     onActionClick={onActionClick}
                     isActionRunning={isActionRunning}
                     showForkTab={showForkTab}
+                    dirQualifiedRoute={dirQualifiedRoute}
                   />
                 </Suspense>
               )}
@@ -693,6 +764,7 @@ export function WorkspaceDetail(): JSX.Element | null {
                 activeTab={activeTab}
                 detail={detail}
                 showForkTab={showForkTab}
+                dirQualifiedRoute={dirQualifiedRoute}
               />
             </Suspense>
           )}
@@ -788,12 +860,14 @@ function TabContent({
   onActionClick,
   isActionRunning,
   showForkTab,
+  dirQualifiedRoute,
 }: {
   activeTab: string;
   detail: ApiWorkspaceEntry;
   onActionClick?: (action: ApiActionEntry, variables: Record<string, string>, targetWorkspaceName: string) => void;
   isActionRunning?: boolean;
   showForkTab: boolean;
+  dirQualifiedRoute: boolean;
 }) {
   switch (activeTab) {
     case "progress":
@@ -806,6 +880,8 @@ function TabContent({
           needsInput={detail.needsInput}
           humanMessage={detail.humanMessage}
           currentAgent={detail.currentAgent}
+          activeAgents={detail.activeAgents}
+          dirQualifiedRoute={dirQualifiedRoute}
           events={detail.events ?? []}
           goalContent={detail.goalContent}
           actions={detail.actions}
@@ -837,6 +913,7 @@ function TabContent({
       return (
         <ForksTab
           workspaceName={detail.name}
+          workspaceDir={detail.dir}
           actions={detail.actions}
           actionConfigError={detail.actionConfigError}
           onActionClick={onActionClick}
@@ -848,7 +925,17 @@ function TabContent({
   }
 }
 
-function NoWorkspaceState({ label, goalEditPath, dir }: { label: string; goalEditPath: string; dir: string }) {
+function NoWorkspaceState({
+  label,
+  goalEditPath,
+  dir,
+  goalEditDisabledReason,
+}: {
+  label: string;
+  goalEditPath: string;
+  dir: string;
+  goalEditDisabledReason: string | null;
+}) {
   return (
     <div>
       <div className="sticky top-0 z-10 bg-background">
@@ -859,9 +946,20 @@ function NoWorkspaceState({ label, goalEditPath, dir }: { label: string; goalEdi
       </div>
       <div className="text-center py-8 text-muted-foreground italic">
         <p>No workspace configured for this directory.</p>
-        <Button asChild variant="outline" className="mt-4 not-italic">
-          <Link to={goalEditPath}>Edit GOAL</Link>
-        </Button>
+        {goalEditDisabledReason ? (
+          <Button type="button" variant="outline" className="mt-4 not-italic" disabled>
+            Edit GOAL
+          </Button>
+        ) : (
+          <Button asChild variant="outline" className="mt-4 not-italic">
+            <Link to={goalEditPath}>Edit GOAL</Link>
+          </Button>
+        )}
+        {goalEditDisabledReason && (
+          <Alert className="mt-4 text-left not-italic">
+            <AlertDescription>{goalEditDisabledReason}</AlertDescription>
+          </Alert>
+        )}
       </div>
     </div>
   );

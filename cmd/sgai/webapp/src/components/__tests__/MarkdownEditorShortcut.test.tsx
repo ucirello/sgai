@@ -79,6 +79,13 @@ const mockModelsList = mock(() => ({ models: [] }));
 type RestorableGlobalKey = "fetch" | "EventSource";
 
 let editorValue = "";
+let latestEditorOptions: {
+  ariaLabel?: string;
+  autoIndent?: string;
+  quickSuggestions?: { other: boolean; strings: boolean } | false;
+  suggestOnTriggerCharacters?: boolean;
+  acceptSuggestionOnEnter?: "on" | "off";
+} | null = null;
 let originalFetchDescriptor: PropertyDescriptor | undefined;
 let originalEventSourceDescriptor: PropertyDescriptor | undefined;
 
@@ -107,7 +114,16 @@ function MockEditor({ value, onChange, onMount }: {
   value?: string;
   onChange?: (nextValue: string | undefined) => void;
   onMount?: (editor: unknown, monaco: unknown) => void;
+  options?: {
+    ariaLabel?: string;
+    autoIndent?: string;
+    quickSuggestions?: { other: boolean; strings: boolean } | false;
+    suggestOnTriggerCharacters?: boolean;
+    acceptSuggestionOnEnter?: "on" | "off";
+  };
 }) {
+  latestEditorOptions = arguments[0]?.options ?? null;
+
   useEffect(() => {
     editorValue = value ?? "";
   }, [value]);
@@ -262,6 +278,7 @@ function renderInlineForkEditor() {
 describe("MarkdownEditor submit shortcut integration", () => {
   beforeEach(() => {
     editorValue = "";
+    latestEditorOptions = null;
     originalFetchDescriptor = captureGlobalDescriptor("fetch");
     originalEventSourceDescriptor = captureGlobalDescriptor("EventSource");
     globalThis.fetch = mockFetch as unknown as typeof fetch;
@@ -326,6 +343,29 @@ describe("MarkdownEditor submit shortcut integration", () => {
     });
   });
 
+  it("passes an editor aria label through to Monaco", () => {
+    renderWithProviders(
+      <MarkdownEditor value="# Goal" onChange={() => {}} ariaLabel="Task body" />,
+    );
+
+    expect(latestEditorOptions?.ariaLabel).toBe("Task body");
+  });
+
+  it("keeps the body-only inline fork editor out of workspace completion mode", async () => {
+    renderInlineForkEditor();
+
+    await waitFor(() => {
+      expect((screen.getByTestId("monaco-editor-input") as HTMLTextAreaElement).value).toBe("# Goal\n\nDescribe your task");
+    });
+
+    expect(mockAgentsList).not.toHaveBeenCalled();
+    expect(mockModelsList).not.toHaveBeenCalled();
+    expect(latestEditorOptions?.autoIndent).toBe("none");
+    expect(latestEditorOptions?.quickSuggestions).toBe(false);
+    expect(latestEditorOptions?.suggestOnTriggerCharacters).toBe(false);
+    expect(latestEditorOptions?.acceptSuggestionOnEnter).toBe("off");
+  });
+
   it("saves GOAL.md from EditGoal when Meta+S is pressed inside the editor", async () => {
     renderEditGoal();
 
@@ -350,7 +390,7 @@ describe("MarkdownEditor submit shortcut integration", () => {
     renderInlineForkEditor();
 
     await waitFor(() => {
-      expect((screen.getByTestId("monaco-editor-input") as HTMLTextAreaElement).value).toContain("# Goal");
+      expect((screen.getByTestId("monaco-editor-input") as HTMLTextAreaElement).value).toBe("# Goal\n\nDescribe your task");
     });
 
     const editor = screen.getByTestId("monaco-editor-input") as HTMLTextAreaElement;
@@ -358,7 +398,7 @@ describe("MarkdownEditor submit shortcut integration", () => {
     fireEvent.keyDown(editor, { key: "s", ctrlKey: true, bubbles: true });
 
     await waitFor(() => {
-      expect(mockFork).toHaveBeenCalledWith(expect.stringContaining("# Goal"));
+      expect(mockFork).toHaveBeenCalledWith("# Goal\n\nDescribe your task");
     });
 
     await waitFor(() => {
