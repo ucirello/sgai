@@ -20,6 +20,7 @@ interface ActionBarProps {
   isRunning: boolean;
   onActionClick: (action: ApiActionEntry, variables: Record<string, string>) => void;
   actionConfigError?: string;
+  disabledReason?: string;
   accessibilityContext?: string;
   className?: string;
   buttonClassName?: string;
@@ -76,6 +77,7 @@ export function ActionBar({
   isRunning,
   onActionClick,
   actionConfigError,
+  disabledReason,
   accessibilityContext,
   className,
   buttonClassName,
@@ -86,8 +88,9 @@ export function ActionBar({
   const [variableValues, setVariableValues] = useState<Record<string, string>>({});
 
   const normalizedActionConfigError = actionConfigError?.trim() ?? "";
+  const normalizedDisabledReason = disabledReason?.trim() ?? "";
   const invalidActions = actions.filter((action) => Boolean(action.validationError?.trim()));
-  const disableAllActions = isRunning || Boolean(normalizedActionConfigError);
+  const disableAllActions = isRunning || Boolean(normalizedActionConfigError) || Boolean(normalizedDisabledReason);
 
   const closeDialog = useCallback(() => {
     setDialogAction(null);
@@ -160,6 +163,12 @@ export function ActionBar({
           <AlertDescription>
             <span className="font-medium">Action configuration error:</span> {normalizedActionConfigError}
           </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {normalizedDisabledReason ? (
+        <Alert>
+          <AlertDescription>{normalizedDisabledReason}</AlertDescription>
         </Alert>
       ) : null}
 

@@ -6,7 +6,7 @@ import { TooltipProvider } from "./components/ui/tooltip";
 import { useNotifications } from "./hooks/useNotifications";
 import { useFactoryState } from "./lib/factory-state";
 import { getFirstPendingResponseTarget } from "./lib/pending-response";
-import { buildWorkspacePath } from "./lib/workspace-identity";
+import { buildWorkspacePathWithDisambiguator, buildWorkspaceRouteDisambiguators } from "./lib/workspace-identity";
 
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) {
@@ -22,6 +22,10 @@ function isEditableTarget(target: EventTarget | null): boolean {
 function PendingResponseShortcut() {
   const navigate = useNavigate();
   const { workspaces } = useFactoryState();
+  const workspaceRouteDisambiguators = useMemo(
+    () => buildWorkspaceRouteDisambiguators(workspaces),
+    [workspaces],
+  );
   const firstPendingResponseTarget = useMemo(
     () => getFirstPendingResponseTarget(workspaces),
     [workspaces],
@@ -42,12 +46,12 @@ function PendingResponseShortcut() {
       }
 
       event.preventDefault();
-      navigate(buildWorkspacePath(firstPendingResponseTarget, "respond"));
+      navigate(buildWorkspacePathWithDisambiguator(firstPendingResponseTarget, workspaceRouteDisambiguators, "respond"));
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [firstPendingResponseTarget, navigate]);
+  }, [firstPendingResponseTarget, navigate, workspaceRouteDisambiguators]);
 
   return null;
 }

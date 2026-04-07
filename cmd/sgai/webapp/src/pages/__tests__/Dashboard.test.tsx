@@ -837,9 +837,64 @@ describe("Dashboard", () => {
       });
     });
 
-    it("sends a basename-only delete request for duplicate-name tree rows", async () => {
-      const user = userEvent.setup();
+    it("disambiguates tree labels when different workspaces share the same visible computed title", async () => {
+      mockWorkspaces = [
+        createMockWorkspace({
+          name: "alpha",
+          dir: "/tmp/first/alpha",
+          title: "Alpha Legacy Title",
+          computedTitle: "Shared Title",
+        }),
+        createMockWorkspace({
+          name: "beta",
+          dir: "/tmp/second/beta",
+          title: "Beta Legacy Title",
+          computedTitle: "Shared Title",
+        }),
+      ];
 
+      renderDashboard();
+
+      await waitFor(() => {
+        expect(screen.getByText("Shared Title · first")).toBeTruthy();
+        expect(screen.getByText("Shared Title · second")).toBeTruthy();
+      });
+
+      expect(screen.queryByText(/^Shared Title$/)).toBeNull();
+    });
+
+    it("links duplicate-name tree rows through distinct dir-qualified detail routes", async () => {
+      mockWorkspaces = [
+        createMockWorkspace({
+          name: "shared-ws",
+          dir: "/tmp/first-parent/shared-ws",
+          title: "shared-ws",
+          computedTitle: "",
+        }),
+        createMockWorkspace({
+          name: "shared-ws",
+          dir: "/tmp/second-parent/shared-ws",
+          title: "shared-ws",
+          computedTitle: "",
+        }),
+      ];
+
+      renderDashboard();
+
+      const firstWorkspaceDir = encodeURIComponent("/tmp/first-parent/shared-ws");
+      const secondWorkspaceDir = encodeURIComponent("/tmp/second-parent/shared-ws");
+
+      await waitFor(() => {
+        const firstLink = within(getTreeRowByLabel("shared-ws · first-parent")).getByRole("link");
+        const secondLink = within(getTreeRowByLabel("shared-ws · second-parent")).getByRole("link");
+
+        expect(firstLink.getAttribute("href")).toBe(`/workspaces/shared-ws/progress?workspaceDir=${firstWorkspaceDir}`);
+        expect(secondLink.getAttribute("href")).toBe(`/workspaces/shared-ws/progress?workspaceDir=${secondWorkspaceDir}`);
+        expect(firstLink.getAttribute("href")).not.toBe(secondLink.getAttribute("href"));
+      });
+    });
+
+    it("hides destructive tree actions for duplicate-name tree rows", async () => {
       mockWorkspaces = [
         createMockWorkspace({
           name: "shared-ws",
@@ -873,14 +928,8 @@ describe("Dashboard", () => {
         expect(screen.getByText("shared-ws · second-parent")).toBeTruthy();
       });
 
-      await user.click(screen.getByLabelText("Delete shared-ws · second-parent"));
-
-      const dialog = await screen.findByRole("alertdialog");
-      await user.click(within(dialog).getByRole("button", { name: /^Delete$/ }));
-
-      await waitFor(() => {
-        expect(mockDeleteWorkspace).toHaveBeenCalledWith("shared-ws", "delete");
-      });
+      expect(screen.queryByLabelText("Delete shared-ws · first-parent")).toBeNull();
+      expect(screen.queryByLabelText("Delete shared-ws · second-parent")).toBeNull();
     });
   });
 

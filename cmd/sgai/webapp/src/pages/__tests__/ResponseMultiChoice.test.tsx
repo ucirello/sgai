@@ -89,9 +89,12 @@ const mockMarkdownEditor = ({ value, onChange, disabled }: { value: string; onCh
   </div>
 );
 
-function renderResponseMultiChoice(workspaceName = "test-workspace") {
+function renderResponseMultiChoice(
+  workspaceName = "test-workspace",
+  initialPath = `/workspaces/${workspaceName}/respond`,
+) {
   return render(
-    <MemoryRouter initialEntries={[`/workspaces/${workspaceName}/respond`]}>
+    <MemoryRouter initialEntries={[initialPath]}>
       <TooltipProvider>
         <Routes>
           <Route path="/workspaces/:name/respond" element={<ResponseMultiChoice />} />
@@ -313,6 +316,37 @@ describe("ResponseMultiChoice", () => {
       await waitFor(() => {
         const sendingButtons = screen.queryAllByText("Sending...");
         expect(sendingButtons.length).toBeGreaterThan(0);
+      });
+    });
+
+    it("disables response submission on dir-qualified duplicate routes", async () => {
+      const duplicateWorkspace = {
+        ...mockWorkspace,
+        name: "shared-ws",
+        dir: "/tmp/first/shared-ws",
+      };
+      spyOn(workspacePageStateModule, "useWorkspacePageState").mockImplementation(() => ({
+        workspace: duplicateWorkspace,
+        fetchStatus: "idle" as const,
+        lastFetchedAt: Date.now(),
+      }));
+
+      const initialPath = `/workspaces/shared-ws/respond?workspaceDir=${encodeURIComponent("/tmp/first/shared-ws")}`;
+      renderResponseMultiChoice("shared-ws", initialPath);
+
+      await waitFor(() => {
+        expect(screen.getByText("Response submission is unavailable on duplicate-name workspace routes because the current API still targets workspaces by basename only.")).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Send Response" }).hasAttribute("disabled")).toBe(true);
+      });
+
+      const sendButton = screen.getByRole("button", { name: "Send Response" });
+      const form = sendButton.closest("form");
+      expect(form).toBeTruthy();
+
+      fireEvent.submit(form as HTMLFormElement);
+
+      await waitFor(() => {
+        expect(mockRespond).not.toHaveBeenCalled();
       });
     });
   });

@@ -32,6 +32,10 @@ export interface UseAdhocRunOptions {
   currentModel?: string;
   /** When true, skip fetching model list (AdhocOutput uses a text input) */
   skipModelsFetch?: boolean;
+  /** When true, skip background adhoc status fetches for dir-qualified duplicate routes */
+  skipStatusFetch?: boolean;
+  /** When set, block basename-only adhoc mutations and surface the reason to the UI */
+  disableMutationsReason?: string;
 }
 
 export interface UseAdhocRunResult {
@@ -60,6 +64,8 @@ export function useAdhocRun({
   workspaceName,
   currentModel,
   skipModelsFetch = false,
+  skipStatusFetch = false,
+  disableMutationsReason,
 }: UseAdhocRunOptions): UseAdhocRunResult {
   const [models, setModels] = useState<ApiModelsResponse | null>(null);
   const [modelsLoading, setModelsLoading] = useState(!skipModelsFetch);
@@ -78,6 +84,7 @@ export function useAdhocRun({
   const [promptHistory, setPromptHistory] = useState<string[]>(() =>
     readLocalStorage<string[]>(storageKey(workspaceName, "history"), []),
   );
+  const normalizedDisableMutationsReason = disableMutationsReason?.trim() ?? "";
 
   const outputRef = useRef<HTMLPreElement | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -219,6 +226,7 @@ export function useAdhocRun({
   }, [stopPolling]);
 
   useEffect(() => {
+    if (skipStatusFetch) return;
     if (!workspaceName || runWorkspaceName !== workspaceName) return;
     let cancelled = false;
     api.workspaces.adhocStatus(workspaceName).then((status) => {
@@ -231,7 +239,7 @@ export function useAdhocRun({
       }
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [workspaceName, runWorkspaceName, startStatusPolling]);
+  }, [workspaceName, runWorkspaceName, skipStatusFetch, startStatusPolling]);
 
   const executeRun = useCallback(
     async ({
@@ -247,6 +255,13 @@ export function useAdhocRun({
     }) => {
       const trimmedWorkspaceName = targetWorkspaceName.trim();
       if (!trimmedWorkspaceName || isRunning) return;
+
+      if (normalizedDisableMutationsReason) {
+        stopPolling();
+        setIsRunning(false);
+        setRunError(normalizedDisableMutationsReason);
+        return;
+      }
 
       stopPolling();
       setRunWorkspaceName(trimmedWorkspaceName);
@@ -274,7 +289,7 @@ export function useAdhocRun({
         setIsRunning(false);
       }
     },
-    [addToHistory, isRunning, startStatusPolling, stopPolling],
+    [addToHistory, isRunning, normalizedDisableMutationsReason, startStatusPolling, stopPolling],
   );
 
   const startRun = useCallback(
@@ -315,6 +330,13 @@ export function useAdhocRun({
   const stopRun = useCallback(async () => {
     if (!runWorkspaceName || !isRunning) return;
 
+    if (normalizedDisableMutationsReason) {
+      stopPolling();
+      setIsRunning(false);
+      setRunError(normalizedDisableMutationsReason);
+      return;
+    }
+
     try {
       await api.workspaces.adhocStop(runWorkspaceName);
       stopPolling();
@@ -327,7 +349,7 @@ export function useAdhocRun({
         setRunError("Failed to stop ad-hoc prompt");
       }
     }
-  }, [isRunning, runWorkspaceName, stopPolling]);
+  }, [isRunning, normalizedDisableMutationsReason, runWorkspaceName, stopPolling]);
 
   const handleSubmit = useCallback(
     (event: React.FormEvent) => {

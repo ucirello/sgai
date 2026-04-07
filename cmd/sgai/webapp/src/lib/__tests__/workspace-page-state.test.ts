@@ -69,13 +69,18 @@ async function advanceTimersAndFlush(timeMs: number): Promise<void> {
 
 const mockFetch = mock(() => Promise.resolve(createResponse({ name: "test-workspace", dir: "/tmp/test-workspace" })));
 
-function WorkspacePageProbe({ workspaceName }: { workspaceName: string }) {
-  const { workspace, fetchStatus } = useWorkspacePageState(workspaceName);
+function WorkspacePageProbe({
+  workspaceTarget,
+}: {
+  workspaceTarget: string | { name: string; dir?: string };
+}) {
+  const { workspace, fetchStatus } = useWorkspacePageState(workspaceTarget as never);
 
   return createElement(
     "div",
     null,
     createElement("span", { "data-testid": "workspace-name" }, workspace?.name ?? ""),
+    createElement("span", { "data-testid": "workspace-dir" }, workspace?.dir ?? ""),
     createElement("span", { "data-testid": "fetch-status" }, fetchStatus),
   );
 }
@@ -99,7 +104,7 @@ describe("workspace-page-state store", () => {
   it("queues a second refresh request while the current fetch is still running", async () => {
     const firstResponse = deferredValue<Response>();
 
-    render(createElement(WorkspacePageProbe, { workspaceName: "test-workspace" }));
+    render(createElement(WorkspacePageProbe, { workspaceTarget: "test-workspace" }));
 
     await waitFor(() => {
       expect(screen.getByTestId("workspace-name").textContent).toBe("test-workspace");
@@ -135,7 +140,7 @@ describe("workspace-page-state store", () => {
       .mockImplementationOnce(() => Promise.resolve(createResponse({ name: "test-workspace", dir: "/tmp/test-workspace" })))
       .mockImplementationOnce(() => secondResponse.promise);
 
-    render(createElement(WorkspacePageProbe, { workspaceName: "test-workspace" }));
+    render(createElement(WorkspacePageProbe, { workspaceTarget: "test-workspace" }));
 
     await waitFor(() => {
       expect(screen.getByTestId("workspace-name").textContent).toBe("test-workspace");
@@ -160,7 +165,7 @@ describe("workspace-page-state store", () => {
   it("stops polling and ignores refresh requests after the last subscriber unsubscribes", async () => {
     vi.useFakeTimers();
 
-    const { unmount } = render(createElement(WorkspacePageProbe, { workspaceName: "test-workspace" }));
+    const { unmount } = render(createElement(WorkspacePageProbe, { workspaceTarget: "test-workspace" }));
 
     await waitFor(() => {
       expect(screen.getByTestId("workspace-name").textContent).toBe("test-workspace");
@@ -179,7 +184,7 @@ describe("workspace-page-state store", () => {
   });
 
   it("ignores generic reload SSE events after the workspace page has loaded", async () => {
-    render(createElement(WorkspacePageProbe, { workspaceName: "test-workspace" }));
+    render(createElement(WorkspacePageProbe, { workspaceTarget: "test-workspace" }));
 
     await waitFor(() => {
       expect(screen.getByTestId("workspace-name").textContent).toBe("test-workspace");
@@ -199,7 +204,7 @@ describe("workspace-page-state store", () => {
   });
 
   it("refreshes only for matching workspace-dir SSE events and keeps state fetches headerless", async () => {
-    render(createElement(WorkspacePageProbe, { workspaceName: "test-workspace" }));
+    render(createElement(WorkspacePageProbe, { workspaceTarget: "test-workspace" }));
 
     await waitFor(() => {
       expect(screen.getByTestId("workspace-name").textContent).toBe("test-workspace");
@@ -223,7 +228,7 @@ describe("workspace-page-state store", () => {
   it("stops visible polling once SSE is connected and resumes fallback polling after disconnect", async () => {
     vi.useFakeTimers();
 
-    render(createElement(WorkspacePageProbe, { workspaceName: "test-workspace" }));
+    render(createElement(WorkspacePageProbe, { workspaceTarget: "test-workspace" }));
     await advanceTimersAndFlush(0);
 
     expect(mockFetch.mock.calls.length).toBe(1);
@@ -245,7 +250,7 @@ describe("workspace-page-state store", () => {
   it("does not fall back to visible polling while an idle EventSource still exists", async () => {
     vi.useFakeTimers();
 
-    render(createElement(WorkspacePageProbe, { workspaceName: "test-workspace" }));
+    render(createElement(WorkspacePageProbe, { workspaceTarget: "test-workspace" }));
     await advanceTimersAndFlush(0);
 
     expect(mockFetch.mock.calls.length).toBe(1);
@@ -255,5 +260,32 @@ describe("workspace-page-state store", () => {
 
     expect(mockFetch.mock.calls.length).toBe(1);
     expect(MockEventSource.instances.length).toBe(1);
+  });
+
+  it("loads a dir-qualified workspace target from the full factory state endpoint", async () => {
+    mockFetch.mockImplementation((input) => {
+      if (input === "/api/v1/state") {
+        return Promise.resolve(createResponse({
+          workspaces: [
+            { name: "shared-ws", dir: "/tmp/first/shared-ws" },
+            { name: "shared-ws", dir: "/tmp/second/shared-ws" },
+          ],
+        }));
+      }
+
+      throw new Error(`Unexpected fetch target: ${String(input)}`);
+    });
+
+    render(createElement(WorkspacePageProbe, {
+      workspaceTarget: { name: "shared-ws", dir: "/tmp/second/shared-ws" },
+    }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workspace-name").textContent).toBe("shared-ws");
+      expect(screen.getByTestId("workspace-dir").textContent).toBe("/tmp/second/shared-ws");
+      expect(screen.getByTestId("fetch-status").textContent).toBe("idle");
+    });
+
+    expect(mockFetch.mock.calls[0]?.[0]).toBe("/api/v1/state");
   });
 });

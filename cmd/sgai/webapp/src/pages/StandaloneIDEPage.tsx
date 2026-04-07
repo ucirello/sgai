@@ -1,10 +1,10 @@
-import { useParams, Link } from "react-router";
+import { useParams, Link, useSearchParams } from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useWorkspacePageState } from "@/lib/workspace-page-state";
 import { IDETab } from "@/pages/tabs/IDETab";
-import { buildWorkspacePath } from "@/lib/workspace-identity";
+import { buildWorkspacePathFromName, readWorkspaceDirFromSearchParams } from "@/lib/workspace-identity";
 
 function StandaloneIDELoading() {
   return (
@@ -37,9 +37,15 @@ function StandaloneIDEError({ message }: { message: string }) {
 
 export function StandaloneIDEPage(): JSX.Element {
   const { name } = useParams<{ name: string }>();
+  const [searchParams] = useSearchParams();
   const workspaceName = name ?? "";
+  const workspaceDir = readWorkspaceDirFromSearchParams(searchParams);
 
-  const { workspace, fetchStatus } = useWorkspacePageState(workspaceName);
+  const { workspace, fetchStatus } = useWorkspacePageState(
+    workspaceDir
+      ? { name: workspaceName, dir: workspaceDir }
+      : workspaceName,
+  );
 
   if (!workspaceName) {
     return <StandaloneIDEError message="No workspace specified." />;
@@ -52,7 +58,7 @@ export function StandaloneIDEPage(): JSX.Element {
     return <StandaloneIDELoading />;
   }
 
-  const workspaceLink = buildWorkspacePath(workspace, "progress");
+  const workspaceLink = buildWorkspacePathFromName(workspace.name, "progress", { workspaceDir });
 
   return (
     <TooltipProvider>

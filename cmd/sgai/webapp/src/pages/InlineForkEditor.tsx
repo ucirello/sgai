@@ -1,7 +1,8 @@
-import { useState, useCallback, useEffect, useRef, useTransition } from "react";
+import { useState, useCallback, useEffect, useId, useRef, useTransition } from "react";
 import { useNavigate } from "react-router";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Label } from "@/components/ui/label";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { api, ApiError } from "@/lib/api";
 import { triggerFactoryRefresh } from "@/lib/factory-state";
@@ -74,8 +75,14 @@ function clearStoredDraft(workspaceName: string): string | null {
   }
 }
 
+function extractForkTemplateBody(content: string | null | undefined): string {
+  return stripFrontmatter(content ?? "");
+}
+
 export function InlineForkEditor({ workspaceName }: InlineForkEditorProps) {
   const navigate = useNavigate();
+  const bodyEditorLabelId = useId();
+  const bodyEditorHelpId = useId();
   const [content, setContent] = useState("");
   const [hasUserDraft, setHasUserDraft] = useState(false);
   const [isTemplateLoading, setIsTemplateLoading] = useState(false);
@@ -122,7 +129,7 @@ export function InlineForkEditor({ workspaceName }: InlineForkEditorProps) {
       setTemplateError(null);
       if (!preserveExistingContent) {
         setHasUserDraft(false);
-        setContent(result.content ?? "");
+        setContent(extractForkTemplateBody(result.content));
       }
     } catch (err) {
       if (cancelledRef.current) {
@@ -143,7 +150,7 @@ export function InlineForkEditor({ workspaceName }: InlineForkEditorProps) {
     return () => { cancelledRef.current = true; };
   }, [loadTemplate, templateRequestId, workspaceName]);
 
-  const bodyText = stripFrontmatter(content).trim();
+  const bodyText = content.trim();
   const isBodyEmpty = bodyText.length === 0;
 
   useEffect(() => {
@@ -179,7 +186,7 @@ export function InlineForkEditor({ workspaceName }: InlineForkEditorProps) {
     const newValue = value ?? "";
     setHasUserDraft(true);
     setContent(newValue);
-    const newBody = stripFrontmatter(newValue).trim();
+    const newBody = newValue.trim();
     if (newBody.length > 0) {
       setValidationError(null);
     }
@@ -214,14 +221,17 @@ export function InlineForkEditor({ workspaceName }: InlineForkEditorProps) {
         }
       }
     });
-  }, [isBodyEmpty, workspaceName, content, navigate]);
+  }, [content, isBodyEmpty, navigate, workspaceName]);
 
   return (
     <div className="space-y-4">
       <div>
         <h3 className="text-lg font-semibold mb-1">New Task</h3>
         <p className="text-sm text-muted-foreground">
-          Write a GOAL.md for your new task. A fork will be created automatically.
+          Write the task body for your new fork. A fork will be created automatically.
+        </p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Root frontmatter and the inherited title are copied automatically; only the body below is submitted.
         </p>
       </div>
 
@@ -255,16 +265,22 @@ export function InlineForkEditor({ workspaceName }: InlineForkEditorProps) {
         </div>
       )}
 
-      <MarkdownEditor
-        value={content}
-        onChange={handleContentChange}
-        onSubmitShortcut={handleSubmit}
-        minHeight={300}
-        defaultHeight={400}
-        disabled={isTemplateLoading || isSubmitting}
-        placeholder={isTemplateLoading ? "Loading fork template..." : "Describe the goal for this task..."}
-        workspaceName={workspaceName}
-      />
+      <div className="space-y-2" role="group" aria-labelledby={bodyEditorLabelId} aria-describedby={bodyEditorHelpId}>
+        <Label id={bodyEditorLabelId} className="text-sm font-medium">Task body</Label>
+        <p id={bodyEditorHelpId} className="text-sm text-muted-foreground">
+          Only the body you write here is submitted for the fork.
+        </p>
+        <MarkdownEditor
+          value={content}
+          onChange={handleContentChange}
+          onSubmitShortcut={handleSubmit}
+          minHeight={300}
+          defaultHeight={400}
+          disabled={isTemplateLoading || isSubmitting}
+          placeholder={isTemplateLoading ? "Loading fork template..." : "Describe the task body for this fork..."}
+          ariaLabel="Task body"
+        />
+      </div>
 
       {validationError && (
         <p className="text-sm text-destructive" role="alert">

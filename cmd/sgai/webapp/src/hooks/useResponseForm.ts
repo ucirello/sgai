@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { api, ApiError } from "@/lib/api";
+import { duplicateRouteResponseSubmissionDisabledReason } from "@/lib/duplicate-route-mutations";
 import { useWorkspacePageState } from "@/lib/workspace-page-state";
 import type { ApiPendingQuestionResponse, ApiWorkspaceEntry } from "@/types";
 
@@ -9,13 +10,13 @@ interface StoredResponseState {
   promptToken: string;
 }
 
-function getStorageKey(prefix: string, workspaceName: string): string {
-  return `${prefix}${workspaceName}`;
+function getStorageKey(prefix: string, workspaceStorageKey: string): string {
+  return `${prefix}${workspaceStorageKey}`;
 }
 
-function loadStoredState(prefix: string, workspaceName: string): StoredResponseState | null {
+function loadStoredState(prefix: string, workspaceStorageKey: string): StoredResponseState | null {
   try {
-    const stored = sessionStorage.getItem(getStorageKey(prefix, workspaceName));
+    const stored = sessionStorage.getItem(getStorageKey(prefix, workspaceStorageKey));
     if (stored) {
       return JSON.parse(stored) as StoredResponseState;
     }
@@ -25,17 +26,17 @@ function loadStoredState(prefix: string, workspaceName: string): StoredResponseS
   return null;
 }
 
-function saveStoredState(prefix: string, workspaceName: string, state: StoredResponseState): void {
+function saveStoredState(prefix: string, workspaceStorageKey: string, state: StoredResponseState): void {
   try {
-    sessionStorage.setItem(getStorageKey(prefix, workspaceName), JSON.stringify(state));
+    sessionStorage.setItem(getStorageKey(prefix, workspaceStorageKey), JSON.stringify(state));
   } catch {
     // Ignore storage errors
   }
 }
 
-function clearStoredState(prefix: string, workspaceName: string): void {
+function clearStoredState(prefix: string, workspaceStorageKey: string): void {
   try {
-    sessionStorage.removeItem(getStorageKey(prefix, workspaceName));
+    sessionStorage.removeItem(getStorageKey(prefix, workspaceStorageKey));
   } catch {
     // Ignore
   }
@@ -43,6 +44,7 @@ function clearStoredState(prefix: string, workspaceName: string): void {
 
 interface UseResponseFormOptions {
   workspaceName: string;
+  workspaceDir?: string;
   storagePrefix: string;
   active: boolean;
   onQuestionMissing?: () => void;
@@ -56,6 +58,7 @@ interface UseResponseFormReturn {
   error: Error | null;
   submitting: boolean;
   submitError: string | null;
+  submitDisabledReason: string | null;
   selections: Record<string, string[]>;
   otherText: string;
   setOtherText: (text: string) => void;
@@ -65,6 +68,7 @@ interface UseResponseFormReturn {
 
 export function useResponseForm({
   workspaceName,
+  workspaceDir,
   storagePrefix,
   active,
   onQuestionMissing,
@@ -77,7 +81,16 @@ export function useResponseForm({
   const hasUnsavedChangesRef = useRef(false);
   const previousPromptTokenRef = useRef<string | null>(null);
 
-  const { workspace, fetchStatus } = useWorkspacePageState(workspaceName);
+  const normalizedWorkspaceDir = workspaceDir?.trim() ?? "";
+  const submitDisabledReason = normalizedWorkspaceDir
+    ? duplicateRouteResponseSubmissionDisabledReason
+    : null;
+  const workspaceStorageKey = normalizedWorkspaceDir ? `${workspaceName}|${normalizedWorkspaceDir}` : workspaceName;
+  const { workspace, fetchStatus } = useWorkspacePageState(
+    normalizedWorkspaceDir
+      ? { name: workspaceName, dir: normalizedWorkspaceDir }
+      : workspaceName,
+  );
   const question = workspace?.pendingQuestion ?? null;
   const promptToken = question?.promptToken ?? null;
   const loading = fetchStatus === "fetching" && workspace === null;
@@ -97,7 +110,7 @@ export function useResponseForm({
 
     if (previousPromptTokenRef.current !== promptToken) {
       previousPromptTokenRef.current = promptToken;
-      const stored = loadStoredState(storagePrefix, workspaceName);
+      const stored = loadStoredState(storagePrefix, workspaceStorageKey);
       if (stored && stored.promptToken === promptToken) {
         setSelections(stored.selections);
         setOtherText(stored.otherText);
@@ -106,7 +119,7 @@ export function useResponseForm({
         setOtherText("");
       }
     }
-  }, [active, workspaceName, storagePrefix, promptToken, workspace, onQuestionMissing]);
+  }, [active, workspaceStorageKey, storagePrefix, promptToken, workspace, onQuestionMissing]);
 
   useEffect(() => {
     if (promptToken === null) return;
@@ -115,12 +128,12 @@ export function useResponseForm({
     const hasText = otherText.trim().length > 0;
     hasUnsavedChangesRef.current = hasSelections || hasText;
 
-    saveStoredState(storagePrefix, workspaceName, {
+    saveStoredState(storagePrefix, workspaceStorageKey, {
       selections,
       otherText,
       promptToken,
     });
-  }, [selections, otherText, promptToken, workspaceName, storagePrefix]);
+  }, [selections, otherText, promptToken, workspaceStorageKey, storagePrefix]);
 
   useEffect(() => {
     function handleBeforeUnload(e: BeforeUnloadEvent) {
@@ -160,6 +173,11 @@ export function useResponseForm({
 
       if (!question || submitting) return;
 
+      if (submitDisabledReason) {
+        setSubmitError(submitDisabledReason);
+        return;
+      }
+
       setSubmitting(true);
       setSubmitError(null);
 
@@ -175,7 +193,7 @@ export function useResponseForm({
           selectedChoices: allSelectedChoices,
         });
 
-        clearStoredState(storagePrefix, workspaceName);
+        clearStoredState(storagePrefix, workspaceStorageKey);
         hasUnsavedChangesRef.current = false;
         onSubmitSuccess?.();
       } catch (err: unknown) {
@@ -190,7 +208,7 @@ export function useResponseForm({
         setSubmitting(false);
       }
     },
-    [question, submitting, selections, otherText, workspaceName, storagePrefix, onSubmitSuccess],
+    [question, submitting, submitDisabledReason, selections, otherText, workspaceName, workspaceStorageKey, storagePrefix, onSubmitSuccess],
   );
 
   return {
@@ -200,6 +218,7 @@ export function useResponseForm({
     error,
     submitting,
     submitError,
+    submitDisabledReason,
     selections,
     otherText,
     setOtherText,

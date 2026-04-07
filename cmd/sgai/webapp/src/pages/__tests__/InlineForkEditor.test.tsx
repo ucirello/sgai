@@ -29,19 +29,21 @@ const mockForkTemplate = mock(() => Promise.resolve({ content: "---\nflow: |\n  
 const mockTriggerFactoryRefresh = mock(() => {});
 const mockNavigate = mock(() => {});
 
-const mockMarkdownEditor = ({ value, onChange, disabled, placeholder, onSubmitShortcut }: {
+const mockMarkdownEditor = ({ value, onChange, disabled, placeholder, onSubmitShortcut, ariaLabel }: {
     value: string;
     onChange: (v: string | undefined) => void;
     disabled: boolean;
     placeholder?: string;
     onSubmitShortcut?: () => void;
+    ariaLabel?: string;
   }) => (
-    <div data-testid="markdown-editor">
-      <textarea
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(event) => {
-          if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+     <div data-testid="markdown-editor">
+       <textarea
+         aria-label={ariaLabel}
+         value={value}
+         onChange={(e) => onChange(e.target.value)}
+         onKeyDown={(event) => {
+           if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
             event.preventDefault();
             onSubmitShortcut?.();
           }
@@ -116,11 +118,19 @@ describe("InlineForkEditor", () => {
   }
 
   describe("rendering", () => {
-    it("shows title and description", async () => {
+    it("shows body-only fork guidance", async () => {
       await renderInlineForkEditor();
 
       expect(screen.getByText("New Task")).toBeTruthy();
-      expect(screen.getByText(/Write a GOAL.md/)).toBeTruthy();
+      expect(screen.getByText(/Write the task body for your new fork/)).toBeTruthy();
+      expect(screen.getByText(/Root frontmatter and the inherited title are copied automatically/)).toBeTruthy();
+    });
+
+    it("labels the editable field as task body", async () => {
+      await renderInlineForkEditor();
+
+      expect(screen.getByText("Task body")).toBeTruthy();
+      expect(screen.getByRole("textbox", { name: "Task body" })).toBeTruthy();
     });
 
     it("shows Create Fork button", async () => {
@@ -143,12 +153,12 @@ describe("InlineForkEditor", () => {
       });
     });
 
-    it("populates editor with template content", async () => {
+    it("populates the editor with the template body only", async () => {
       await renderInlineForkEditor();
 
       await waitFor(() => {
         const textarea = screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement;
-        expect(textarea.value).toContain("Goal");
+        expect(textarea.value).toBe("# Goal\n\nDescribe your task");
       });
     });
 
@@ -190,7 +200,7 @@ describe("InlineForkEditor", () => {
       const view = await renderInlineForkEditor();
 
       await waitFor(() => {
-        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toContain("First Goal");
+        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toBe("# First Goal\n\nFirst workspace task");
       });
 
       await user.click(screen.getByRole("button", { name: "Create Fork" }));
@@ -227,7 +237,7 @@ describe("InlineForkEditor", () => {
       });
 
       await waitFor(() => {
-        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toContain("Second Goal");
+        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toBe("# Second Goal\n\nSecond workspace task");
       });
       expect(screen.getByRole("button", { name: "Create Fork" }).hasAttribute("disabled")).toBe(false);
     });
@@ -243,7 +253,7 @@ describe("InlineForkEditor", () => {
       const view = await renderInlineForkEditor();
 
       await waitFor(() => {
-        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toContain("First Goal");
+        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toBe("# First Goal\n\nFirst workspace task");
       });
 
       view.rerender(
@@ -282,7 +292,7 @@ describe("InlineForkEditor", () => {
       await waitFor(() => {
         expect(screen.queryByRole("status")).toBeNull();
         expect(screen.getByTestId("fork-editor-textarea").hasAttribute("disabled")).toBe(false);
-        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toContain("Loaded template");
+        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toBe("# Goal\n\nLoaded template");
       });
     });
 
@@ -420,7 +430,7 @@ describe("InlineForkEditor", () => {
         await user.click(button);
 
         await waitFor(() => {
-          expect(mockFork).toHaveBeenCalled();
+          expect(mockFork).toHaveBeenCalledWith("test-workspace", "# Goal\n\nDescribe your task");
         });
       }
     });
@@ -431,7 +441,7 @@ describe("InlineForkEditor", () => {
 
       await waitFor(() => {
         const textarea = screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement;
-        expect(textarea.value).toContain("Goal");
+        expect(textarea.value).toBe("# Goal\n\nDescribe your task");
       });
 
       const button = screen.getByText("Create Fork").closest("button");
@@ -451,7 +461,7 @@ describe("InlineForkEditor", () => {
       await renderInlineForkEditor();
 
       await waitFor(() => {
-        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toContain("Goal");
+        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toBe("# Goal\n\nDescribe your task");
       });
 
       const textarea = screen.getByTestId("fork-editor-textarea");
@@ -459,7 +469,7 @@ describe("InlineForkEditor", () => {
       await user.keyboard("{Control>}s{/Control}");
 
       await waitFor(() => {
-        expect(mockFork).toHaveBeenCalledWith("test-workspace", expect.stringContaining("# Goal"));
+        expect(mockFork).toHaveBeenCalledWith("test-workspace", "# Goal\n\nDescribe your task");
         expect(mockNavigate).toHaveBeenCalledWith("/workspaces/new-fork/progress");
       });
     });
@@ -468,7 +478,7 @@ describe("InlineForkEditor", () => {
       await renderInlineForkEditor();
 
       await waitFor(() => {
-        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toContain("Goal");
+        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toBe("# Goal\n\nDescribe your task");
       });
 
       const textarea = screen.getByTestId("fork-editor-textarea");
@@ -476,7 +486,7 @@ describe("InlineForkEditor", () => {
       fireEvent.keyDown(textarea, { key: "s", metaKey: true });
 
       await waitFor(() => {
-        expect(mockFork).toHaveBeenCalledWith("test-workspace", expect.stringContaining("# Goal"));
+        expect(mockFork).toHaveBeenCalledWith("test-workspace", "# Goal\n\nDescribe your task");
         expect(mockNavigate).toHaveBeenCalledWith("/workspaces/new-fork/progress");
       });
     });
@@ -510,11 +520,46 @@ describe("InlineForkEditor", () => {
       expect(mockForkTemplate).not.toHaveBeenCalled();
     });
 
+    it("round-trips a YAML-looking body draft unchanged", async () => {
+      mockForkTemplate.mockImplementation(() => Promise.resolve({ content: "" }));
+      const yamlBody = "---\nflow: |\n  \"agent\" -> \"other\"\n---\nFollow this exact body";
+
+      const firstRender = await renderInlineForkEditor();
+
+      await waitFor(() => {
+        expect(screen.getByTestId("fork-editor-textarea")).toBeTruthy();
+      });
+
+      fireEvent.change(screen.getByTestId("fork-editor-textarea"), {
+        target: { value: yamlBody },
+      });
+
+      await waitFor(() => {
+        expect(sessionStorage.getItem("sgai-inline-fork-test-workspace")).toBe(yamlBody);
+      });
+
+      firstRender.unmount();
+
+      await renderInlineForkEditor();
+
+      await waitFor(() => {
+        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toBe(yamlBody);
+      });
+
+      expect(mockForkTemplate).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByRole("button", { name: "Create Fork" }));
+
+      await waitFor(() => {
+        expect(mockFork).toHaveBeenCalledWith("test-workspace", yamlBody);
+      });
+    });
+
     it("does not persist untouched template content and refetches it on reopen", async () => {
       const firstRender = await renderInlineForkEditor();
 
       await waitFor(() => {
-        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toContain("Goal");
+        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toBe("# Goal\n\nDescribe your task");
       });
 
       expect(sessionStorage.getItem("sgai-inline-fork-test-workspace")).toBeNull();
@@ -527,7 +572,7 @@ describe("InlineForkEditor", () => {
       await waitFor(() => {
         expect(mockForkTemplate).toHaveBeenCalledTimes(2);
       });
-      expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toContain("Goal");
+      expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toBe("# Goal\n\nDescribe your task");
       expect(sessionStorage.getItem("sgai-inline-fork-test-workspace")).toBeNull();
     });
 
@@ -544,7 +589,7 @@ describe("InlineForkEditor", () => {
       await user.click(screen.getByRole("button", { name: "Create Fork" }));
 
       await waitFor(() => {
-        expect(mockFork).toHaveBeenCalled();
+        expect(mockFork).toHaveBeenCalledWith("test-workspace", "# Goal\n\nRecovered draft");
         expect(sessionStorage.getItem("sgai-inline-fork-test-workspace")).toBeNull();
       });
     });
@@ -558,7 +603,7 @@ describe("InlineForkEditor", () => {
 
       await waitFor(() => {
         const textarea = screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement;
-        expect(textarea.value).toContain("Goal");
+        expect(textarea.value).toBe("# Goal\n\nDescribe your task");
       });
 
       const button = screen.getByRole("button", { name: "Create Fork" });
@@ -612,7 +657,7 @@ describe("InlineForkEditor", () => {
       await renderInlineForkEditor();
 
       await waitFor(() => {
-        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toContain("Goal");
+        expect((screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement).value).toBe("# Goal\n\nDescribe your task");
       });
 
       const pristineEvent = new Event("beforeunload", { cancelable: true });
@@ -641,7 +686,7 @@ describe("InlineForkEditor", () => {
 
       await waitFor(() => {
         const textarea = screen.getByTestId("fork-editor-textarea") as HTMLTextAreaElement;
-        expect(textarea.value).toContain("Goal");
+        expect(textarea.value).toBe("# Goal\n\nDescribe your task");
       });
 
       const button = screen.getByText("Create Fork").closest("button");

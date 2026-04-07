@@ -299,6 +299,28 @@ describe("useAdhocRun", () => {
 
       expect(result.current.promptHistory).toContain("test prompt");
     });
+
+    it("blocks adhoc runs when basename-only mutations are disabled", async () => {
+      const { result } = renderHook(() =>
+        useAdhocRun({
+          workspaceName: "test-ws",
+          skipModelsFetch: true,
+          disableMutationsReason: "Duplicate-name route",
+        })
+      );
+
+      act(() => {
+        result.current.setPrompt("test prompt");
+        result.current.setSelectedModel("model-1");
+      });
+
+      await act(async () => {
+        await result.current.startRun();
+      });
+
+      expect(mockAdhoc).not.toHaveBeenCalled();
+      expect(result.current.runError).toBe("Duplicate-name route");
+    });
   });
 
   describe("startActionRun", () => {
@@ -332,6 +354,23 @@ describe("useAdhocRun", () => {
         variables: {},
       });
     });
+
+    it("blocks named actions when basename-only mutations are disabled", async () => {
+      const { result } = renderHook(() =>
+        useAdhocRun({
+          workspaceName: "test-ws",
+          skipModelsFetch: true,
+          disableMutationsReason: "Duplicate-name route",
+        })
+      );
+
+      await act(async () => {
+        await result.current.startActionRun("Run Tests", { Branch: "main" });
+      });
+
+      expect(mockActionRun).not.toHaveBeenCalled();
+      expect(result.current.runError).toBe("Duplicate-name route");
+    });
   });
 
   describe("models fetching", () => {
@@ -358,6 +397,21 @@ describe("useAdhocRun", () => {
     });
   });
 
+  describe("status polling", () => {
+    it("skips the initial adhoc status fetch when skipStatusFetch is true", async () => {
+      renderHook(() =>
+        useAdhocRun({ workspaceName: "test-ws", skipModelsFetch: true, skipStatusFetch: true } as any)
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mockAdhocStatus).not.toHaveBeenCalled();
+    });
+  });
+
   describe("stopRun", () => {
     it("does nothing when not running", async () => {
       const { result } = renderHook(() =>
@@ -369,6 +423,34 @@ describe("useAdhocRun", () => {
       });
 
       expect(mockAdhocStop).not.toHaveBeenCalled();
+    });
+
+    it("blocks stop requests when basename-only mutations are disabled", async () => {
+      mockAdhocStatus.mockImplementationOnce(() => Promise.resolve({ output: "still running", running: true }));
+
+      const { result } = renderHook(() =>
+        useAdhocRun({
+          workspaceName: "test-ws",
+          skipModelsFetch: true,
+          disableMutationsReason: "Duplicate-name route",
+        })
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      await waitFor(() => {
+        expect(result.current.isRunning).toBe(true);
+      });
+
+      await act(async () => {
+        await result.current.stopRun();
+      });
+
+      expect(mockAdhocStop).not.toHaveBeenCalled();
+      expect(result.current.runError).toBe("Duplicate-name route");
     });
   });
 

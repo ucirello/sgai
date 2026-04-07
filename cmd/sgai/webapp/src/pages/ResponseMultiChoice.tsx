@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { useParams, useNavigate, Link } from "react-router";
+import { useParams, useNavigate, Link, useSearchParams } from "react-router";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import { ResponseContext } from "@/components/ResponseContext";
 import { QuestionBlock } from "@/components/QuestionBlock";
 import { useResponseForm } from "@/hooks/useResponseForm";
 import { getRepositoryTitle } from "@/lib/repository-title";
+import { buildWorkspacePathFromName, readWorkspaceDirFromSearchParams } from "@/lib/workspace-identity";
 
 const STORAGE_PREFIX = "sgai-response-";
 
@@ -37,24 +38,27 @@ function ResponseSkeleton() {
 
 export function ResponseMultiChoice() {
   const { name } = useParams<{ name: string }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const workspaceName = name ?? "";
+  const workspaceDir = readWorkspaceDirFromSearchParams(searchParams);
+  const workspaceProgressPath = buildWorkspacePathFromName(workspaceName, "progress", { workspaceDir });
 
   const handleQuestionMissing = useCallback(() => {
     if (!workspaceName) {
       navigate("/", { replace: true });
       return;
     }
-    navigate(`/workspaces/${encodeURIComponent(workspaceName)}/progress`, { replace: true });
-  }, [navigate, workspaceName]);
+    navigate(workspaceProgressPath, { replace: true });
+  }, [navigate, workspaceName, workspaceProgressPath]);
 
   const handleSubmitSuccess = useCallback(() => {
     if (!workspaceName) {
       navigate("/", { replace: true });
       return;
     }
-    navigate(`/workspaces/${encodeURIComponent(workspaceName)}/progress`, { replace: true });
-  }, [navigate, workspaceName]);
+    navigate(workspaceProgressPath, { replace: true });
+  }, [navigate, workspaceName, workspaceProgressPath]);
 
   const {
     question,
@@ -63,6 +67,7 @@ export function ResponseMultiChoice() {
     error,
     submitting,
     submitError,
+    submitDisabledReason,
     selections,
     otherText,
     setOtherText,
@@ -70,6 +75,7 @@ export function ResponseMultiChoice() {
     handleSubmit,
   } = useResponseForm({
     workspaceName,
+    workspaceDir,
     storagePrefix: STORAGE_PREFIX,
     active: true,
     onQuestionMissing: handleQuestionMissing,
@@ -104,7 +110,7 @@ export function ResponseMultiChoice() {
           Failed to load question: {error.message}
         </p>
         <Link
-          to={`/workspaces/${encodeURIComponent(workspaceName)}/progress`}
+          to={workspaceProgressPath}
           className="text-sm text-primary hover:underline mt-2 inline-block"
         >
           ← Back to workspace
@@ -123,7 +129,7 @@ export function ResponseMultiChoice() {
         <CardHeader>
           <div className="flex items-center justify-between">
             <Link
-              to={`/workspaces/${encodeURIComponent(workspaceName)}/progress`}
+              to={workspaceProgressPath}
               className="text-sm text-muted-foreground hover:text-foreground no-underline"
             >
               ← Back
@@ -187,13 +193,19 @@ export function ResponseMultiChoice() {
               />
             </div>
 
+            {submitDisabledReason && (
+              <Alert className="mt-4">
+                <AlertDescription>{submitDisabledReason}</AlertDescription>
+              </Alert>
+            )}
+
             {submitError && (
               <p className="text-sm text-destructive mt-3" role="alert">{submitError}</p>
             )}
 
             <Button
               type="submit"
-              disabled={submitting}
+              disabled={submitting || Boolean(submitDisabledReason)}
               className="mt-4"
             >
               {submitting ? "Sending..." : "Send Response"}
